@@ -35,5 +35,40 @@ namespace Simulador.Vision
             mpb.SetFloat("seed", seed);
             mr.SetPropertyBlock(mpb);
         }
+
+#if UNITY_EDITOR
+        // Ayuda visual SOLO en el editor: dibuja hacia donde "mira" la luz (srcDir),
+        // para acomodar faros (adelante) y pilotos (atras) en los prefabs.
+        private void OnDrawGizmos()
+        {
+            // Marcador de la fuente, con su color.
+            Gizmos.color = srcColor;
+            Gizmos.DrawWireSphere(transform.position, 0.10f);
+
+            if (srcDir.sqrMagnitude > 0.0001f)
+            {
+                // src_dir es local (el shader lo transforma por el model matrix).
+                Vector3 dir = transform.TransformDirection(srcDir.normalized);
+                Vector3 from = transform.position;
+                Vector3 to = from + dir * 0.7f;
+                Gizmos.color = new Color(1f, 1f, 0.2f); // amarillo: direccion del haz
+                Gizmos.DrawLine(from, to);
+                Gizmos.DrawSphere(to, 0.05f);
+                // punta de flecha
+                Vector3 right = Vector3.Cross(dir, Mathf.Abs(dir.y) > 0.9f ? Vector3.right : Vector3.up).normalized;
+                Vector3 up = Vector3.Cross(right, dir).normalized;
+                Gizmos.DrawLine(to, to - dir * 0.18f + right * 0.09f);
+                Gizmos.DrawLine(to, to - dir * 0.18f - right * 0.09f);
+                Gizmos.DrawLine(to, to - dir * 0.18f + up * 0.09f);
+                Gizmos.DrawLine(to, to - dir * 0.18f - up * 0.09f);
+            }
+            else
+            {
+                // Omnidireccional (sin direccion de haz).
+                Gizmos.color = new Color(0.6f, 0.8f, 1f);
+                Gizmos.DrawWireSphere(transform.position, 0.16f);
+            }
+        }
+#endif
     }
 }
