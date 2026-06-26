@@ -24,8 +24,10 @@ namespace Simulador.Vision
         public Transform xrOrigin;
 
         [Header("Poses del rig por escenario")]
-        public Vector3 consultorioOriginPos = new Vector3(-1.4f, 0f, -2.8f);
-        public Vector3 rutaOriginPos = Vector3.zero;
+        public Vector3 consultorioOriginPos = new Vector3(-0.35f, -0.05f, -0.40f); // sentado en la silla, cerca del escritorio
+        public Vector3 consultorioOriginEuler = new Vector3(0f, 90f, 0f);          // mirar hacia el escritorio (+X)
+        public Vector3 rutaOriginPos = new Vector3(-0.45f, -0.14f, -0.55f);        // asiento del conductor
+        public Vector3 rutaOriginEuler = Vector3.zero;                             // mirar al frente (+Z, hacia la ruta)
 
         [Header("Inicial")]
         public string startScenario = "ruta_noche";
@@ -52,7 +54,11 @@ namespace Simulador.Vision
 
             if (night) ApplyNight(); else ApplyDay();
 
-            if (xrOrigin) { xrOrigin.position = night ? rutaOriginPos : consultorioOriginPos; xrOrigin.rotation = Quaternion.identity; }
+            if (xrOrigin)
+            {
+                xrOrigin.position = night ? rutaOriginPos : consultorioOriginPos;
+                xrOrigin.rotation = Quaternion.Euler(night ? rutaOriginEuler : consultorioOriginEuler);
+            }
 
             Current = id;
             Debug.Log($"ScenarioManager: -> {id}");
