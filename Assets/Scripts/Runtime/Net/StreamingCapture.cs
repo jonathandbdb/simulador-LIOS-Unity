@@ -54,6 +54,8 @@ namespace Simulador.Vision
             _cam.targetTexture = _rt;
             _cam.stereoTargetEye = StereoTargetEyeMask.None;
             _cam.enabled = false; // render on-demand (no cada frame)
+
+            Shader.SetGlobalFloat("_StreamForceEye", 0f); // 0 = off (no forzar ojo)
         }
 
         private void LateUpdate()
@@ -65,11 +67,7 @@ namespace Simulador.Vision
             _timer = 0f;
             if (_busy || Server.OpenClientCount == 0) return;
 
-            // seguir la pose de la cabeza y renderizar la captura ahora mismo
-            _cam.transform.SetPositionAndRotation(headToFollow.position, headToFollow.rotation);
-            SyncFromHeadCamera();   // copiar clear/fondo/culling del ojo (noche = fondo negro)
-            RenderNow();
-
+            // Decidir que ojo capturar este tick (en blend alterna L/R).
             byte header = HEADER_BOTH;
             var dm = DataManager.Instance;
             if (dm != null && dm.BlendModeEnabled)
@@ -77,6 +75,16 @@ namespace Simulador.Vision
                 header = _nextLeft ? HEADER_LEFT : HEADER_RIGHT;
                 _nextLeft = !_nextLeft;
             }
+            // Forzar el ojo en los shaders (la camara de captura es mono: si no, el
+            // post-proceso siempre usaria el ojo izquierdo). 1 = izq, 2 = der, 0 = off.
+            float forced = header == HEADER_RIGHT ? 2f : 1f;
+
+            // seguir la pose de la cabeza y renderizar la captura ahora mismo
+            _cam.transform.SetPositionAndRotation(headToFollow.position, headToFollow.rotation);
+            SyncFromHeadCamera();   // copiar clear/fondo/culling del ojo (noche = fondo negro)
+            Shader.SetGlobalFloat("_StreamForceEye", forced);
+            RenderNow();
+            Shader.SetGlobalFloat("_StreamForceEye", 0f); // off: no afectar el render de los ojos XR
 
             _busy = true;
             AsyncGPUReadback.Request(_rt, 0, TextureFormat.RGBA32, req => OnReadback(req, header));
@@ -115,16 +123,10 @@ namespace Simulador.Vision
             {
                 try
                 {
-                    // El readback viene bottom-up (convencion de textura de Unity);
-                    // EncodeArrayToJPG espera top-down -> invertir filas para que el
-                    // JPG salga derecho (igual que el path viejo con Texture2D).
-                    int rowBytes = Width * 4;
-                    var flipped = new byte[raw.Length];
-                    for (int y = 0; y < Height; y++)
-                        Buffer.BlockCopy(raw, y * rowBytes, flipped, (Height - 1 - y) * rowBytes, rowBytes);
-
+                    // EncodeArrayToJPG ya respeta la orientacion del readback (no hay
+                    // que invertir filas: hacerlo dejaba la imagen patas arriba).
                     byte[] jpg = ImageConversion.EncodeArrayToJPG(
-                        flipped, GraphicsFormat.R8G8B8A8_UNorm, (uint)Width, (uint)Height, 0, JpgQuality);
+                        raw, GraphicsFormat.R8G8B8A8_UNorm, (uint)Width, (uint)Height, 0, JpgQuality);
                     if (jpg != null && jpg.Length > 0)
                     {
                         var outb = new byte[jpg.Length + 1];

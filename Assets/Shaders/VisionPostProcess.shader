@@ -40,6 +40,11 @@ Shader "Simulador/VisionPostProcess"
         // Shader.SetGlobalFloat). glare_astig 0..1 = magnitud; angle en radianes. ===
         float glare_astig, glare_astig_angle;
 
+        // === Override de ojo para el stream de la tablet (camara mono). La setea
+        // StreamingCapture: 0 = normal (usa unity_StereoEyeIndex), 1 = forzar izq,
+        // 2 = forzar der. Default 0 => NO afecta el render de los ojos XR. ===
+        float _StreamForceEye;
+
         // === Constantes (verbatim del original) ===
         #define BLUR_RADIUS_PX  7.0
         #define MAX_DEFOCUS_D   1.5    // error de enfoque (D) que satura el blur
@@ -127,10 +132,15 @@ Shader "Simulador/VisionPostProcess"
                 }
                 float effDist = lerp(distM, _BookDistanceM, bookMask);
 
-                // Parametros por ojo.
+                // Parametros por ojo. _StreamForceEye permite que la captura mono del
+                // stream fuerce el ojo (1=izq, 2=der); 0 = usa el indice estereo real.
+                int eyeIdx = (int)unity_StereoEyeIndex;
+                int forcedEye = (int)_StreamForceEye;
+                if (forcedEye != 0) eyeIdx = forcedEye - 1;
+
                 float fFar, fInt, fNear, prof, desMax, contrast;
                 UNITY_BRANCH
-                if (unity_StereoEyeIndex == 0)
+                if (eyeIdx == 0)
                 {
                     fFar = _FocoLejosL; fInt = _FocoIntermedioL; fNear = _FocoCercaL;
                     prof = _ProfundidadFocoL; desMax = _DesenfoqueMaxL; contrast = _ContrastLossL;

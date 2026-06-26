@@ -37,6 +37,8 @@ Shader "Simulador/GlareBillboard"
             float glare_rays_l, glare_rays_r;
             // Astigmatismo: ajuste GLOBAL (un solo valor para ambos ojos).
             float glare_astig, glare_astig_angle;
+            // Override de ojo para el stream (camara mono). 0=normal, 1=izq, 2=der.
+            float _StreamForceEye;
 
             // === Por instancia (MaterialPropertyBlock; material compartido) ===
             float4 src_color;   // .rgb color de la fuente
@@ -86,7 +88,9 @@ Shader "Simulador/GlareBillboard"
                 UNITY_SETUP_INSTANCE_ID(IN);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
 
-                bool left = (unity_StereoEyeIndex == 0);
+                int forcedEye = (int)_StreamForceEye;
+                int eyeIdx = forcedEye != 0 ? forcedEye - 1 : (int)unity_StereoEyeIndex;
+                bool left = (eyeIdx == 0);
                 float v_halo  = saturate(left ? glare_halo_l  : glare_halo_r);
                 float v_star  = saturate(left ? glare_star_l  : glare_star_r);
                 float v_rays  = left ? glare_rays_l : glare_rays_r;
