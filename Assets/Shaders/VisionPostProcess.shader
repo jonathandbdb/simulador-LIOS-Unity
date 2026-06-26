@@ -45,6 +45,11 @@ Shader "Simulador/VisionPostProcess"
         // 2 = forzar der. Default 0 => NO afecta el render de los ojos XR. ===
         float _StreamForceEye;
 
+        // === Pupila por escenario (la setea ScenarioManager). 0 = dia (pupila chica),
+        // 1 = noche (dilatada). De noche el circulo de desenfoque crece => mas blur en
+        // lo DESENFOCADO (no toca lo enfocado). Default 0 = sin efecto. ===
+        float _PupilScene;
+
         // === Constantes (verbatim del original) ===
         #define BLUR_RADIUS_PX  7.0
         #define MAX_DEFOCUS_D   1.5    // error de enfoque (D) que satura el blur
@@ -152,6 +157,9 @@ Shader "Simulador/VisionPostProcess"
                 }
 
                 float blurAmount = saturate(BlurFromFocus(effDist, fFar, fInt, fNear, prof, desMax));
+                // Pupila dilatada de noche agranda el circulo de desenfoque (mas blur
+                // en lo borroso; lo enfocado sigue nitido porque blurAmount alli es 0).
+                blurAmount = saturate(blurAmount * lerp(1.0, 1.35, saturate(_PupilScene)));
 
                 half3 base = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv).rgb;
                 half3 color = base;

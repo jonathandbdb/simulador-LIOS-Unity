@@ -157,14 +157,18 @@ Shader "Simulador/GlareBillboard"
                 float r = length(p);
                 float total = 0.0;
 
-                // --- Halo: glow gaussiano + un anillo difractivo ---
+                // --- Halo: glow gaussiano + ANILLOS difractivos concentricos ---
+                // La trifocal difractiva (PanOptix) muestra varios anillos, no uno.
+                // Los anillos pesan ~v_halo^2: en monofocal (halo casi nulo) no aparecen.
                 if (v_halo_frac > 0.001)
                 {
                     float rh = r / v_halo_frac;
                     float glow = exp(-rh * rh * 3.2);
-                    float dr = (rh - RING_POS) / RING_WIDTH;
-                    float ring = exp(-dr * dr);
-                    total += (glow * 0.85 + ring * 0.75 * v_halo) * v_halo;
+                    float d1 = (rh - 0.45) / 0.09;
+                    float d2 = (rh - 0.68) / 0.10;
+                    float d3 = (rh - 0.90) / 0.11;
+                    float rings = exp(-d1 * d1) * 0.70 + exp(-d2 * d2) * 0.55 + exp(-d3 * d3) * 0.40;
+                    total += (glow * 0.85 + rings * 0.80 * v_halo) * v_halo;
                 }
 
                 // --- Starburst: rayos radiales finos con variacion por rayo ---

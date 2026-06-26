@@ -64,6 +64,7 @@ namespace Simulador.Vision
             RenderSettings.ambientLight = new Color(0.55f, 0.52f, 0.45f);
             if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.Euler(50f, -35f, 0f); }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.Skybox; }
+            Shader.SetGlobalFloat("_PupilScene", 0f); // dia: pupila chica
         }
 
         private void ApplyNight()
@@ -75,6 +76,7 @@ namespace Simulador.Vision
             // La luz la dan SOLO los faroles y los autos (pozos definidos).
             if (sun) { sun.intensity = 0f; sun.shadows = LightShadows.None; }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.SolidColor; xrCamera.backgroundColor = new Color(0.008f, 0.01f, 0.02f); }
+            Shader.SetGlobalFloat("_PupilScene", 1f); // noche: pupila dilatada
         }
     }
 }
