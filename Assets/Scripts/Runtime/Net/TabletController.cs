@@ -696,17 +696,13 @@ namespace Simulador.Net
             _kit.Size(leftPane, flexW: 1);
             _leftEyeLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_leftEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
-            _streamLeft = _kit.RawImage(leftPane);
-            _streamLeft.color = new Color(0.03f, 0.04f, 0.06f, 1f); // placeholder "sin señal"
-            _kit.Size(_streamLeft.rectTransform, flexW: 1, flexH: 1);
+            _streamLeft = MakeStreamView(leftPane);
 
             _rightEyePane = _kit.Box(eyes, "RightEyePane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_rightEyePane.GetComponent<RectTransform>(), flexW: 1);
             _rightEyeLabel = _kit.Label(_rightEyePane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_rightEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
-            _streamRight = _kit.RawImage(_rightEyePane.transform);
-            _streamRight.color = new Color(0.03f, 0.04f, 0.06f, 1f); // placeholder "sin señal"
-            _kit.Size(_streamRight.rectTransform, flexW: 1, flexH: 1);
+            _streamRight = MakeStreamView(_rightEyePane.transform);
             _rightEyePane.SetActive(false);
 
             // --- Scroll de controles (derecha) ---
@@ -804,6 +800,25 @@ namespace Simulador.Net
             _kit.Size(footer, minH: 26);
             _footer = _kit.Label(footer, "", LabelKind.Hint, TextAlignmentOptions.Right);
             _kit.Size(_footer.rectTransform, flexW: 1);
+        }
+
+        // Vista de stream por ojo: contenedor flexible (lo dimensiona la columna) con
+        // un RawImage que se ajusta dentro preservando el aspecto 4:3 del visor (sin
+        // distorsion / sin estirar). El placeholder oscuro = "sin señal".
+        private RawImage MakeStreamView(Transform pane)
+        {
+            var wrap = new GameObject("StreamWrap", typeof(RectTransform));
+            wrap.transform.SetParent(pane, false);
+            _kit.Size(wrap.GetComponent<RectTransform>(), flexW: 1, flexH: 1);
+            var img = _kit.RawImage(wrap.transform);
+            img.color = new Color(0.03f, 0.04f, 0.06f, 1f);
+            var rt = img.rectTransform;
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            var arf = img.gameObject.AddComponent<AspectRatioFitter>();
+            arf.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+            arf.aspectRatio = 768f / 576f;
+            return img;
         }
 
         // Glifo "ojo" estilizado (sin assets): circulo de acento + iris + pupila.
