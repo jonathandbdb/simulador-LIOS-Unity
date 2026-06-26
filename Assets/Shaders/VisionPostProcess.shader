@@ -1,0 +1,156 @@
+// VisionPostProcess.shader — Simulacion de visualizacion por IOL (post-proceso URP).
+// Port de features/vision_shaders/sprint2_blur_test.gdshader (Godot).
+//
+// Hace (1:1 con el original): depth->metros (proyeccion inversa) + blur dioptrico
+// + perdida de contraste, BIFURCADO por ojo (unity_StereoEyeIndex).
+// Halo / starburst / astigmatismo NO van aca: el original los fuerza a 0 en el
+// post-proceso y los dibujan los billboards de GlareSource (F4).
+//
+// Multiview (Single Pass Instanced / Vulkan): se samplea SIEMPRE con las macros
+// _X (SAMPLE_TEXTURE2D_X) y SampleSceneDepth, que indexan el slice del ojo correcto.
+// NUNCA samplear _CameraDepthTexture plano: en el ojo derecho devuelve el depth del
+// izquierdo (bug Vulkan+multiview).
+Shader "Simulador/VisionPostProcess"
+{
+    SubShader
+    {
+        Tags { "RenderPipeline" = "UniversalPipeline" }
+        ZWrite Off ZTest Always Cull Off
+
+        HLSLINCLUDE
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
+        #include "Packages/com.unity.render-pipelines.core/Runtime/Utilities/Blit.hlsl"
+        #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/DeclareDepthTexture.hlsl"
+
+        // === Modelo de focos por ojo (metros). Foco = 0 => no usado ===
+        float _FocoLejosL, _FocoIntermedioL, _FocoCercaL;
+        float _FocoLejosR, _FocoIntermedioR, _FocoCercaR;
+        float _ProfundidadFocoL, _ProfundidadFocoR;   // ancho de zona nitida (m)
+        float _DesenfoqueMaxL, _DesenfoqueMaxR;        // 0..1
+        float _ContrastLossL, _ContrastLossR;          // 0..0.6
+
+        // === Libro en la mano (Sprint 10 / F5). 0 => sin libro (no-op). ===
+        float _BookDistanceM;
+        float2 _BookScreenUV;
+        float _BookScreenRadius;
+
+        // === Constantes (verbatim del original) ===
+        #define BLUR_RADIUS_PX  7.0
+        #define MAX_DEFOCUS_D   1.5    // error de enfoque (D) que satura el blur
+        #define DOF_M_TO_D      0.5    // mapea profundidad_foco_m a tolerancia (D)
+        #define CONTRAST_PIVOT  0.22   // pivote bajo: no levanta los negros
+
+        // Dioptrias de una distancia (1/m). Clamp a 5 cm para evitar division por ~0.
+        float Diopters(float d) { return 1.0 / max(d, 0.05); }
+
+        // Error de enfoque (D) respecto al foco mas cercano que este activo.
+        float DefocusDiopters(float d, float fFar, float fInt, float fNear)
+        {
+            float dd = Diopters(d);
+            float best = 1.0e9;
+            if (fFar  > 0.001) best = min(best, abs(dd - Diopters(fFar)));
+            if (fInt  > 0.001) best = min(best, abs(dd - Diopters(fInt)));
+            if (fNear > 0.001) best = min(best, abs(dd - Diopters(fNear)));
+            return best;
+        }
+
+        // Nitido dentro de la profundidad de foco (tolerancia dioptrica); sube
+        // proporcional al error hasta max_blur a MAX_DEFOCUS_D de todo foco.
+        float BlurFromFocus(float d, float fFar, float fInt, float fNear,
+                             float depthOfFocusM, float maxBlur)
+        {
+            float errD = DefocusDiopters(d, fFar, fInt, fNear);
+            float tolD = depthOfFocusM * DOF_M_TO_D;
+            float over = max(errD - tolD, 0.0);
+            return maxBlur * saturate(over / MAX_DEFOCUS_D);
+        }
+
+        // Box blur OPTIMIZADO: 4 muestras bilineales en diagonales (= 4-tap del original).
+        half3 BoxBlur4tap(float2 uv, float2 texel, float radiusPx)
+        {
+            float2 o = texel * radiusPx * 0.75;
+            half3 sum  = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2( o.x,  o.y)).rgb;
+            sum += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(-o.x,  o.y)).rgb;
+            sum += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2( o.x, -o.y)).rgb;
+            sum += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(-o.x, -o.y)).rgb;
+            return sum * 0.25;
+        }
+        ENDHLSL
+
+        // Pass 0: efecto (blur dioptrico + contraste, por ojo).
+        Pass
+        {
+            Name "VisionSim"
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragEffect
+
+            half4 FragEffect(Varyings input) : SV_Target
+            {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+                float2 uv = input.texcoord;
+                float2 texel = _ScreenSize.zw;   // 1/ancho, 1/alto (por ojo)
+
+                // depth -> distancia real en metros (proyeccion inversa, radial como Godot)
+                float rawDepth = SampleSceneDepth(uv);
+                float3 posWS = ComputeWorldSpacePosition(uv, rawDepth, UNITY_MATRIX_I_VP);
+                float distM = distance(posWS, GetCameraPositionWS());
+
+                // Mascara del libro: su depth no es confiable; usar book_distance_m (CPU).
+                float bookMask = 0.0;
+                if (_BookScreenRadius > 0.0001 && _BookDistanceM > 0.0001)
+                {
+                    float bd = distance(uv, _BookScreenUV);
+                    bookMask = 1.0 - smoothstep(_BookScreenRadius * 0.65, _BookScreenRadius, bd);
+                }
+                float effDist = lerp(distM, _BookDistanceM, bookMask);
+
+                // Parametros por ojo.
+                float fFar, fInt, fNear, prof, desMax, contrast;
+                UNITY_BRANCH
+                if (unity_StereoEyeIndex == 0)
+                {
+                    fFar = _FocoLejosL; fInt = _FocoIntermedioL; fNear = _FocoCercaL;
+                    prof = _ProfundidadFocoL; desMax = _DesenfoqueMaxL; contrast = _ContrastLossL;
+                }
+                else
+                {
+                    fFar = _FocoLejosR; fInt = _FocoIntermedioR; fNear = _FocoCercaR;
+                    prof = _ProfundidadFocoR; desMax = _DesenfoqueMaxR; contrast = _ContrastLossR;
+                }
+
+                float blurAmount = saturate(BlurFromFocus(effDist, fFar, fInt, fNear, prof, desMax));
+
+                half3 base = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv).rgb;
+                half3 color = base;
+                if (blurAmount > 0.001)
+                {
+                    half3 blurred = BoxBlur4tap(uv, texel, BLUR_RADIUS_PX * blurAmount);
+                    color = lerp(base, blurred, blurAmount);
+                }
+
+                // Perdida de contraste: compresion alrededor de pivote BAJO (no levanta negros).
+                color = (color - CONTRAST_PIVOT) * (1.0 - contrast) + CONTRAST_PIVOT;
+
+                return half4(color, 1.0);
+            }
+            ENDHLSL
+        }
+
+        // Pass 1: copia simple (para devolver el temp al color de camara).
+        Pass
+        {
+            Name "Copy"
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragCopy
+
+            half4 FragCopy(Varyings input) : SV_Target
+            {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+                return SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, input.texcoord);
+            }
+            ENDHLSL
+        }
+    }
+}
