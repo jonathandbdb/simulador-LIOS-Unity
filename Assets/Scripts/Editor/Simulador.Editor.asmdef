@@ -1,0 +1,12 @@
+{
+    "name": "Simulador.Editor",
+    "rootNamespace": "Simulador.EditorTools",
+    "references": [
+        "Simulador.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "autoReferenced": true
+}
