@@ -109,3 +109,6 @@ InitTestScene*.unity*
 # Debug screenshots (artefactos)
 /[Aa]ssets/[Ss]creenshots/
 /[Aa]ssets/[Ss]creenshots.meta
+
+# Config local del MCP
+.mcp.json
