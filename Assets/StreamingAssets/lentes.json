@@ -1,0 +1,56 @@
+{
+  "version": "0.3.0-clinical",
+  "catalogo": [
+    {
+      "id": "monofocal",
+      "nombre": "Monofocal Estandar",
+      "descripcion": "Foco unico (lejos). Maximo contraste y disfotopsias minimas, pero la vision cercana se desenfoca: necesita gafas para leer. A distancia de lectura (~40cm) ilegible; al brazo extendido (~65cm) mejora visiblemente.",
+      "params": {
+        "foco_lejos_m":       { "default": 6.0,  "min": 0.0, "max": 20.0 },
+        "foco_intermedio_m":  { "default": 0.0,  "min": 0.0, "max": 20.0 },
+        "foco_cerca_m":       { "default": 0.0,  "min": 0.0, "max": 20.0 },
+        "profundidad_foco_m": { "default": 1.8,  "min": 0.1, "max": 5.0 },
+        "desenfoque_max":     { "default": 0.9,  "min": 0.0, "max": 1.0 },
+        "halo_intensity":     { "default": 0.03, "min": 0.0, "max": 1.0 },
+        "halo_extra_rings":   { "default": 0.0,  "min": 0.0, "max": 1.0 },
+        "contrast_loss":      { "default": 0.0,  "min": 0.0, "max": 0.6 },
+        "destello_intensity": { "default": 0.0,  "min": 0.0, "max": 1.0 },
+        "destello_rayos":     { "default": 0.0,  "min": 0.0, "max": 16.0 }
+      }
+    },
+    {
+      "id": "panoptix",
+      "nombre": "PanOptix Pro",
+      "descripcion": "Trifocal difractiva (cerca 40cm / intermedio 60cm / lejos). Vision util a todas las distancias, pero reparte luz en 3 focos: pierde sensibilidad al contraste y produce halos nocturnos marcados con anillos concentricos + starburst de 8-10 rayos.",
+      "params": {
+        "foco_lejos_m":       { "default": 6.0,  "min": 0.0, "max": 20.0 },
+        "foco_intermedio_m":  { "default": 0.6,  "min": 0.0, "max": 20.0 },
+        "foco_cerca_m":       { "default": 0.4,  "min": 0.0, "max": 20.0 },
+        "profundidad_foco_m": { "default": 1.0,  "min": 0.1, "max": 5.0 },
+        "desenfoque_max":     { "default": 0.55, "min": 0.0, "max": 1.0 },
+        "halo_intensity":     { "default": 0.6,  "min": 0.0, "max": 1.0 },
+        "halo_extra_rings":   { "default": 0.8,  "min": 0.0, "max": 1.0 },
+        "contrast_loss":      { "default": 0.20, "min": 0.0, "max": 0.6 },
+        "destello_intensity": { "default": 0.5,  "min": 0.0, "max": 1.0 },
+        "destello_rayos":     { "default": 9.0,  "min": 0.0, "max": 16.0 }
+      }
+    },
+    {
+      "id": "vivity",
+      "nombre": "Vivity EDOF",
+      "descripcion": "Profundidad de foco extendida (X-WAVE, no difractiva). Plateau continuo de lejos a intermedio (~67 cm) y vision funcional cercana. Halos y contraste casi monofocales.",
+      "params": {
+        "foco_lejos_m":       { "default": 6.0,  "min": 0.0, "max": 20.0 },
+        "foco_intermedio_m":  { "default": 1.0,  "min": 0.0, "max": 20.0 },
+        "foco_cerca_m":       { "default": 0.0,  "min": 0.0, "max": 20.0 },
+        "profundidad_foco_m": { "default": 3.0,  "min": 0.1, "max": 5.0 },
+        "desenfoque_max":     { "default": 0.35, "min": 0.0, "max": 1.0 },
+        "halo_intensity":     { "default": 0.15, "min": 0.0, "max": 1.0 },
+        "halo_extra_rings":   { "default": 0.2,  "min": 0.0, "max": 1.0 },
+        "contrast_loss":      { "default": 0.10, "min": 0.0, "max": 0.6 },
+        "destello_intensity": { "default": 0.1,  "min": 0.0, "max": 1.0 },
+        "destello_rayos":     { "default": 4.0,  "min": 0.0, "max": 16.0 }
+      }
+    }
+  ]
+}
