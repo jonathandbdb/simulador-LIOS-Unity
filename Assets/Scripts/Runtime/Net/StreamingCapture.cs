@@ -33,6 +33,7 @@ namespace Simulador.Vision
         public Transform headToFollow;       // XR Main Camera
 
         private Camera _cam;
+        private Camera _headCam;   // la camara XR (mismo GameObject que headToFollow)
         private RenderTexture _rt;
         private float _timer;
         private volatile bool _busy;
@@ -66,6 +67,7 @@ namespace Simulador.Vision
 
             // seguir la pose de la cabeza y renderizar la captura ahora mismo
             _cam.transform.SetPositionAndRotation(headToFollow.position, headToFollow.rotation);
+            SyncFromHeadCamera();   // copiar clear/fondo/culling del ojo (noche = fondo negro)
             RenderNow();
 
             byte header = HEADER_BOTH;
@@ -78,6 +80,19 @@ namespace Simulador.Vision
 
             _busy = true;
             AsyncGPUReadback.Request(_rt, 0, TextureFormat.RGBA32, req => OnReadback(req, header));
+        }
+
+        // El look de noche se logra poniendo el fondo de la camara XR en negro solido
+        // (ScenarioManager.ApplyNight). La camara de captura es OTRA camara, asi que hay
+        // que copiarle el clear/fondo/culling del ojo, si no renderiza el skybox de dia.
+        private void SyncFromHeadCamera()
+        {
+            if (_headCam == null || _headCam.transform != headToFollow)
+                _headCam = headToFollow.GetComponent<Camera>();
+            if (_headCam == null) return;
+            _cam.clearFlags = _headCam.clearFlags;
+            _cam.backgroundColor = _headCam.backgroundColor;
+            _cam.cullingMask = _headCam.cullingMask;
         }
 
         // Render on-demand con la API soportada de URP; fallback a Camera.Render().
