@@ -3,8 +3,10 @@
 //
 // Hace (1:1 con el original): depth->metros (proyeccion inversa) + blur dioptrico
 // + perdida de contraste, BIFURCADO por ojo (unity_StereoEyeIndex).
-// Halo / starburst / astigmatismo NO van aca: el original los fuerza a 0 en el
-// post-proceso y los dibujan los billboards de GlareSource (F4).
+// Halo / starburst los dibujan los billboards de GlareSource (F4). El astigmatismo
+// se REFUERZA aca con un desenfoque DIRECCIONAL global (la imagen se borronea a lo
+// largo del eje, como el astigmatismo optico real) ademas del trazo sobre las luces;
+// lo manejan los globals glare_astig (0..1) y glare_astig_angle (rad).
 //
 // Multiview (Single Pass Instanced / Vulkan): se samplea SIEMPRE con las macros
 // _X (SAMPLE_TEXTURE2D_X) y SampleSceneDepth, que indexan el slice del ojo correcto.
@@ -34,11 +36,16 @@ Shader "Simulador/VisionPostProcess"
         float2 _BookScreenUV;
         float _BookScreenRadius;
 
+        // === Astigmatismo GLOBAL (lo setea GlareController.SetAstigmatism via
+        // Shader.SetGlobalFloat). glare_astig 0..1 = magnitud; angle en radianes. ===
+        float glare_astig, glare_astig_angle;
+
         // === Constantes (verbatim del original) ===
         #define BLUR_RADIUS_PX  7.0
         #define MAX_DEFOCUS_D   1.5    // error de enfoque (D) que satura el blur
         #define DOF_M_TO_D      0.5    // mapea profundidad_foco_m a tolerancia (D)
         #define CONTRAST_PIVOT  0.22   // pivote bajo: no levanta los negros
+        #define ASTIG_BLUR_PX   22.0   // largo maximo del smear direccional (a magnitud 1)
 
         // Dioptrias de una distancia (1/m). Clamp a 5 cm para evitar division por ~0.
         float Diopters(float d) { return 1.0 / max(d, 0.05); }
@@ -74,6 +81,21 @@ Shader "Simulador/VisionPostProcess"
             sum += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2( o.x, -o.y)).rgb;
             sum += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + float2(-o.x, -o.y)).rgb;
             return sum * 0.25;
+        }
+
+        // Desenfoque DIRECCIONAL (astigmatismo): 7 muestras gaussianas a lo largo de
+        // 'step' (eje del astigmatismo). Smear de toda la imagen en una direccion.
+        half3 DirBlur(float2 uv, float2 step)
+        {
+            half3 s = 0;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv - step       ).rgb * 0.05;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv - step * 0.667).rgb * 0.10;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv - step * 0.333).rgb * 0.20;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv                ).rgb * 0.30;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + step * 0.333).rgb * 0.20;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + step * 0.667).rgb * 0.10;
+            s += SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv + step       ).rgb * 0.05;
+            return s;
         }
         ENDHLSL
 
@@ -127,6 +149,19 @@ Shader "Simulador/VisionPostProcess"
                 {
                     half3 blurred = BoxBlur4tap(uv, texel, BLUR_RADIUS_PX * blurAmount);
                     color = lerp(base, blurred, blurAmount);
+                }
+
+                // Astigmatismo: desenfoque DIRECCIONAL global a lo largo del eje. Es
+                // GLOBAL (mismo valor ambos ojos); se nota en toda la imagen, no solo
+                // en las luces. Se suma al trazo de los billboards de glare.
+                float astig = saturate(glare_astig);
+                if (astig > 0.001)
+                {
+                    float a = glare_astig_angle;
+                    float2 dir = float2(cos(a), sin(a));
+                    float2 step = dir * texel * (ASTIG_BLUR_PX * astig);
+                    half3 astigCol = DirBlur(uv, step);
+                    color = lerp(color, astigCol, astig);
                 }
 
                 // Perdida de contraste: compresion alrededor de pivote BAJO (no levanta negros).
