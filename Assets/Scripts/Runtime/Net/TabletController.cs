@@ -690,7 +690,9 @@ namespace Simulador.Net
             // --- Panel de stream (izquierda) ---
             var stream = _kit.Panel(body, "StreamPanel", p => p.StreamBg, 10, false, 8, new RectOffset(8, 8, 8, 8));
             _kit.Size(stream, minW: 280, flexW: 2.3f, flexH: 1);
-            var eyes = _kit.Box(stream, "EyesContainer", false, 8, null, expandW: true, expandH: true);
+            // Vertical: en blend los dos ojos se apilan (cada uno usa el ancho completo
+            // => imagen mas grande que lado a lado). En no-blend, el panel unico llena todo.
+            var eyes = _kit.Box(stream, "EyesContainer", true, 8, null, expandW: true, expandH: true);
 
             var leftPane = _kit.Box(eyes, "LeftEyePane", true, 6, null, expandW: true, expandH: false);
             _kit.Size(leftPane, flexW: 1);
