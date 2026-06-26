@@ -67,5 +67,5 @@
         "*.sln": "*.csproj",
         "*.slnx": "*.csproj"
     },
-    "dotnet.defaultSolution": "simulador-LIOS-Unity.slnx"
+    "dotnet.defaultSolution": "My project.slnx"
 }
