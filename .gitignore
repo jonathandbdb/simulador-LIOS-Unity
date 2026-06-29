@@ -112,3 +112,6 @@ InitTestScene*.unity*
 
 # Config local del MCP
 .mcp.json
+
+# Config local del IDE (VS Code)
+.vscode/
