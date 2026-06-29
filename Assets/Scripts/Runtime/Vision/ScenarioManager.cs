@@ -75,11 +75,12 @@ namespace Simulador.Vision
 
         private void ApplyNight()
         {
-            // Noche mas oscura: para que resalten las luces de farolas y autos.
+            // Noche: luz ambiental GENERAL de baja intensidad, suficiente para ver el
+            // color de los autos en la oscuridad; los pozos de luz de los faroles lo
+            // acentuan (quedan mucho mas brillantes que este piso ambiental).
             RenderSettings.ambientMode = AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.004f, 0.005f, 0.01f); // casi negro
-            // Luna APAGADA: una direccional ilumina TODO parejo y mata el contraste.
-            // La luz la dan SOLO los faroles y los autos (pozos definidos).
+            RenderSettings.ambientLight = new Color(0.4f, 0.4f, 0.4f); // ambiente general bajo
+            // Luna (direccional) APAGADA: la direccionalidad la dan los faroles/autos.
             if (sun) { sun.intensity = 0f; sun.shadows = LightShadows.None; }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.SolidColor; xrCamera.backgroundColor = new Color(0.008f, 0.01f, 0.02f); }
             Shader.SetGlobalFloat("_PupilScene", 1f); // noche: pupila dilatada
