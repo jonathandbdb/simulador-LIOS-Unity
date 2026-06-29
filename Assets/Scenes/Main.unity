@@ -1460,12 +1460,11 @@ MonoBehaviour:
   - {fileID: 848151528572700664, guid: 29a2669075658b049bb63308cda351d4, type: 3}
   - {fileID: 2052955913044096404, guid: e94442fd5bd7f0f4cb318f670a475255, type: 3}
   - {fileID: 2988851052673692704, guid: 269af17667dfdbb43bb8f1fc3d43f845, type: 3}
-  - {fileID: 1582540111975266181, guid: 33258fae3cc7d534e8d5de2d559396fa, type: 3}
   - {fileID: 5699806226841860620, guid: 819eeabf27f55ad48932bb6b59cc2b1f, type: 3}
   - {fileID: 5558066032789498654, guid: bab88fecbca01db409320d2faf8eff7d, type: 3}
   - {fileID: 1728117875934976353, guid: 12c851a9ddaf40d4bb10f6bfac138f21, type: 3}
   - {fileID: 1524456443545050015, guid: 097f4eb52fa3be449a8ee5501f03cb17, type: 3}
-  count: 2
+  count: 6
   speed: 16
   laneX: 2.6
   startZ: 70
