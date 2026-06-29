@@ -2,7 +2,9 @@
     "name": "Simulador.Editor",
     "rootNamespace": "Simulador.EditorTools",
     "references": [
-        "Simulador.Runtime"
+        "Simulador.Runtime",
+        "Unity.XR.Management",
+        "Unity.XR.Management.Editor"
     ],
     "includePlatforms": [
         "Editor"
