@@ -50,6 +50,15 @@ Shader "Simulador/VisionPostProcess"
         // lo DESENFOCADO (no toca lo enfocado). Default 0 = sin efecto. ===
         float _PupilScene;
 
+        // === Encandilamiento (disability glare / straylight). Lo setea DisabilityGlare
+        // Controller: velo de luminancia POR OJO (la difractiva dispersa mas) calculado
+        // como straylight(lente) x fuentes(brillo/angulo²) x pupila. _GlareVeilL/R 0..1;
+        // _GlareVeilUV.xy = posicion en pantalla de la fuente dominante (para concentrar
+        // el velo cerca de la luz); _GlareVeilTint = color calido. Default 0 = sin efecto. ===
+        float _GlareVeilL, _GlareVeilR;
+        float4 _GlareVeilUV;
+        float4 _GlareVeilTint;
+
         // === Constantes (verbatim del original) ===
         #define BLUR_RADIUS_PX  7.0
         #define MAX_DEFOCUS_D   1.5    // error de enfoque (D) que satura el blur
@@ -184,6 +193,23 @@ Shader "Simulador/VisionPostProcess"
 
                 // Perdida de contraste: compresion alrededor de pivote BAJO (no levanta negros).
                 color = (color - CONTRAST_PIVOT) * (1.0 - contrast) + CONTRAST_PIVOT;
+
+                // Encandilamiento (disability glare): velo de luminancia ADITIVO (straylight)
+                // por ojo. Aditivo => levanta los negros y baja el contraste como el velo real;
+                // mas intenso CERCA de la fuente (la luz "florece") que en el resto del campo.
+                float veilAmt = saturate(eyeIdx == 0 ? _GlareVeilL : _GlareVeilR);
+                if (veilAmt > 0.001)
+                {
+                    float2 dd = uv - _GlareVeilUV.xy;
+                    dd.x *= _ScreenSize.x / max(_ScreenSize.y, 1.0);   // aspecto -> glow circular
+                    float concentrated = exp(-dot(dd, dd) / 0.05);     // glow centrado en la fuente
+                    float L = veilAmt * (0.35 + 0.65 * concentrated);  // pedestal uniforme + glow
+                    half3 veil = _GlareVeilTint.rgb;
+                    color += veil * L;                                  // straylight aditivo (HDR cerca -> bloom)
+                    // leve perdida de saturacion del velo (la luz parasita "lava" el color)
+                    half lum = dot(color, half3(0.299, 0.587, 0.114));
+                    color = lerp(color, lum.xxx, veilAmt * 0.12);
+                }
 
                 return half4(color, 1.0);
             }

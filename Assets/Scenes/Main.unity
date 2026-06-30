@@ -874,6 +874,7 @@ MonoBehaviour:
   srcEnergy: 1.8
   srcDir: {x: 0, y: 0, z: 0}
   seed: 5
+  distanceInvariant: 1
 --- !u!23 &197825351
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -5868,6 +5869,7 @@ MonoBehaviour:
   srcEnergy: 1.8
   srcDir: {x: 0, y: 0, z: 0}
   seed: 23
+  distanceInvariant: 1
 --- !u!23 &1847839153
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -6244,6 +6246,7 @@ GameObject:
   - component: {fileID: 1993793019}
   - component: {fileID: 1993793022}
   - component: {fileID: 1993793021}
+  - component: {fileID: 1993793023}
   m_Layer: 0
   m_Name: VisionController
   m_TagString: Untagged
@@ -6350,6 +6353,34 @@ MonoBehaviour:
   dayHaloScale: 0.2
   dayStarScale: 0.7
   startScenario: ruta_noche
+--- !u!114 &1993793023
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1993793016}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f461ffbbe8f392e468d2ab363ea34db9, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Simulador.Runtime::Simulador.Vision.DisabilityGlareController
+  cam: {fileID: 1690663492}
+  scenario: {fileID: 1993793022}
+  sensitivity: 0.25
+  maxVeil: 0.6
+  innerAngleDeg: 5
+  outerAngleDeg: 52
+  refDistance: 4
+  nearClampDistance: 2
+  fullWeightDistance: 10
+  cutoffDistance: 20
+  nightPupilFactor: 3
+  smoothing: 5
+  veilTint: {r: 1, g: 0.95, b: 0.85, a: 1}
+  occluders:
+    serializedVersion: 2
+    m_Bits: 4294967295
 --- !u!1 &2076626011
 GameObject:
   m_ObjectHideFlags: 0

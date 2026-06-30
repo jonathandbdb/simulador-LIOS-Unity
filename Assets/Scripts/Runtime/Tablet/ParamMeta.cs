@@ -80,6 +80,12 @@ namespace Simulador.Tablet
                 Hint = "Cantidad de spokes del starburst. Pacientes con trifocal reportan 8-12 rayos visibles.",
                 Unit = "rayos", Fmt = "F0",
             },
+            ["straylight"] = new Entry
+            {
+                Label = "Encandilamiento (straylight)",
+                Hint = "Luz parasita intraocular: ante una fuente brillante (sol/faros) vela la imagen y baja el contraste (disability glare). Trifocal alto, EDOF medio, monofocal bajo.",
+                Unit = "", Fmt = "F2",
+            },
         };
 
         // Orden clinico de presentacion: focos -> blur -> disfotopsias. Parametros
@@ -90,6 +96,7 @@ namespace Simulador.Tablet
             "profundidad_foco_m", "desenfoque_max",
             "halo_intensity", "halo_extra_rings",
             "destello_intensity", "destello_rayos",
+            "straylight",
             "contrast_loss",
         };
 

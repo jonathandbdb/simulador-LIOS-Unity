@@ -21,6 +21,10 @@ namespace Simulador.Vision
         public Vector3 srcDir = Vector3.zero;
         public float seed = 0f;
 
+        [Tooltip("Fuente 'al infinito' (sol): el encandilamiento NO atenua por distancia (1/d²). " +
+                 "Las luces puntuales (faros/faroles) lo dejan en false. Solo lo usa DisabilityGlareController.")]
+        public bool distanceInvariant = false;
+
         private void OnEnable() => Apply();
 
         public void Apply()
