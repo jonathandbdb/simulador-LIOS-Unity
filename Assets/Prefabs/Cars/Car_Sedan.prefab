@@ -539,6 +539,7 @@ MonoBehaviour:
   srcEnergy: 1
   srcDir: {x: 0, y: 0, z: 1}
   seed: 77
+  distanceInvariant: 0
 --- !u!1 &6536871523113663060
 GameObject:
   m_ObjectHideFlags: 0
@@ -646,6 +647,7 @@ MonoBehaviour:
   srcEnergy: 0.8
   srcDir: {x: 0, y: 0, z: -1}
   seed: 81
+  distanceInvariant: 0
 --- !u!1 &8008674789140955744
 GameObject:
   m_ObjectHideFlags: 0
@@ -686,7 +688,7 @@ MeshFilter:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 8008674789140955744}
-  m_Mesh: {fileID: 3231768089078170322, guid: 460bb82a7351b854e9b2f310587b81a7, type: 3}
+  m_Mesh: {fileID: 4300000, guid: 30dd98e9eb7a1604385925291c8bb553, type: 2}
 --- !u!23 &8964676135123033090
 MeshRenderer:
   m_ObjectHideFlags: 0
@@ -714,7 +716,8 @@ MeshRenderer:
   m_Materials:
   - {fileID: 2100000, guid: 282514bdfc262074a863ac5d076253e6, type: 2}
   - {fileID: 2100000, guid: 8c1b45aa43d032a4893d9fafc7e6c8c6, type: 2}
-  - {fileID: 2100000, guid: 7cd26ceed1facc14693189d056134820, type: 2}
+  - {fileID: 2100000, guid: 6e20b9b1bff2e3742bd97f534edf39d0, type: 2}
+  - {fileID: 2100000, guid: 3f0c665e07b424c458007d4061b983e1, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -845,6 +848,7 @@ MonoBehaviour:
   srcEnergy: 1
   srcDir: {x: 0, y: 0, z: 1}
   seed: 77
+  distanceInvariant: 0
 --- !u!1 &9114560210908549286
 GameObject:
   m_ObjectHideFlags: 0
@@ -952,3 +956,4 @@ MonoBehaviour:
   srcEnergy: 0.8
   srcDir: {x: 0, y: 0, z: -1}
   seed: 81
+  distanceInvariant: 0
