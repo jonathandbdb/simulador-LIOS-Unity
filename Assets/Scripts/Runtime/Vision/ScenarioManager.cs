@@ -84,9 +84,12 @@ namespace Simulador.Vision
         {
             RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.55f, 0.52f, 0.45f);
+            RenderSettings.reflectionIntensity = 1f; // de dia el interior si refleja el cielo (ventana del consultorio)
             // Sol al frente (hacia el lado de la ventana, yaw ~335 / elev ~14) para que se
             // vea por la ventana del consultorio. La luz APUNTA al interior (-sunDir).
-            if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.LookRotation(new Vector3(0.410f, -0.242f, -0.879f)); }
+            // El consultorio no usa direccional (GO apagado). La dejamos configurada pero
+            // OFF, para que la luna nocturna no quede encendida al pasar de noche -> dia.
+            if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.LookRotation(new Vector3(0.410f, -0.242f, -0.879f)); sun.gameObject.SetActive(false); }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.Skybox; }
             Shader.SetGlobalFloat("_PupilScene", 0f); // dia: pupila chica
         }
@@ -97,9 +100,22 @@ namespace Simulador.Vision
             // color de los autos en la oscuridad; los pozos de luz de los faroles lo
             // acentuan (quedan mucho mas brillantes que este piso ambiental).
             RenderSettings.ambientMode = AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.4f, 0.4f, 0.4f); // ambiente general bajo
-            // Luna (direccional) APAGADA: la direccionalidad la dan los faroles/autos.
-            if (sun) { sun.intensity = 0f; sun.shadows = LightShadows.None; }
+            RenderSettings.ambientLight = new Color(0.14f, 0.14f, 0.15f); // ambiente nocturno bajo (antes 0.4f: lavaba la escena)
+            // Mata el reflejo del skybox diurno (azul) sobre el interior del auto: de noche el
+            // entorno es oscuro y los reflejos los aportan faroles/faros (luces en tiempo real).
+            RenderSettings.reflectionIntensity = 0f;
+            // Luna tenue (direccional) CASI NEUTRA: da una base para ver la carroceria y el
+            // color de los autos en la oscuridad sin lavar el interior (que queda bajo el
+            // techo del auto). Los faroles/faros siguen dando el "pop" de color al pasar.
+            if (sun)
+            {
+                sun.gameObject.SetActive(true);
+                sun.type = LightType.Directional;
+                sun.color = new Color(0.96f, 0.97f, 1f); // apenas fria, sin tinte azul marcado
+                sun.intensity = 0.3f;                    // tenue: tunable (subir = autos mas visibles)
+                sun.shadows = LightShadows.None;
+                sun.transform.rotation = Quaternion.Euler(55f, 20f, 0f); // luna alta, casi cenital
+            }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.SolidColor; xrCamera.backgroundColor = new Color(0.008f, 0.01f, 0.02f); }
             Shader.SetGlobalFloat("_PupilScene", 1f); // noche: pupila dilatada
         }
