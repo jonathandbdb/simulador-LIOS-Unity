@@ -29,6 +29,14 @@ namespace Simulador.Vision
         public Vector3 rutaOriginPos = new Vector3(-0.45f, -0.14f, -0.55f);        // asiento del conductor
         public Vector3 rutaOriginEuler = Vector3.zero;                             // mirar al frente (+Z, hacia la ruta)
 
+        [Header("Glare (consultorio / dia)")]
+        [Range(0f, 1f)]
+        [Tooltip("Halos (anillos) de dia: casi suprimidos: a plena luz y pupila contraida los anillos se lavan.")]
+        public float dayHaloScale = 0.2f;
+        [Range(0f, 1f)]
+        [Tooltip("Destellos/starburst de dia: predominan alrededor del sol (clinicamente lo visible a plena luz).")]
+        public float dayStarScale = 0.7f;
+
         [Header("Inicial")]
         public string startScenario = "ruta_noche";
 
@@ -50,7 +58,15 @@ namespace Simulador.Vision
             if (rutaNoche) rutaNoche.SetActive(night);
             if (book) book.SetActive(!night);                // libro solo de dia
 
-            if (glare) { glare.halosEnabled = night; glare.Refresh(); }   // halos solo de noche
+            // Glare siempre activo. De dia: halos casi suprimidos pero destellos visibles
+            // (alrededor del sol); de noche: todo a full (halos marcados + starburst).
+            if (glare)
+            {
+                glare.halosEnabled = true;
+                glare.haloScale = night ? 1f : dayHaloScale;
+                glare.starScale = night ? 1f : dayStarScale;
+                glare.Refresh();
+            }
 
             if (night) ApplyNight(); else ApplyDay();
 
@@ -68,7 +84,9 @@ namespace Simulador.Vision
         {
             RenderSettings.ambientMode = AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.55f, 0.52f, 0.45f);
-            if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.Euler(50f, -35f, 0f); }
+            // Sol al frente (hacia el lado de la ventana, yaw ~335 / elev ~14) para que se
+            // vea por la ventana del consultorio. La luz APUNTA al interior (-sunDir).
+            if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.LookRotation(new Vector3(0.410f, -0.242f, -0.879f)); }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.Skybox; }
             Shader.SetGlobalFloat("_PupilScene", 0f); // dia: pupila chica
         }

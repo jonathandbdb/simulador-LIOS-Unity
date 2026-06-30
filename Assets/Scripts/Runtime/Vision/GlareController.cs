@@ -12,8 +12,18 @@ namespace Simulador.Vision
     /// </summary>
     public class GlareController : MonoBehaviour
     {
-        [Tooltip("Off apaga halos/starburst (consultorio de dia). Lo controla el escenario en F5.")]
+        [Tooltip("Off apaga halos/starburst. Lo controla el escenario.")]
         public bool halosEnabled = true;
+
+        [Range(0f, 1f)]
+        [Tooltip("Escala de los HALOS (anillos/glow difractivos). Noche=1; de dia ~0 " +
+                 "(pupila contraida + fondo claro => los anillos se lavan). Lo setea ScenarioManager.")]
+        public float haloScale = 1f;
+
+        [Range(0f, 1f)]
+        [Tooltip("Escala de los DESTELLOS/starburst (rayos). De dia siguen visibles alrededor " +
+                 "del sol; clinicamente predominan sobre los halos a plena luz. Lo setea ScenarioManager.")]
+        public float starScale = 1f;
 
         // catalog key -> (global ojo izq, global ojo der)
         private static readonly Dictionary<string, (string l, string r)> Map = new()
@@ -49,7 +59,14 @@ namespace Simulador.Vision
             foreach (var kv in Map)
             {
                 if (state.Params.TryGetValue(kv.Key, out float v))
-                    Shader.SetGlobalFloat(left ? kv.Value.l : kv.Value.r, halosEnabled ? v : 0f);
+                {
+                    // Halos (anillos) y destellos (rayos) se escalan distinto por escenario.
+                    // destello_rayos es CANTIDAD de rayos: no se escala (la intensidad la da destello_intensity).
+                    float scale = kv.Key == "destello_intensity" ? starScale
+                                : kv.Key == "destello_rayos" ? 1f
+                                : haloScale; // halo_intensity, halo_extra_rings
+                    Shader.SetGlobalFloat(left ? kv.Value.l : kv.Value.r, halosEnabled ? v * scale : 0f);
+                }
             }
         }
 
