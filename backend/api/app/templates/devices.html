@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('dev.title') }}{% endblock %}
+{% block content %}
+<h1>{{ t('dev.title') }}</h1>
+
+<div class="card mb-6">
+  <h2>{{ t('dev.new') }}</h2>
+  <form method="post" action="/admin/devices" class="grid cols-5" style="gap: 12px;">
+    <input class="input" name="device_id" placeholder="{{ t('dev.device_id') }}" required />
+    <input class="input" name="name" placeholder="{{ t('dev.name') }}" required />
+    <select class="select" name="status">
+      <option value="active">{{ t('dev.status.active') }}</option>
+      <option value="pending">{{ t('dev.status.pending') }}</option>
+      <option value="suspended">{{ t('dev.status.suspended') }}</option>
+    </select>
+    <input class="input" name="license_expiry" type="date" title="{{ t('dev.expiry_hint') }}" />
+    <button class="btn btn-primary" type="submit">{{ t('dev.save') }}</button>
+    <input class="input span-full" name="notes" placeholder="{{ t('dev.notes') }}" />
+  </form>
+</div>
+
+<div class="card">
+  {% for d in devices %}
+    <form id="edit-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/edit"></form>
+    <form id="del-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/delete"
+          onsubmit="return confirm('{{ t('dev.delete_confirm') }}');"></form>
+  {% endfor %}
+
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t('dev.device_id') }}</th>
+        <th>{{ t('dev.name') }}</th>
+        <th>{{ t('dev.status') }}</th>
+        <th>{{ t('dev.last_seen') }}</th>
+        <th>{{ t('dev.last_ip') }}</th>
+        <th>{{ t('dev.expiry') }}</th>
+        <th class="right">{{ t('dev.actions') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for d in devices %}
+      <tr>
+        <td class="mono xs">{{ d.device_id }}</td>
+        <td><input form="edit-{{ d.id }}" class="input" name="name" value="{{ d.name }}" style="min-width: 140px;" /></td>
+        <td>
+          <select form="edit-{{ d.id }}" class="select" name="status">
+            <option value="active"    {% if d.status=='active' %}selected{% endif %}>{{ t('dev.status.active') }}</option>
+            <option value="pending"   {% if d.status=='pending' %}selected{% endif %}>{{ t('dev.status.pending') }}</option>
+            <option value="suspended" {% if d.status=='suspended' %}selected{% endif %}>{{ t('dev.status.suspended') }}</option>
+          </select>
+        </td>
+        <td class="muted xs nowrap">{% if d.last_seen %}{{ d.last_seen.strftime('%Y-%m-%d %H:%M') }}{% else %}{{ t('never') }}{% endif %}</td>
+        <td class="muted xs">{{ d.last_ip or '—' }}</td>
+        <td>
+          <input form="edit-{{ d.id }}" class="input" name="license_expiry" type="date"
+                 value="{{ d.license_expiry.isoformat() if d.license_expiry else '' }}" />
+        </td>
+        <td class="right nowrap">
+          <button form="edit-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.save') }}</button>
+          <button form="del-{{ d.id }}"  class="btn btn-danger btn-sm"  type="submit">{{ t('dev.delete') }}</button>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty-row">{{ t('dev.empty') }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('dash.title') }}{% endblock %}
+{% block content %}
+<h1>{{ t('dash.title') }}</h1>
+
+{% if insecure_pass or insecure_jwt %}
+<div class="banner-warn">
+  <div class="title">⚠ {{ t('dash.warn_title') }}</div>
+  <ul>
+    {% if insecure_pass %}<li>{{ t('dash.warn_default_pass') }}</li>{% endif %}
+    {% if insecure_jwt %}<li>{{ t('dash.warn_default_jwt') }}</li>{% endif %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="grid cols-4 mb-6">
+  <div class="card stat">
+    <div class="label">{{ t('dash.devices_total') }}</div>
+    <div class="value">{{ devices_total }}</div>
+    <div class="sub">{{ devices_active }} {{ t('dash.devices_active')|lower }}</div>
+  </div>
+  <div class="card stat">
+    <div class="label">{{ t('dash.active_version') }}</div>
+    <div class="value" style="font-size: 19px;">
+      {% if active_version %}APK {{ active_version.apk_version }}<br/><span class="hint">PCK {{ active_version.asset_version }}</span>{% else %}{{ t('dash.no_active') }}{% endif %}
+    </div>
+  </div>
+  <div class="card stat">
+    <div class="label">{{ t('dash.active_catalog') }}</div>
+    <div class="value" style="font-size: 19px;">
+      {% if active_catalog %}v{{ active_catalog.version }}{% else %}{{ t('dash.no_active') }}{% endif %}
+    </div>
+  </div>
+  <div class="card stat">
+    <div class="label">{{ t('nav.logs') }}</div>
+    <div class="value">{{ logs_total }}</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>{{ t('dash.last_events') }}</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t('log.timestamp') }}</th>
+        <th>{{ t('dev.device_id') }}</th>
+        <th>{{ t('log.event') }}</th>
+        <th>{{ t('log.detail') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in recent_logs %}
+      <tr>
+        <td class="muted nowrap xs">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td class="mono xs">{{ log.device_id }}</td>
+        <td>{{ log.event }}</td>
+        <td class="muted truncate">{{ log.detail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty-row">—</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

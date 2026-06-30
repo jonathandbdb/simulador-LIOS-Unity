@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('log.title') }}{% endblock %}
+{% block content %}
+<h1>{{ t('log.title') }}</h1>
+
+<div class="card mb-6">
+  <form method="get" action="/admin/logs" class="grid cols-5 items-end" style="gap: 12px;">
+    <label class="field">
+      <span>{{ t('log.device_filter') }}</span>
+      <input class="input" name="device_id" value="{{ filters.device_id or '' }}" />
+    </label>
+    <label class="field">
+      <span>{{ t('log.event_filter') }}</span>
+      <input class="input" name="event" value="{{ filters.event or '' }}" />
+    </label>
+    <label class="field">
+      <span>{{ t('log.from') }}</span>
+      <input class="input" name="date_from" type="date" value="{{ filters.date_from or '' }}" />
+    </label>
+    <label class="field">
+      <span>{{ t('log.to') }}</span>
+      <input class="input" name="date_to" type="date" value="{{ filters.date_to or '' }}" />
+    </label>
+    <div class="row">
+      <button class="btn btn-primary" type="submit">{{ t('log.apply') }}</button>
+      <a class="btn btn-ghost" href="/admin/logs">{{ t('log.reset') }}</a>
+    </div>
+  </form>
+  <div class="mt-2">
+    <a class="btn btn-ghost btn-sm" href="/admin/logs.csv?device_id={{ filters.device_id or '' }}&event={{ filters.event or '' }}&date_from={{ filters.date_from or '' }}&date_to={{ filters.date_to or '' }}">
+      ⬇ {{ t('log.export_csv') }}
+    </a>
+  </div>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t('log.timestamp') }}</th>
+        <th>{{ t('dev.device_id') }}</th>
+        <th>{{ t('log.event') }}</th>
+        <th>{{ t('log.detail') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in logs %}
+      <tr>
+        <td class="muted nowrap xs">{{ l.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td class="mono xs">{{ l.device_id }}</td>
+        <td>{{ l.event }}</td>
+        <td class="muted xs">{{ l.detail }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="empty-row">{{ t('log.empty') }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if total_pages > 1 %}
+  <div class="mt-4 row justify-center wrap">
+    {% for p in range(1, total_pages + 1) %}
+      <a href="?{{ qs }}&page={{ p }}" class="page-btn {{ 'on' if p == page }}">{{ p }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

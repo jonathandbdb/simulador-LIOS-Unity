@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('login.title') }}{% endblock %}
+{% block content %}
+<button type="button" class="theme-toggle theme-toggle-floating" id="theme-toggle-login" title="{{ t('theme.toggle') }}">
+  <svg class="icon-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.5"/><line x1="12" y1="1.5" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22.5"/><line x1="4.6" y1="4.6" x2="6.4" y2="6.4"/><line x1="17.6" y1="17.6" x2="19.4" y2="19.4"/><line x1="1.5" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22.5" y2="12"/><line x1="4.6" y1="19.4" x2="6.4" y2="17.6"/><line x1="17.6" y1="6.4" x2="19.4" y2="4.6"/></svg>
+  <svg class="icon-moon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+</button>
+
+<div style="min-height: 70vh; display: flex; align-items: center; justify-content: center;">
+  <div class="card" style="width: 100%; max-width: 420px; padding: 32px;">
+    <div class="center mb-4">
+      <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3" fill="var(--accent)" stroke="none"/></svg>
+      <h1 style="margin: 12px 0 2px;">{{ t('app.title') }}</h1>
+      <div class="hint">{{ t('login.title') }}</div>
+    </div>
+    {% if error %}
+    <div class="flash flash-err mb-4" style="margin: 0 0 16px;">{{ t('login.error') }}</div>
+    {% endif %}
+    <form method="post" action="/admin/login">
+      <label class="field mb-4">
+        <span>{{ t('login.username') }}</span>
+        <input class="input" name="username" autofocus required />
+      </label>
+      <label class="field mb-4">
+        <span>{{ t('login.password') }}</span>
+        <input class="input" name="password" type="password" required />
+      </label>
+      <button class="btn btn-primary w-full" type="submit">{{ t('login.submit') }}</button>
+    </form>
+    <div class="mt-4 row justify-center">
+      <div class="segmented">
+        {% for code in supported_langs %}
+          <a href="/admin/lang?code={{ code }}&next=/admin/login"
+             class="{{ 'on' if code == lang }}">{{ code|upper }}</a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

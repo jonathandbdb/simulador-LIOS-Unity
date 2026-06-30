@@ -1,0 +1,14 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+sqlmodel==0.0.22
+psycopg[binary]==3.2.3
+pydantic==2.10.3
+pydantic-settings==2.7.0
+slowapi==0.1.9
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-multipart==0.0.20
+boto3==1.35.84
+jinja2==3.1.4
+itsdangerous==2.2.0

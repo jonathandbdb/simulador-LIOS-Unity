@@ -1,0 +1,28 @@
+# Caddyfile — reverse proxy para el backend del simulador
+#
+# Modo local (sin TLS):  DOMAIN vacio en .env, PORT=8080.
+#                        El site address queda ":8080" = listen on all hosts.
+# Modo prod (con TLS):   DOMAIN=api.tu-dominio.com, SCHEME vacio, PORT=443.
+#                        El site address queda "https://api.tu-dominio.com".
+#
+# Truco: si DOMAIN esta vacio, el bloque queda como ":{$PORT}" — Caddy 2 lo
+# interpreta como "cualquier hostname en ese puerto, HTTP plano".
+# Si DOMAIN tiene valor, el bloque es "{$SCHEME}{$DOMAIN}:{$PORT}".
+
+{$SCHEME}{$DOMAIN}:{$PORT:8080} {
+	encode gzip
+
+	# Health check directo (no toca FastAPI cuando solo pingueamos Caddy)
+	handle /healthz {
+		respond "ok" 200
+	}
+
+	# Todo lo demas va al servicio api
+	reverse_proxy api:8000
+
+	log {
+		output stdout
+		format console
+	}
+}
+

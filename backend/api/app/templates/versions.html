@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('ver.title') }}{% endblock %}
+{% block content %}
+<h1>{{ t('ver.title') }}</h1>
+
+<div class="card mb-6">
+  <h2>{{ t('ver.new') }}</h2>
+  <p class="hint mb-4">{{ t('ver.upload_hint') }}</p>
+  <form method="post" action="/admin/versions" enctype="multipart/form-data" class="grid cols-3" style="gap: 12px;">
+    <label class="field">
+      <span>{{ t('ver.apk_version') }}</span>
+      <input class="input" name="apk_version" placeholder="1.0.5" required />
+    </label>
+    <label class="field">
+      <span>{{ t('ver.asset_version') }}</span>
+      <input class="input" name="asset_version" placeholder="2.1.0" required />
+    </label>
+    <label class="field">
+      <span>{{ t('ver.min_apk') }}</span>
+      <input class="input" name="min_apk_version" placeholder="1.0.0" required />
+    </label>
+    <label class="field span-full">
+      <span>{{ t('ver.changelog') }}</span>
+      <textarea name="changelog" rows="3"></textarea>
+    </label>
+    <label class="field">
+      <span>{{ t('ver.apk_file') }}</span>
+      <input class="input" name="apk_file" type="file" accept=".apk" required />
+    </label>
+    <label class="field">
+      <span>{{ t('ver.pck_file') }}</span>
+      <input class="input" name="pck_file" type="file" accept=".pck" required />
+    </label>
+    <div class="row items-end">
+      <button class="btn btn-primary w-full" type="submit">{{ t('ver.upload') }}</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>{{ t('ver.apk_version') }}</th>
+        <th>{{ t('ver.asset_version') }}</th>
+        <th>{{ t('ver.min_apk') }}</th>
+        <th>SHA256</th>
+        <th>{{ t('ver.changelog') }}</th>
+        <th>{{ t('lens.active') }}</th>
+        <th class="right">{{ t('dev.actions') }}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for v in versions %}
+      <tr>
+        <td>{{ v.apk_version }}</td>
+        <td>{{ v.asset_version }}</td>
+        <td>{{ v.min_apk_version }}</td>
+        <td class="mono xs muted">{{ v.pck_sha256[:12] }}…</td>
+        <td class="muted xs truncate">{{ v.changelog }}</td>
+        <td>{% if v.is_active %}<span class="badge badge-ok">{{ t('lens.active') }}</span>{% endif %}</td>
+        <td class="right nowrap">
+          {% if not v.is_active %}
+          <form method="post" action="/admin/versions/{{ v.id }}/activate" class="inline">
+            <button class="btn btn-success btn-sm" type="submit">{{ t('ver.activate') }}</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/admin/versions/{{ v.id }}/delete" class="inline"
+                onsubmit="return confirm('{{ t('dev.delete_confirm') }}');">
+            <button class="btn btn-danger btn-sm" type="submit">{{ t('ver.delete') }}</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty-row">{{ t('ver.empty') }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,104 @@
+# docker-compose.yml — Stack del backend del simulador
+#
+# Servicios:
+#   - api    : FastAPI + uvicorn (Python 3.12)
+#   - db     : Postgres 16
+#   - bucket : MinIO (S3-compatible) para APK/PCK
+#   - caddy  : reverse proxy con TLS automatico (Let's Encrypt en prod)
+#
+# Uso local (sin TLS):
+#   docker compose up -d
+#   curl http://localhost:8080/api/manifest.json
+#
+# Uso prod (con TLS):
+#   Editar .env: DOMAIN=api.tu-dominio.com, AUTO_HTTPS=on
+#   docker compose up -d
+#   curl https://api.tu-dominio.com/api/manifest.json
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-simulador}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-simulador}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-simulador}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  bucket:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - bucket_data:/data
+    ports:
+      # Console MinIO (solo expuesto local; en prod cerrar firewall)
+      - "127.0.0.1:9001:9001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./api
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-simulador}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-simulador}
+      S3_ENDPOINT: http://bucket:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      S3_BUCKET: ${S3_BUCKET:-simulador-updates}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
+      JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
+      ADMIN_DEFAULT_USER: ${ADMIN_DEFAULT_USER:-admin}
+      ADMIN_DEFAULT_PASS: ${ADMIN_DEFAULT_PASS:-admin123}
+      API_KEY_CI: ${API_KEY_CI:-dev-ci-key}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    volumes:
+      # El seed lee este archivo para sembrar el catalogo de lentes inicial
+      # (mismos lentes que tiene embebidos el APK como fallback).
+      - ../defaults/lentes.json:/seed/lentes.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      bucket:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      # OJO: usamos ${VAR-default} (sin dos puntos) para que un DOMAIN vacio
+      # en .env no caiga al default. Asi en modo local podemos dejar DOMAIN=
+      # y Caddy escucha en cualquier hostname (clave para acceder por IP de
+      # LAN desde el Quest/celular/otra PC).
+      DOMAIN: ${DOMAIN-localhost}
+      PORT: ${PORT:-8080}
+      # SCHEME=http:// fuerza HTTP plano (modo local).
+      # SCHEME vacio = Caddy decide (auto HTTPS para dominios reales en prod).
+      SCHEME: ${SCHEME-http://}
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  bucket_data:
+  caddy_data:
+  caddy_config:

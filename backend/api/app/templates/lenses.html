@@ -1,0 +1,382 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('lens.title') }}{% endblock %}
+{% block content %}
+<h1>{{ t('lens.title') }}</h1>
+
+<div class="sidebar-layout">
+  {# === Listado de catalogos (izquierda) === #}
+  <div class="card">
+    <h2>{{ t('lens.title') }}</h2>
+    {% if catalogs %}
+    <table>
+      <thead><tr><th>{{ t('lens.version') }}</th><th>{{ t('lens.lens_count') }}</th><th></th></tr></thead>
+      <tbody>
+      {% for c in catalogs %}
+        <tr>
+          <td>
+            v{{ c.version }}
+            {% if c.is_active %}<span class="badge badge-ok">{{ t('lens.active') }}</span>{% endif %}
+            <div class="hint xs">{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+          </td>
+          <td>{{ c.lens_count }}</td>
+          <td class="right">
+            {% if not c.is_active %}
+            <form method="post" action="/admin/lenses/{{ c.id }}/activate" class="inline">
+              <button class="btn btn-success btn-sm" type="submit">{{ t('lens.activate') }}</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p class="hint">—</p>
+    {% endif %}
+  </div>
+
+  {# === Editor (derecha) — tabs Visual / JSON === #}
+  <div class="card">
+    <div class="row-between mb-4">
+      <div class="segmented">
+        <button type="button" id="tab-visual-btn" class="on">{{ t('lens.editor_visual') }}</button>
+        <button type="button" id="tab-json-btn">{{ t('lens.editor_json') }}</button>
+      </div>
+    </div>
+
+    {# Formulario unico: el JS sincroniza el editor visual al textarea JSON antes del submit. #}
+    <form method="post" action="/admin/lenses" id="lens-form" onsubmit="return syncBeforeSubmit();">
+      <div class="grid cols-3 items-end mb-4" style="gap: 12px;">
+        <label class="field">
+          <span>{{ t('lens.version') }}</span>
+          <input class="input" name="version" id="catalog-version" value="{{ active_version }}" required />
+        </label>
+        <div class="row justify-end span-2">
+          <button type="button" class="btn btn-ghost" id="add-lens-btn">{{ t('lens.add_lens') }}</button>
+          <button type="submit" class="btn btn-primary">{{ t('lens.save') }}</button>
+        </div>
+      </div>
+
+      {# === Vista visual: cards/accordion === #}
+      <div id="tab-visual">
+        <div id="lens-cards"></div>
+        <p id="empty-msg" class="empty-row hidden">{{ t('lens.empty_table') }}</p>
+        <p class="hint mt-2">{{ t('lens.range_hint') }}</p>
+      </div>
+
+      {# === Vista JSON crudo === #}
+      <div id="tab-json" class="hidden">
+        <p class="hint mb-2">{{ t('lens.json_hint') }}</p>
+        <textarea name="json_data" id="json-data" rows="24" class="mono xs">{{ active_data }}</textarea>
+      </div>
+    </form>
+  </div>
+</div>
+
+{# === JS del editor visual === #}
+<script>
+(function () {
+  const cardsHost     = document.getElementById('lens-cards');
+  const emptyMsg      = document.getElementById('empty-msg');
+  const tabVisualBtn  = document.getElementById('tab-visual-btn');
+  const tabJsonBtn    = document.getElementById('tab-json-btn');
+  const tabVisual     = document.getElementById('tab-visual');
+  const tabJson       = document.getElementById('tab-json');
+  const addBtn        = document.getElementById('add-lens-btn');
+  const jsonTextarea  = document.getElementById('json-data');
+
+  // Rangos por defecto cuando el param no existe en el JSON original.
+  // Fuente: defaults/lentes.json v0.3.0-clinical.
+  const DEFAULT_RANGES = {
+    foco_lejos_m:       { min: 0.0, max: 20.0 },
+    foco_intermedio_m:  { min: 0.0, max: 20.0 },
+    foco_cerca_m:       { min: 0.0, max: 20.0 },
+    profundidad_foco_m: { min: 0.1, max: 5.0 },
+    desenfoque_max:     { min: 0.0, max: 1.0 },
+    halo_intensity:     { min: 0.0, max: 1.0 },
+    halo_extra_rings:   { min: 0.0, max: 1.0 },
+    contrast_loss:      { min: 0.0, max: 0.6 },
+    destello_intensity: { min: 0.0, max: 1.0 },
+    destello_rayos:     { min: 0.0, max: 16.0 },
+  };
+
+  // Orden clinico de presentacion (igual que la tablet): focos primero,
+  // despues disfotopsias. Esto es SOLO orden de UI — la serializacion
+  // preserva el objeto original completo (params desconocidos incluidos).
+  const GROUPS = [
+    { label: {{ t('lens.group.focos')|tojson }}, keys: [
+      'foco_lejos_m', 'foco_intermedio_m', 'foco_cerca_m',
+      'profundidad_foco_m', 'desenfoque_max',
+    ]},
+    { label: {{ t('lens.group.disfotopsias')|tojson }}, keys: [
+      'halo_intensity', 'halo_extra_rings',
+      'destello_intensity', 'destello_rayos', 'contrast_loss',
+    ]},
+  ];
+  const KNOWN_KEYS = GROUPS.flatMap(g => g.keys);
+
+  const PARAM_LABELS = {
+    foco_lejos_m:       {{ t('lens.param.foco_lejos')|tojson }},
+    foco_intermedio_m:  {{ t('lens.param.foco_inter')|tojson }},
+    foco_cerca_m:       {{ t('lens.param.foco_cerca')|tojson }},
+    profundidad_foco_m: {{ t('lens.param.prof_foco')|tojson }},
+    desenfoque_max:     {{ t('lens.param.desenfoque')|tojson }},
+    halo_intensity:     {{ t('lens.param.halo')|tojson }},
+    halo_extra_rings:   {{ t('lens.param.halo_rings')|tojson }},
+    contrast_loss:      {{ t('lens.param.contrast')|tojson }},
+    destello_intensity: {{ t('lens.param.destello_int')|tojson }},
+    destello_rayos:     {{ t('lens.param.destello_rayos')|tojson }},
+  };
+
+  // Estado: el objeto catalogo parseado COMPLETO. Los inputs editan
+  // directamente las lentes crudas (edicion in-place), asi que claves
+  // extra, min/max y campos desconocidos nunca se pierden al guardar.
+  let catalogObj = { version: '1.0.0', catalogo: [] };
+
+  function loadFromJson() {
+    try {
+      const parsed = JSON.parse(jsonTextarea.value || '{}');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        catalogObj = parsed;
+      } else {
+        catalogObj = {};
+      }
+    } catch (e) {
+      console.warn('JSON invalido al cargar, empezando vacio:', e);
+      catalogObj = {};
+    }
+    if (!Array.isArray(catalogObj.catalogo)) catalogObj.catalogo = [];
+    if (typeof catalogObj.version !== 'string') catalogObj.version = '1.0.0';
+  }
+
+  function numOr(v, fallback) {
+    const n = parseFloat(v);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  // Valor actual del param (default si es objeto, el numero si es plano,
+  // null si la lente no lo tiene).
+  function paramValue(lens, key) {
+    const p = (lens.params || {})[key];
+    if (p && typeof p === 'object') return numOr(p.default, null);
+    if (typeof p === 'number') return p;
+    return null;
+  }
+
+  // Escribe el default del param preservando min/max existentes. Solo crea
+  // la entrada cuando el usuario realmente edita (round-trip limpio).
+  function setParam(lens, key, value) {
+    if (!lens.params || typeof lens.params !== 'object') lens.params = {};
+    const existing = lens.params[key];
+    if (existing && typeof existing === 'object') {
+      existing.default = value;
+    } else {
+      const r = DEFAULT_RANGES[key] || { min: 0, max: 1 };
+      lens.params[key] = { default: value, min: r.min, max: r.max };
+    }
+  }
+
+  function rangeText(lens, key) {
+    const p = (lens.params || {})[key];
+    if (p && typeof p === 'object' && 'min' in p && 'max' in p) {
+      return p.min + ' — ' + p.max;
+    }
+    const r = DEFAULT_RANGES[key];
+    return r ? (r.min + ' — ' + r.max) : '';
+  }
+
+  function el(tag, cls, text) {
+    const n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined) n.textContent = text;
+    return n;
+  }
+
+  function buildParamField(lens, key, labelText) {
+    const field = el('label', 'field');
+    field.appendChild(el('span', '', labelText));
+    const input = el('input', 'input');
+    input.type = 'number';
+    input.step = key === 'destello_rayos' ? '1' : '0.01';
+    const v = paramValue(lens, key);
+    if (v !== null) input.value = v;
+    input.addEventListener('input', () => {
+      setParam(lens, key, numOr(input.value, 0));
+    });
+    field.appendChild(input);
+    field.appendChild(el('div', 'param-range', rangeText(lens, key)));
+    return field;
+  }
+
+  function buildCard(lens, idx) {
+    const details = el('details', 'lens-card');
+    if (!String(lens.nombre || '').trim()) details.open = true;
+
+    // --- Header ---
+    const summary = el('summary');
+    const nameInput = el('input', 'input');
+    nameInput.value = lens.nombre || '';
+    nameInput.placeholder = {{ t('lens.lens_name')|tojson }};
+    // Click en el input no debe colapsar el accordion.
+    nameInput.addEventListener('click', ev => ev.preventDefault());
+    nameInput.addEventListener('input', () => { lens.nombre = nameInput.value; });
+    summary.appendChild(nameInput);
+    summary.appendChild(el('span', 'lens-id', lens.id || '(auto)'));
+
+    const delBtn = el('button', 'btn btn-danger btn-sm', {{ t('lens.delete_row')|tojson }});
+    delBtn.type = 'button';
+    delBtn.addEventListener('click', ev => {
+      ev.preventDefault();
+      if (confirm({{ t('lens.delete_confirm')|tojson }})) {
+        catalogObj.catalogo.splice(idx, 1);
+        renderCards();
+      }
+    });
+    summary.appendChild(delBtn);
+
+    const chev = el('span', 'chev');
+    chev.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>';
+    summary.appendChild(chev);
+    details.appendChild(summary);
+
+    // --- Cuerpo ---
+    const body = el('div', 'body');
+
+    const descField = el('label', 'field');
+    descField.appendChild(el('span', '', {{ t('lens.lens_desc')|tojson }}));
+    const desc = document.createElement('textarea');
+    desc.rows = 2;
+    desc.placeholder = {{ t('lens.desc_placeholder')|tojson }};
+    desc.value = lens.descripcion || '';
+    desc.addEventListener('input', () => { lens.descripcion = desc.value; });
+    descField.appendChild(desc);
+    body.appendChild(descField);
+
+    for (const group of GROUPS) {
+      const fs = document.createElement('fieldset');
+      const lg = document.createElement('legend');
+      lg.textContent = group.label;
+      fs.appendChild(lg);
+      const grid = el('div', 'param-grid');
+      for (const key of group.keys) {
+        grid.appendChild(buildParamField(lens, key, PARAM_LABELS[key] || key));
+      }
+      fs.appendChild(grid);
+      body.appendChild(fs);
+    }
+
+    // Params desconocidos (no estan en el esquema actual): visibles y
+    // editables igual, asi un catalogo futuro no queda oculto.
+    const extraKeys = Object.keys(lens.params || {}).filter(k => !KNOWN_KEYS.includes(k));
+    if (extraKeys.length > 0) {
+      const fs = document.createElement('fieldset');
+      const lg = document.createElement('legend');
+      lg.textContent = 'Otros';
+      fs.appendChild(lg);
+      const grid = el('div', 'param-grid');
+      for (const key of extraKeys) {
+        grid.appendChild(buildParamField(lens, key, key));
+      }
+      fs.appendChild(grid);
+      body.appendChild(fs);
+    }
+
+    details.appendChild(body);
+    return details;
+  }
+
+  function renderCards() {
+    cardsHost.innerHTML = '';
+    const arr = catalogObj.catalogo;
+    emptyMsg.classList.toggle('hidden', arr.length > 0);
+    arr.forEach((lens, idx) => cardsHost.appendChild(buildCard(lens, idx)));
+  }
+
+  // Convierte un nombre humano en un ID slug (lowercase, alfanumerico + _).
+  function slugify(name) {
+    return String(name)
+      .toLowerCase()
+      .normalize('NFD').replace(/[̀-ͯ]/g, '') // saca tildes
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '');
+  }
+
+  // Autogenera IDs solo para lentes SIN id (las existentes conservan el
+  // suyo: los visores y la tablet referencian lentes por id, regenerarlos
+  // en cada guardado los invalidaria). Colisiones: sufijo _2, _3, ...
+  function assignAutoIds() {
+    const used = new Set();
+    for (const lens of catalogObj.catalogo) {
+      if (lens.id) used.add(lens.id);
+    }
+    for (const lens of catalogObj.catalogo) {
+      if (lens.id) continue;
+      const base = slugify(lens.nombre || 'lente') || 'lente';
+      let candidate = base;
+      let n = 2;
+      while (used.has(candidate)) {
+        candidate = base + '_' + n;
+        n++;
+      }
+      lens.id = candidate;
+      used.add(candidate);
+    }
+  }
+
+  function serializeToJson() {
+    catalogObj.version = document.getElementById('catalog-version').value.trim() || '1.0.0';
+    assignAutoIds();
+    jsonTextarea.value = JSON.stringify(catalogObj, null, 2);
+  }
+
+  // ===== Tabs =====
+  function activateTab(which) {
+    const visual = which === 'visual';
+    if (visual) {
+      // Si venimos del JSON crudo, recargamos por si el usuario edito a mano.
+      loadFromJson();
+      renderCards();
+    } else {
+      // Pasamos a JSON: sincronizamos desde el editor visual.
+      serializeToJson();
+    }
+    tabVisual.classList.toggle('hidden', !visual);
+    tabJson.classList.toggle('hidden', visual);
+    tabVisualBtn.classList.toggle('on', visual);
+    tabJsonBtn.classList.toggle('on', !visual);
+  }
+
+  tabVisualBtn.addEventListener('click', () => activateTab('visual'));
+  tabJsonBtn.addEventListener('click', () => activateTab('json'));
+
+  addBtn.addEventListener('click', () => {
+    const fresh = { id: '', nombre: '', descripcion: '', params: {} };
+    for (const k of KNOWN_KEYS) {
+      fresh.params[k] = { default: 0, min: DEFAULT_RANGES[k].min, max: DEFAULT_RANGES[k].max };
+    }
+    catalogObj.catalogo.push(fresh);
+    renderCards();
+  });
+
+  // Antes de enviar el form, si estamos en la pestana visual sincronizamos al JSON.
+  window.syncBeforeSubmit = function () {
+    if (!tabJson.classList.contains('hidden')) {
+      // En modo JSON: no tocamos, el textarea ya tiene el contenido del usuario.
+      return true;
+    }
+    // Validacion: nombre obligatorio en cada lente. ID se autogenera.
+    const sinNombre = catalogObj.catalogo.some(l => !String(l.nombre || '').trim());
+    if (sinNombre) {
+      alert({{ t('lens.name_required')|tojson }});
+      return false;
+    }
+    serializeToJson();
+    return true;
+  };
+
+  // Init.
+  loadFromJson();
+  renderCards();
+})();
+</script>
+{% endblock %}

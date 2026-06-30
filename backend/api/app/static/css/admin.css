@@ -1,0 +1,318 @@
+/* ====================================================================
+   Panel admin — Simulador VR oftalmologico
+   Hoja unica, sin dependencias externas. Mismo lenguaje visual que la
+   app de tablet (features/tablet/theme/theme_builder.gd): dos paletas
+   (clara/oscura) via custom properties + [data-theme].
+   ==================================================================== */
+
+@font-face {
+  font-family: "Inter";
+  src: url("/static/fonts/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Inter";
+  src: url("/static/fonts/Inter-SemiBold.ttf") format("truetype");
+  font-weight: 600;
+  font-display: swap;
+}
+
+/* ------------------------------------------------------------------
+   Tokens — paleta clara (default) y oscura. Valores identicos a las
+   constantes DARK/LIGHT de la tablet.
+   ------------------------------------------------------------------ */
+:root, [data-theme="light"] {
+  --bg: #F5F7FA;
+  --surface: #FFFFFF;
+  --raised: #EDF1F6;
+  --hover: #E3E9F1;
+  --border: #D5DCE5;
+  --text: #1A2330;
+  --text-2: #5A6878;
+  --text-3: #8895A5;
+  --accent: #2563EB;
+  --accent-press: #1D4FBF;
+  --accent-soft: rgba(37, 99, 235, 0.12);
+  --on-accent: #FFFFFF;
+  --ok: #16A34A;
+  --warn: #D97706;
+  --err: #DC2626;
+}
+[data-theme="dark"] {
+  --bg: #11151C;
+  --surface: #1B212B;
+  --raised: #242C38;
+  --hover: #2B3442;
+  --border: #313C4B;
+  --text: #E9EEF5;
+  --text-2: #9AA7B8;
+  --text-3: #6C7A8C;
+  --accent: #17A398;
+  --accent-press: #0F7E76;
+  --accent-soft: rgba(23, 163, 152, 0.15);
+  --on-accent: #04201D;
+  --ok: #3FCF8E;
+  --warn: #F2B33D;
+  --err: #E5655E;
+}
+
+/* ------------------------------------------------------------------
+   Base
+   ------------------------------------------------------------------ */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", ui-sans-serif, system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+}
+h1 { font-size: 22px; font-weight: 600; margin: 0 0 24px; }
+h2 { font-size: 17px; font-weight: 600; margin: 0 0 16px; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+main.container { max-width: 1180px; margin: 0 auto; padding: 24px; }
+
+/* ------------------------------------------------------------------
+   Navbar
+   ------------------------------------------------------------------ */
+.nav {
+  display: flex; align-items: center; gap: 20px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  padding: 10px 24px;
+}
+.nav .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-weight: 600; font-size: 16px; color: var(--text);
+}
+.nav .brand svg { color: var(--accent); }
+.nav .links { display: flex; gap: 4px; }
+.nav .links a {
+  color: var(--text-2); padding: 8px 12px; border-radius: 8px;
+  font-size: 14px; text-decoration: none;
+}
+.nav .links a:hover { color: var(--text); background: var(--raised); }
+.nav .links a.active { color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.nav .right { margin-left: auto; display: flex; align-items: center; gap: 12px; font-size: 14px; }
+.nav .user { color: var(--text-3); }
+
+/* ------------------------------------------------------------------
+   Cards / tablas
+   ------------------------------------------------------------------ */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 14px; }
+th { font-weight: 600; color: var(--text-2); font-size: 13px; }
+tr:last-child td { border-bottom: none; }
+
+/* ------------------------------------------------------------------
+   Forms
+   ------------------------------------------------------------------ */
+.input, .select, textarea {
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text);
+  width: 100%;
+  font-family: inherit;
+  font-size: 14px;
+}
+.input:focus, .select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.input::placeholder, textarea::placeholder { color: var(--text-3); }
+.field { display: block; }
+.field > span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 4px; }
+fieldset {
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; margin: 0;
+}
+legend { font-size: 13px; font-weight: 600; color: var(--text-2); padding: 0 6px; }
+
+/* ------------------------------------------------------------------
+   Botones
+   ------------------------------------------------------------------ */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 16px; border-radius: 8px;
+  font-weight: 600; font-size: 14px; font-family: inherit;
+  border: 1px solid transparent;
+  cursor: pointer; text-decoration: none;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.btn:hover { text-decoration: none; }
+.btn-sm { padding: 5px 10px; font-size: 13px; }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
+.btn-primary:hover { background: var(--accent-press); }
+.btn-danger { background: transparent; color: var(--err); border-color: var(--err); }
+.btn-danger:hover { background: var(--err); color: var(--surface); }
+.btn-success { background: transparent; color: var(--ok); border-color: var(--ok); }
+.btn-success:hover { background: var(--ok); color: var(--surface); }
+.btn-ghost { background: transparent; border-color: var(--border); color: var(--text-2); }
+.btn-ghost:hover { background: var(--raised); color: var(--text); }
+
+/* ------------------------------------------------------------------
+   Badges (pildora con punto de color)
+   ------------------------------------------------------------------ */
+.badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 2px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+  background: var(--raised); border: 1px solid var(--border);
+}
+.badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-3); }
+.badge-ok   { color: var(--ok); }
+.badge-ok::before   { background: var(--ok); }
+.badge-warn { color: var(--warn); }
+.badge-warn::before { background: var(--warn); }
+.badge-err  { color: var(--err); }
+.badge-err::before  { background: var(--err); }
+
+/* ------------------------------------------------------------------
+   Segmented (tabs, idioma)
+   ------------------------------------------------------------------ */
+.segmented {
+  display: inline-flex; gap: 2px;
+  background: var(--raised); border: 1px solid var(--border);
+  border-radius: 8px; padding: 2px;
+}
+.segmented button, .segmented a {
+  border: none; background: transparent; cursor: pointer;
+  padding: 5px 12px; border-radius: 6px;
+  font-size: 13px; font-weight: 600; font-family: inherit;
+  color: var(--text-2); text-decoration: none;
+}
+.segmented button:hover, .segmented a:hover { color: var(--text); text-decoration: none; }
+.segmented .on { background: var(--accent); color: var(--on-accent); }
+.segmented .on:hover { color: var(--on-accent); }
+
+/* ------------------------------------------------------------------
+   Toggle de tema (sol/luna)
+   ------------------------------------------------------------------ */
+.theme-toggle {
+  background: transparent; border: 1px solid var(--border); border-radius: 8px;
+  width: 36px; height: 36px; cursor: pointer; color: var(--text-2);
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.theme-toggle:hover { background: var(--raised); color: var(--text); }
+[data-theme="dark"] .icon-moon { display: none; }
+[data-theme="light"] .icon-sun { display: none; }
+.theme-toggle-floating { position: fixed; top: 16px; right: 16px; }
+
+/* ------------------------------------------------------------------
+   Flash / banner
+   ------------------------------------------------------------------ */
+.flash {
+  display: flex; align-items: center; gap: 8px;
+  border-radius: 10px; padding: 10px 16px; margin: 16px 24px 0;
+  font-size: 14px; background: var(--surface); border: 1px solid var(--border);
+}
+.flash::before { content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.flash-ok { border-color: var(--ok); }
+.flash-ok::before { background: var(--ok); }
+.flash-err { border-color: var(--err); }
+.flash-err::before { background: var(--err); }
+
+.banner-warn {
+  border: 1px solid var(--warn);
+  background: var(--surface);
+  border-radius: 12px; padding: 14px 18px; margin-bottom: 24px;
+  font-size: 14px;
+}
+.banner-warn .title { font-weight: 600; color: var(--warn); margin-bottom: 4px; }
+.banner-warn ul { margin: 4px 0 0; padding-left: 20px; color: var(--text-2); }
+
+/* ------------------------------------------------------------------
+   Dashboard stats
+   ------------------------------------------------------------------ */
+.stat .label { font-size: 13px; color: var(--text-2); }
+.stat .value { font-size: 26px; font-weight: 600; margin-top: 6px; }
+.stat .sub   { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+
+/* ------------------------------------------------------------------
+   Editor de lentes (cards/accordion)
+   ------------------------------------------------------------------ */
+.lens-card {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--surface); margin-bottom: 10px;
+}
+.lens-card summary {
+  list-style: none; cursor: pointer;
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px;
+}
+.lens-card summary::-webkit-details-marker { display: none; }
+.lens-card summary .chev { margin-left: auto; color: var(--text-3); transition: transform 0.15s; flex: none; }
+.lens-card[open] summary .chev { transform: rotate(180deg); }
+.lens-card summary .input { max-width: 320px; }
+.lens-card .lens-id { font-size: 12px; color: var(--text-3); font-family: ui-monospace, monospace; }
+.lens-card .body { padding: 4px 14px 14px; display: grid; gap: 12px; }
+.param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.param-grid .field > span { font-size: 12px; }
+.param-range { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+
+/* ------------------------------------------------------------------
+   Paginacion
+   ------------------------------------------------------------------ */
+.page-btn {
+  display: inline-block; padding: 4px 10px; border-radius: 6px;
+  font-size: 13px; color: var(--text-2); text-decoration: none;
+}
+.page-btn:hover { background: var(--raised); color: var(--text); text-decoration: none; }
+.page-btn.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+
+/* ------------------------------------------------------------------
+   Utilidades minimas (reemplazo de las clases Tailwind usadas)
+   ------------------------------------------------------------------ */
+.grid { display: grid; gap: 16px; }
+.cols-2 { grid-template-columns: repeat(2, 1fr); }
+.cols-3 { grid-template-columns: repeat(3, 1fr); }
+.cols-4 { grid-template-columns: repeat(4, 1fr); }
+.cols-5 { grid-template-columns: repeat(5, 1fr); }
+.span-2 { grid-column: span 2; }
+.span-3 { grid-column: span 3; }
+.span-full { grid-column: 1 / -1; }
+.sidebar-layout { display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: start; }
+@media (max-width: 900px) {
+  .cols-2, .cols-3, .cols-4, .cols-5 { grid-template-columns: 1fr; }
+  .span-2, .span-3 { grid-column: auto; }
+  .sidebar-layout { grid-template-columns: 1fr; }
+  .nav { flex-wrap: wrap; }
+}
+.row { display: flex; align-items: center; gap: 8px; }
+.row-between { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.items-end { align-items: end; }
+.justify-end { justify-content: flex-end; }
+.justify-center { justify-content: center; }
+.wrap { flex-wrap: wrap; }
+.grow { flex: 1; }
+.mb-2 { margin-bottom: 8px; }
+.mb-4 { margin-bottom: 16px; }
+.mb-6 { margin-bottom: 24px; }
+.mt-2 { margin-top: 8px; }
+.mt-4 { margin-top: 16px; }
+.w-full { width: 100%; }
+.right { text-align: right; }
+.center { text-align: center; }
+.muted { color: var(--text-2); }
+.hint { color: var(--text-3); font-size: 13px; }
+.small { font-size: 13px; }
+.xs { font-size: 12px; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.nowrap { white-space: nowrap; }
+.truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hidden { display: none; }
+.inline { display: inline; }
+.empty-row { text-align: center; color: var(--text-3); padding: 24px 0; }

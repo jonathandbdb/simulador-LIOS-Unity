@@ -115,3 +115,6 @@ InitTestScene*.unity*
 
 # Config local del IDE (VS Code)
 .vscode/
+
+# Secrets del backend (usar backend/.env.example como plantilla)
+backend/.env
