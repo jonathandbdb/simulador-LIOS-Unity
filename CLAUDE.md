@@ -242,9 +242,3 @@ remite a esta sección).
 > (`urp-rendergraph-patterns`, `il2cpp-networking-gotchas`, `build-pipeline`, `git-lios`,
 > `minimal-footprint`, `unity-mcp-workflow`) como **auto-sanación degradada**. Reportá en el
 > envelope `Skill resolution: injected | fallback | none`.
-
-## Versión
-
-Orquestador del enjambre Simulador LIOs — adaptado del enjambre NEXIT/Odoo (Result Envelope,
-contratos, tiering) a un proyecto Unity con verificación mecánica real vía MCP. Compatible con
-Claude Code. Arquitectura para humanos: `.claude/ENJAMBRE.md`.

@@ -14,9 +14,6 @@ subagentes **nunca se hablan entre sí**: toda comunicación pasa por el orquest
 OK/BLOCKED/NEEDS_INPUT/PARTIAL/FAILED). El `Status` parseable hace fiables las decisiones del
 orquestador (frenar, repreguntar, reintentar) sin interpretar prosa libre.
 
-Linaje: este diseño adapta el enjambre NEXIT/Odoo (orquestador único, envelope, contratos,
-tiering, hooks, minimal-footprint) a un proyecto Unity/VR.
-
 ## 2. Roster y tiering
 
 | Agente | Modelo | Rol | ¿Por qué ese modelo? |
@@ -51,16 +48,16 @@ Agentes, skills, comandos y hooks **referencian** estas capas, no las copian. La
 
 ## 4. Docs vivas en lugar de SDD
 
-El enjambre Odoo usa specs formales con estados y versionado. Acá se eligió deliberadamente
+El enjambre original usa specs formales con estados y versionado. Acá se eligió deliberadamente
 algo más liviano: **una doc viva por sistema** (`docs/`) con la regla
 **leer-primero / actualizar-al-cerrar** (protocolo en `docs/README.md`). Mismo efecto
 anti-drift (la doc alimenta el contexto, el código alimenta la doc) sin la burocracia de
 estados y version-sync, adecuado para un dev único. El hook `post_edit.sh` recuerda la
 actualización tras cada edición.
 
-## 5. Verificación real (la mejora central sobre el diseño Odoo)
+## 5. Verificación real (la mejora central sobre el diseño original)
 
-El enjambre Odoo validaba con regex (lint por patrones). Acá hay **ground truth mecánico**:
+El enjambre original validaba con regex (lint por patrones). Acá hay **ground truth mecánico**:
 
 - **Compile-gate**: `unity_get_compilation_errors` vía MCP es LA verdad de compilación; ningún
   cambio de `.cs` se acepta sin ese chequeo limpio (los shaders se verifican por consola).

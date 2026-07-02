@@ -119,8 +119,5 @@ InitTestScene*.unity*
 # Secrets del backend (usar backend/.env.example como plantilla)
 backend/.env
 
-# Enjambre Odoo de referencia (repo git ajeno anidado, no es parte de este proyecto)
-.claude (enjambre odoo nexit)/
-
 # Config local de Claude Code (permisos por usuario, no committear)
 .claude/settings.local.json

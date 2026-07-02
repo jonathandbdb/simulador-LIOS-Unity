@@ -51,5 +51,5 @@ y se lista en "Riesgos / pendientes" del envelope.
 
 - A lo que el usuario ya decidió explícitamente (no "simplifiques" su pedido).
 - A la estructura obligatoria del proyecto (asmdefs, docs, tests de lógica pura).
-- Linaje: adaptación de la skill homónima del enjambre NEXIT/Odoo (a su vez inspirada en el
+- Linaje: adaptación de la skill homónima del enjambre original (a su vez inspirada en el
   plugin *ponytail*, MIT).
