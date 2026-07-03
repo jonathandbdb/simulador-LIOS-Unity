@@ -98,6 +98,70 @@ namespace Simulador.Tests
         }
 
         [Test]
+        public void BuildEyeState_OverrideAboveMax_ClampsToMax()
+        {
+            var cat = CatalogParser.Parse(PartialJson);
+            var lens = cat.Catalogo.Find(l => l.Id == "panoptix"); // contrast_loss: min 0, max 0.6
+            var overrides = new Dictionary<string, float> { { "contrast_loss", 999f } };
+            var state = LensEngine.BuildEyeState(lens, overrides);
+
+            Assert.AreEqual(0.6f, state.Params["contrast_loss"], 1e-4f);
+        }
+
+        [Test]
+        public void BuildEyeState_OverrideBelowMin_ClampsToMin()
+        {
+            var cat = CatalogParser.Parse(PartialJson);
+            var lens = cat.Catalogo.Find(l => l.Id == "panoptix"); // foco_lejos_m: min 0, max 20
+            var overrides = new Dictionary<string, float> { { "foco_lejos_m", -50f } };
+            var state = LensEngine.BuildEyeState(lens, overrides);
+
+            Assert.AreEqual(0.0f, state.Params["foco_lejos_m"], 1e-4f);
+        }
+
+        [Test]
+        public void BuildEyeState_OverrideInRange_PassesIntact()
+        {
+            var cat = CatalogParser.Parse(PartialJson);
+            var lens = cat.Catalogo.Find(l => l.Id == "panoptix"); // contrast_loss: min 0, max 0.6
+            // Incluye los bordes del rango (inclusive) ademas de un valor intermedio.
+            var overrides = new Dictionary<string, float> { { "contrast_loss", 0.45f } };
+            var state = LensEngine.BuildEyeState(lens, overrides);
+            Assert.AreEqual(0.45f, state.Params["contrast_loss"], 1e-4f);
+
+            Assert.AreEqual(0f, LensEngine.ClampToSpec("contrast_loss", 0f, lens.Params), 1e-4f);
+            Assert.AreEqual(0.6f, LensEngine.ClampToSpec("contrast_loss", 0.6f, lens.Params), 1e-4f);
+        }
+
+        [Test]
+        public void ClampToSpec_UnknownParam_PassesThroughUnclamped()
+        {
+            var cat = CatalogParser.Parse(PartialJson);
+            var lens = cat.Catalogo.Find(l => l.Id == "panoptix");
+
+            // Clave sin spec conocido (param nuevo del backend, o typo): no explota, no clampea.
+            float result = LensEngine.ClampToSpec("param_desconocido", 12345f, lens.Params);
+            Assert.AreEqual(12345f, result, 1e-4f);
+
+            // BuildEyeState tambien debe dejarlo pasar intacto dentro del override.
+            var overrides = new Dictionary<string, float> { { "param_desconocido", -7f } };
+            var state = LensEngine.BuildEyeState(lens, overrides);
+            Assert.AreEqual(-7f, state.Params["param_desconocido"], 1e-4f);
+        }
+
+        [Test]
+        public void ClampToSpec_MissingMinMax_PassesThroughUnclamped()
+        {
+            // Simula un ParamSpec sin 'min'/'max' en el JSON: al ser float no-nullable,
+            // Newtonsoft los deserializa en 0f,0f (max <= min) -> no hay rango valido, no clampea.
+            var specs = new Dictionary<string, ParamSpec>
+            {
+                { "sin_rango", new ParamSpec { Default = 5f } }
+            };
+            Assert.AreEqual(999f, LensEngine.ClampToSpec("sin_rango", 999f, specs), 1e-4f);
+        }
+
+        [Test]
         public void ComputeBlend_TrueOnlyWhenBothSetAndDifferent()
         {
             Assert.IsTrue(LensEngine.ComputeBlend("monofocal", "panoptix"));
@@ -138,16 +202,38 @@ namespace Simulador.Tests
             Assert.IsTrue(File.Exists(path), $"Falta {path}");
             var cat = CatalogParser.Parse(File.ReadAllText(path));
             Assert.IsNotNull(cat);
-            Assert.AreEqual("0.3.0-clinical", cat.Version);
+            Assert.AreEqual("0.5.0-clinical", cat.Version);
             Assert.AreEqual(3, cat.Catalogo.Count);
 
             var pan = cat.Catalogo.Find(l => l.Id == "panoptix");
             Assert.IsNotNull(pan);
             Assert.AreEqual(0.6f, pan.Params["halo_intensity"].Default, 1e-4f);
             Assert.AreEqual(9.0f, pan.Params["destello_rayos"].Default, 1e-4f);
-            // Las 3 lentes deben tener los 10 params clinicos.
+            // Las 3 lentes deben tener los 13 params clinicos (P4.4 agrego astig_magnitude
+            // y astig_axis_deg a los 11 anteriores, incluyendo straylight).
             foreach (var l in cat.Catalogo)
-                Assert.AreEqual(10, l.Params.Count, $"{l.Id} deberia tener 10 params");
+                Assert.AreEqual(13, l.Params.Count, $"{l.Id} deberia tener 13 params");
+
+            var mono = cat.Catalogo.Find(l => l.Id == "monofocal");
+            var viv = cat.Catalogo.Find(l => l.Id == "vivity");
+            Assert.AreEqual(0.15f, mono.Params["straylight"].Default, 1e-4f);
+            Assert.AreEqual(1.0f, pan.Params["straylight"].Default, 1e-4f);
+            Assert.AreEqual(0.45f, viv.Params["straylight"].Default, 1e-4f);
+
+            // P4.4: astig_magnitude (0..1) y astig_axis_deg (0..180), default 0 en las 3
+            // lentes (el astigmatismo residual es cero salvo que se override desde la tablet).
+            foreach (var l in cat.Catalogo)
+            {
+                Assert.IsTrue(l.Params.ContainsKey("astig_magnitude"), $"{l.Id} deberia tener astig_magnitude");
+                Assert.AreEqual(0f, l.Params["astig_magnitude"].Default, 1e-4f, $"{l.Id}.astig_magnitude default");
+                Assert.AreEqual(0f, l.Params["astig_magnitude"].Min, 1e-4f, $"{l.Id}.astig_magnitude min");
+                Assert.AreEqual(1f, l.Params["astig_magnitude"].Max, 1e-4f, $"{l.Id}.astig_magnitude max");
+
+                Assert.IsTrue(l.Params.ContainsKey("astig_axis_deg"), $"{l.Id} deberia tener astig_axis_deg");
+                Assert.AreEqual(0f, l.Params["astig_axis_deg"].Default, 1e-4f, $"{l.Id}.astig_axis_deg default");
+                Assert.AreEqual(0f, l.Params["astig_axis_deg"].Min, 1e-4f, $"{l.Id}.astig_axis_deg min");
+                Assert.AreEqual(180f, l.Params["astig_axis_deg"].Max, 1e-4f, $"{l.Id}.astig_axis_deg max");
+            }
         }
     }
 }

@@ -23,8 +23,26 @@ namespace Simulador.Data
                 state.Params[kv.Key] = kv.Value.Default;
             if (savedOverrides != null)
                 foreach (var kv in savedOverrides)
-                    state.Params[kv.Key] = kv.Value; // override sobre el default
+                    // override sobre el default, clampeado al [min,max] del ParamSpec (defensa
+                    // en profundidad: lens_overrides.json puede venir corrupto o editado a mano).
+                    state.Params[kv.Key] = ClampToSpec(kv.Key, kv.Value, lens.Params);
             return state;
+        }
+
+        /// <summary>
+        /// Clampea un valor al rango [min, max] del ParamSpec de esa clave. Defensa en
+        /// profundidad para overrides que llegan sin pasar por la UI de la tablet: aunque el
+        /// canal tiene auth por PIN (P1.1), un cliente ya autenticado igual podria mandar
+        /// cualquier valor (bug, version distinta, etc.). Si la clave no tiene spec conocido
+        /// (param nuevo/desconocido) pasa sin clamp, igual que hoy. Si el spec no define un
+        /// rango valido (min/max ausentes en el JSON => quedan en 0,0 por deserializacion)
+        /// tambien pasa sin clamp, para no aplastar el valor a cero.
+        /// </summary>
+        public static float ClampToSpec(string key, float value, IReadOnlyDictionary<string, ParamSpec> specs)
+        {
+            if (specs == null || !specs.TryGetValue(key, out var spec) || spec == null) return value;
+            if (spec.Max <= spec.Min) return value;
+            return Math.Clamp(value, spec.Min, spec.Max);
         }
 
         /// <summary>

@@ -1,5 +1,5 @@
 {
-  "version": "0.4.0-clinical",
+  "version": "0.5.0-clinical",
   "catalogo": [
     {
       "id": "monofocal",
@@ -16,7 +16,9 @@
         "contrast_loss":      { "default": 0.0,  "min": 0.0, "max": 0.6 },
         "destello_intensity": { "default": 0.0,  "min": 0.0, "max": 1.0 },
         "destello_rayos":     { "default": 0.0,  "min": 0.0, "max": 16.0 },
-        "straylight":         { "default": 0.15, "min": 0.0, "max": 1.0 }
+        "straylight":         { "default": 0.15, "min": 0.0, "max": 1.0 },
+        "astig_magnitude":    { "default": 0.0,  "min": 0.0, "max": 1.0 },
+        "astig_axis_deg":     { "default": 0.0,  "min": 0.0, "max": 180.0 }
       }
     },
     {
@@ -34,7 +36,9 @@
         "contrast_loss":      { "default": 0.20, "min": 0.0, "max": 0.6 },
         "destello_intensity": { "default": 0.5,  "min": 0.0, "max": 1.0 },
         "destello_rayos":     { "default": 9.0,  "min": 0.0, "max": 16.0 },
-        "straylight":         { "default": 1.0,  "min": 0.0, "max": 1.0 }
+        "straylight":         { "default": 1.0,  "min": 0.0, "max": 1.0 },
+        "astig_magnitude":    { "default": 0.0,  "min": 0.0, "max": 1.0 },
+        "astig_axis_deg":     { "default": 0.0,  "min": 0.0, "max": 180.0 }
       }
     },
     {
@@ -52,7 +56,9 @@
         "contrast_loss":      { "default": 0.10, "min": 0.0, "max": 0.6 },
         "destello_intensity": { "default": 0.1,  "min": 0.0, "max": 1.0 },
         "destello_rayos":     { "default": 4.0,  "min": 0.0, "max": 16.0 },
-        "straylight":         { "default": 0.45, "min": 0.0, "max": 1.0 }
+        "straylight":         { "default": 0.45, "min": 0.0, "max": 1.0 },
+        "astig_magnitude":    { "default": 0.0,  "min": 0.0, "max": 1.0 },
+        "astig_axis_deg":     { "default": 0.0,  "min": 0.0, "max": 180.0 }
       }
     }
   ]

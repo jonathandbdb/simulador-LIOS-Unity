@@ -20,12 +20,18 @@ namespace Simulador.Data
     {
         // --- Config backend (LAN de desarrollo). Cambiar segun la red del backend. ---
         // El backend hoy no esta levantado: el sync fallara y se usa el catalogo local.
+        // P2.4: este [SerializeField] es en la practica inconfigurable (DataManager se
+        // crea por codigo via Bootstrap, no hay instancia en la escena para editar en
+        // el Inspector) -> default legacy. Configurable de verdad via
+        // StreamingAssets/config.json opcional (ver LoadBackendConfig); si no existe o
+        // no parsea, se mantiene este valor.
         [SerializeField] private string backendUrl = "http://192.168.88.198:8080";
         private const string CatalogEndpoint = "/api/lenses";
         private const int SyncTimeoutSeconds = 5;
 
         private const string CatalogFileName = "lentes.json";
         private const string OverridesFileName = "lens_overrides.json";
+        private const string ConfigFileName = "config.json";
 
         public static DataManager Instance { get; private set; }
 
@@ -77,11 +83,42 @@ namespace Simulador.Data
             yield return LoadStreamingText(CatalogFileName, t => _defaultsText = t);
             _defaults = CatalogParser.Parse(_defaultsText);
 
+            // P2.4: config.json opcional (backend_url); antes del sync para que ya
+            // use la URL efectiva. Si no existe o no parsea, sigue con el default.
+            yield return LoadBackendConfig();
+
             if (!TryLoadFromCache())
                 TryLoadFromDefaults();
 
             // Sync en background (no bloquea).
             yield return TrySyncWithBackend();
+        }
+
+        // ---------------- Config (backendUrl) ----------------
+        // Unico campo soportado hoy: {"backend_url": "http://..."}. Mismo mecanismo
+        // (LoadStreamingText / UnityWebRequest) con que ya se lee lentes.json de
+        // StreamingAssets en Android (jar://); archivo ausente o invalido -> se
+        // mantiene backendUrl (el default serializado).
+        private class BackendConfig { public string backend_url; }
+
+        private IEnumerator LoadBackendConfig()
+        {
+            string text = null;
+            yield return LoadStreamingText(ConfigFileName, t => text = t);
+            if (string.IsNullOrEmpty(text)) yield break; // archivo ausente: default legacy
+            try
+            {
+                var cfg = JsonConvert.DeserializeObject<BackendConfig>(text);
+                if (cfg != null && !string.IsNullOrWhiteSpace(cfg.backend_url))
+                {
+                    backendUrl = cfg.backend_url.Trim();
+                    Debug.Log($"DataManager: backendUrl desde config.json -> {backendUrl}");
+                }
+            }
+            catch (Exception)
+            {
+                Debug.LogWarning("DataManager: config.json invalido, usando backendUrl default.");
+            }
         }
 
         // ---------------- Carga local ----------------
@@ -129,7 +166,10 @@ namespace Simulador.Data
 
         private IEnumerator TrySyncWithBackend()
         {
-            string url = backendUrl + CatalogEndpoint;
+            // P6.5: armado de URL extraido a DataManagerLogic.BuildSyncUrl (logica pura,
+            // testeable) -- normaliza el "/" entre backendUrl y el endpoint (evita un
+            // "//" si backendUrl viene con trailing slash desde config.json).
+            string url = DataManagerLogic.BuildSyncUrl(backendUrl, CatalogEndpoint);
             Debug.Log($"DataManager: sync con backend -> {url}");
             using var req = UnityWebRequest.Get(url);
             req.timeout = SyncTimeoutSeconds;
@@ -235,10 +275,17 @@ namespace Simulador.Data
             {
                 var state = e == "left" ? Left : (e == "right" ? Right : null);
                 if (state == null || state.IsEmpty) continue;
-                foreach (var kv in paramsToSet) state.Params[kv.Key] = kv.Value;
+                // Clamp a [min,max] del ParamSpec de la lente de ESTE ojo antes de aplicar:
+                // defensa en profundidad aunque el canal tiene auth por PIN (P1.1) -- un
+                // cliente ya autenticado igual podria inyectar valores fuera de rango
+                // (bug de la tablet, versión distinta, etc.); el clamp no dependia solo de ella.
+                var specs = GetLens(state.LensId)?.Params;
+                var clamped = new Dictionary<string, float>(paramsToSet.Count);
+                foreach (var kv in paramsToSet) clamped[kv.Key] = LensEngine.ClampToSpec(kv.Key, kv.Value, specs);
+                foreach (var kv in clamped) state.Params[kv.Key] = kv.Value;
                 VisionStateChanged?.Invoke(e, state);
                 if (!string.IsNullOrEmpty(state.LensId))
-                    StoreLensOverrides(state.LensId, paramsToSet);
+                    StoreLensOverrides(state.LensId, clamped);
             }
         }
 
@@ -275,7 +322,9 @@ namespace Simulador.Data
             _overridesSavePending = false;
             try
             {
-                File.WriteAllText(OverridesPath, JsonConvert.SerializeObject(_lensOverrides, Formatting.Indented));
+                // P6.5: serializacion extraida a DataManagerLogic.SerializeLensOverrides
+                // (logica pura, testeable con round-trip contra TryParseLensOverrides).
+                File.WriteAllText(OverridesPath, DataManagerLogic.SerializeLensOverrides(_lensOverrides));
                 Debug.Log($"DataManager: overrides guardados ({_lensOverrides.Count} lentes).");
             }
             catch (Exception)
@@ -287,18 +336,18 @@ namespace Simulador.Data
         private void LoadLensOverrides()
         {
             if (!File.Exists(OverridesPath)) return;
-            try
+            string text;
+            try { text = File.ReadAllText(OverridesPath); }
+            catch (Exception) { return; } // archivo corrupto/ilegible: se ignora
+            // P6.5: parseo extraido a DataManagerLogic.TryParseLensOverrides (logica
+            // pura, testeable) -- mismo comportamiento que antes (JSON invalido o nulo
+            // se ignora silenciosamente, arranca sin overrides).
+            if (DataManagerLogic.TryParseLensOverrides(text, out var parsed))
             {
-                var parsed = JsonConvert.DeserializeObject<Dictionary<string, Dictionary<string, float>>>(
-                    File.ReadAllText(OverridesPath));
-                if (parsed != null)
-                {
-                    _lensOverrides.Clear();
-                    foreach (var kv in parsed) _lensOverrides[kv.Key] = kv.Value;
-                    Debug.Log($"DataManager: overrides cargados ({_lensOverrides.Count} lentes).");
-                }
+                _lensOverrides.Clear();
+                foreach (var kv in parsed) _lensOverrides[kv.Key] = kv.Value;
+                Debug.Log($"DataManager: overrides cargados ({_lensOverrides.Count} lentes).");
             }
-            catch (Exception) { /* archivo corrupto: se ignora */ }
         }
 
         // En Quest/Android la app puede morir al perder foco: persistir si hay pendiente.
