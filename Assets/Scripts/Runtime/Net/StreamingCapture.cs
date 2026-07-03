@@ -70,7 +70,10 @@ namespace Simulador.Vision
             _timer += Time.deltaTime;
             if (_timer < 1f / Hz) return;
             _timer = 0f;
-            if (_busy || Server.OpenClientCount == 0) return;
+            // Solo renderizar/codificar si hay al menos un cliente AUTENTICADO (el PIN
+            // gatea el stream igual que gatea vision_state): evita gastar GPU/CPU
+            // sirviendo a alguien que todavia no probo el PIN.
+            if (_busy || Server.AuthenticatedClientCount == 0) return;
 
             var dm = DataManager.Instance;
             bool blend = dm != null && dm.BlendModeEnabled;

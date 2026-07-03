@@ -9,7 +9,13 @@ namespace Simulador.Net
     /// <summary>
     /// Beacon UDP de descubrimiento LAN (lado visor). Port de discovery_beacon.gd:
     /// emite cada 2 s un broadcast a 255.255.255.255:9091 con
-    /// {"app","device_id","ws_port","ts"} para que la tablet lo descubra sin IP manual.
+    /// {"app","device_label","ws_port","ts"} para que la tablet lo descubra sin IP
+    /// manual. El receptor (DiscoveryListener/TabletController) identifica al visor
+    /// por la IP de ORIGEN del paquete, no por este campo (ver DiscoveryListener):
+    /// "device_label" es solo informativo, nunca parseado — por eso es seguro que
+    /// sea un nombre amigable + nonce de sesion (P1.5) en vez de un identificador de
+    /// hardware estable como SystemInfo.deviceUniqueIdentifier (fuga innecesaria a
+    /// toda la subred via broadcast, sin auth ni cifrado).
     /// </summary>
     public class DiscoveryBeacon
     {
@@ -20,12 +26,17 @@ namespace Simulador.Net
         private UdpClient _udp;
         private IPEndPoint _dest;
         private float _timer;
-        private string _deviceId;
+        private string _label;
         private bool _ready;
 
-        public void Start(string deviceId)
+        /// <param name="label">
+        /// Etiqueta informativa a emitir en el beacon (nombre amigable + nonce de
+        /// sesion, generada por NetworkController.Start() — NUNCA un identificador
+        /// de hardware estable ni nada derivado del PIN de emparejamiento).
+        /// </param>
+        public void Start(string label)
         {
-            _deviceId = deviceId;
+            _label = label;
             try
             {
                 _udp = new UdpClient { EnableBroadcast = true };
@@ -48,7 +59,7 @@ namespace Simulador.Net
             _timer = 0f;
             try
             {
-                string json = "{\"app\":\"" + AppTag + "\",\"device_id\":\"" + _deviceId +
+                string json = "{\"app\":\"" + AppTag + "\",\"device_label\":\"" + _label +
                               "\",\"ws_port\":9090,\"ts\":" + unixTime.ToString(System.Globalization.CultureInfo.InvariantCulture) + "}";
                 var bytes = Encoding.UTF8.GetBytes(json);
                 _udp.Send(bytes, bytes.Length, _dest);
