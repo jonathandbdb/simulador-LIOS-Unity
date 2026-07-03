@@ -5,6 +5,7 @@ En produccion, crea el admin user para que se pueda entrar al panel.
 En desarrollo, ademas crea una version dummy + catalogo seed + 1 device de test.
 """
 import json
+import logging
 from datetime import date, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from sqlmodel import Session, select
 from app.config import settings
 from app.models import AdminUser, Device, LensCatalog, Version
 
+logger = logging.getLogger(__name__)
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
@@ -37,7 +39,7 @@ def _seed_admin(session: Session) -> None:
         role="superadmin",
     )
     session.add(admin)
-    print(f"[seed] admin user creado: {settings.admin_default_user}")
+    logger.info("[seed] admin user creado: %s", settings.admin_default_user)
 
 
 # Versiones de catalogo creadas por este seed en releases anteriores. Si la
@@ -50,6 +52,9 @@ _KNOWN_SEED_VERSIONS = {
     "0.1.0-fallback",
     "0.2.0-noche",
     "0.3.0-clinical",
+    "0.4.0-clinical",
+    "0.4.0-fallback",
+    "0.5.0-clinical",
 }
 
 
@@ -64,14 +69,15 @@ def _seed_lens_catalog(session: Session) -> None:
             return  # nada que migrar, ya esta al dia
         if existing.version not in _KNOWN_SEED_VERSIONS:
             # Edicion manual del admin: no pisar.
-            print(
-                f"[seed] catalogo activo v{existing.version} NO es seed conocido; "
-                f"se respeta. JSON del repo (v{json_version}) ignorado."
+            logger.info(
+                "[seed] catalogo activo v%s NO es seed conocido; se respeta. "
+                "JSON del repo (v%s) ignorado.",
+                existing.version, json_version,
             )
             return
         existing.is_active = False
         session.add(existing)
-        print(f"[seed] desactivado catalogo seed previo v{existing.version}")
+        logger.info("[seed] desactivado catalogo seed previo v%s", existing.version)
 
     catalog = LensCatalog(
         version=json_version,
@@ -79,7 +85,7 @@ def _seed_lens_catalog(session: Session) -> None:
         is_active=True,
     )
     session.add(catalog)
-    print(f"[seed] catalogo de lentes activo: v{catalog.version} ({lens_count} lentes)")
+    logger.info("[seed] catalogo de lentes activo: v%s (%d lentes)", catalog.version, lens_count)
 
 
 def _load_default_catalog() -> dict:
@@ -94,11 +100,13 @@ def _load_default_catalog() -> dict:
             try:
                 return json.loads(p.read_text(encoding="utf-8"))
             except Exception as e:  # noqa: BLE001
-                print(f"[seed] error leyendo {p}: {e}")
-    # Fallback minimo. Mantiene la misma version semantica que el JSON del repo
-    # asi nunca se promueve sobre un catalogo recalibrado por error.
+                logger.warning("[seed] error leyendo %s: %s", p, e)
+    # Fallback minimo (1 lente, sin straylight): NO es una copia del catalogo real,
+    # por eso usa su propia version "-fallback" en vez de pisar la version clinica
+    # real. Al aparecer el volumen con el catalogo completo, la promocion lo
+    # reemplaza igual porque esta version esta en _KNOWN_SEED_VERSIONS.
     return {
-        "version": "0.3.0-clinical",
+        "version": "0.4.0-fallback",
         "catalogo": [
             {
                 "id": "monofocal",
@@ -136,7 +144,10 @@ def _seed_version(session: Session) -> None:
         is_active=True,
     )
     session.add(version)
-    print(f"[seed] version activa creada: APK v{version.apk_version} / assets v{version.asset_version}")
+    logger.info(
+        "[seed] version activa creada: APK v%s / assets v%s",
+        version.apk_version, version.asset_version,
+    )
 
 
 def _seed_test_device(session: Session) -> None:
@@ -152,4 +163,4 @@ def _seed_test_device(session: Session) -> None:
         notes="Device de testing creado por el seed. Eliminar en produccion.",
     )
     session.add(device)
-    print(f"[seed] device de testing creado: {device.device_id}")
+    logger.info("[seed] device de testing creado: %s", device.device_id)
