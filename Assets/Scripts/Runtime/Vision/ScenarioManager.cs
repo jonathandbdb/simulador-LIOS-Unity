@@ -37,13 +37,56 @@ namespace Simulador.Vision
         [Tooltip("Destellos/starburst de dia: predominan alrededor del sol (clinicamente lo visible a plena luz).")]
         public float dayStarScale = 0.7f;
 
+        [Header("Pupila dinamica (_PupilScene)")]
+        [Tooltip("Constante de tiempo (s) de la CONSTRICCION (a mas luz => pupila menor). El " +
+                 "reflejo constrictor es rapido (latencia ~0.2-0.5 s, constriccion ~1 s). Ellis 1981.")]
+        public float pupilConstrictTau = 0.9f;
+        [Tooltip("Constante de tiempo (s) de la REDILATACION (a oscuridad => pupila mayor). Es " +
+                 "mas LENTA que la constriccion (varios segundos). Ellis 1981.")]
+        public float pupilDilateTau = 3f;
+        [Range(0f, 1f)]
+        [Tooltip("Miosis transitoria al mirar de frente una fuente de glare intensa (proxy: velo " +
+                 "actual). Baja el target de pupila => menos desenfoque por efecto estenopeico. 0 = off.")]
+        public float glareMiosisGain = 0.3f;
+
         [Header("Inicial")]
         public string startScenario = "ruta_noche";
 
         public string Current { get; private set; }
         private static readonly List<string> Order = new() { "consultorio", "ruta_noche" };
 
-        private void Start() => SwitchTo(startScenario);
+        /// <summary>Orden canonico de escenarios (read-only). Lo consume NetworkController
+        /// para el hello sin duplicar la lista.</summary>
+        public static IReadOnlyList<string> ScenarioOrder => Order;
+
+        // Pupila: target por escenario (0 dia / 1 noche) y valor actual interpolado en el tiempo.
+        private float _pupilTarget;
+        private float _pupilCurrent;
+        private static readonly int PupilSceneId = Shader.PropertyToID("_PupilScene");
+
+        private void Start()
+        {
+            SwitchTo(startScenario);
+            // Sin rampa al cargar: arranca ya en el target del escenario inicial.
+            _pupilCurrent = _pupilTarget;
+            Shader.SetGlobalFloat(PupilSceneId, _pupilCurrent);
+        }
+
+        private void Update()
+        {
+            // Pupila dinamica: transicion temporal suave hacia el target del escenario, con
+            // miosis transitoria si hay glare intenso mirado de frente (proxy: velo actual).
+            // La pupila NO es instantanea (reflejo fotomotor): constriccion rapida, dilatacion
+            // lenta (Ellis 1981). _PupilScene 0=dia(contraida) .. 1=noche(dilatada).
+            float glare = glareMiosisGain > 0f
+                ? Mathf.Clamp01(Mathf.Max(VisionActivity.VeilL, VisionActivity.VeilR)) : 0f;
+            float target = Mathf.Clamp01(_pupilTarget - glareMiosisGain * glare);
+            // Constriccion (target menor que actual) mas rapida que la redilatacion.
+            float tau = Mathf.Max(target < _pupilCurrent ? pupilConstrictTau : pupilDilateTau, 0.01f);
+            float k = 1f - Mathf.Exp(-Time.deltaTime / tau);
+            _pupilCurrent = Mathf.Lerp(_pupilCurrent, target, k);
+            Shader.SetGlobalFloat(PupilSceneId, _pupilCurrent);
+        }
 
         public void CycleScenario()
         {
@@ -91,7 +134,7 @@ namespace Simulador.Vision
             // OFF, para que la luna nocturna no quede encendida al pasar de noche -> dia.
             if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.LookRotation(new Vector3(0.410f, -0.242f, -0.879f)); sun.gameObject.SetActive(false); }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.Skybox; }
-            Shader.SetGlobalFloat("_PupilScene", 0f); // dia: pupila chica
+            _pupilTarget = 0f; // dia: pupila chica (Update interpola _PupilScene hacia aca)
         }
 
         private void ApplyNight()
@@ -117,7 +160,7 @@ namespace Simulador.Vision
                 sun.transform.rotation = Quaternion.Euler(55f, 20f, 0f); // luna alta, casi cenital
             }
             if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.SolidColor; xrCamera.backgroundColor = new Color(0.008f, 0.01f, 0.02f); }
-            Shader.SetGlobalFloat("_PupilScene", 1f); // noche: pupila dilatada
+            _pupilTarget = 1f; // noche: pupila dilatada (Update interpola _PupilScene hacia aca)
         }
     }
 }

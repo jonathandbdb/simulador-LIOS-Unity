@@ -1,4 +1,5 @@
 using Simulador.Data;
+using Simulador.Net;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -40,7 +41,22 @@ namespace Simulador.Vision
             string r = dm != null ? Safe(dm.Right.LensId) : "?";
             string sc = scenarios != null ? Safe(scenarios.Current) : "?";
             string ha = glare != null ? (glare.halosEnabled ? "ON" : "off") : "?";
-            text.text = $"FPS {_fps:0}\nEscena: {sc}\nOI (A): {l}\nOD (B): {r}\nHalos (X): {ha}\nY: cambiar escena";
+            text.text = $"FPS {_fps:0}\nEscena: {sc}\nOI (A): {l}\nOD (B): {r}\nHalos (X): {ha}\nY: cambiar escena{PairingLine()}";
+        }
+
+        /// <summary>
+        /// Linea de emparejamiento. Sin tablet autenticada muestra el PIN de la sesion
+        /// para que el clinico lo lea y lo tipee en la tablet; con al menos una tablet
+        /// autenticada lo reemplaza por un aviso discreto (deja de exponer el PIN).
+        /// NetworkController.Instance puede no existir (escenas/momentos sin red) -> sin
+        /// linea. AuthenticatedClientCount es null-safe (0 si el server no arranco).
+        /// </summary>
+        private static string PairingLine()
+        {
+            var net = NetworkController.Instance;
+            if (net == null) return "";
+            if (net.AuthenticatedClientCount > 0) return "\nTablet conectada";
+            return string.IsNullOrEmpty(net.PairingPin) ? "" : $"\nPIN tablet: {net.PairingPin}";
         }
 
         private static string Safe(string s) => string.IsNullOrEmpty(s) ? "-" : s;

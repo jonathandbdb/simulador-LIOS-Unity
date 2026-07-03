@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace Simulador.Vision
@@ -25,7 +26,27 @@ namespace Simulador.Vision
                  "Las luces puntuales (faros/faroles) lo dejan en false. Solo lo usa DisabilityGlareController.")]
         public bool distanceInvariant = false;
 
-        private void OnEnable() => Apply();
+        // Registro estatico de fuentes ACTIVAS: DisabilityGlareController itera esta lista
+        // (antes escaneaba con FindObjectsByType cada 0.5 s => lag de hasta medio segundo).
+        // Se mantiene por OnEnable/OnDisable, asi una fuente encandila el mismo frame.
+        private static readonly List<GlareBillboardInstance> _active = new();
+
+        /// <summary>Fuentes de glare actualmente activas (read-only).</summary>
+        public static IReadOnlyList<GlareBillboardInstance> Active => _active;
+
+        // Al entrar a Play sin domain reload (fast enter play mode) los statics NO se
+        // resetean: limpiamos explicitamente antes de cargar la escena para no arrastrar
+        // referencias muertas del modo edicion.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetRegistry() => _active.Clear();
+
+        private void OnEnable()
+        {
+            Apply();
+            if (!_active.Contains(this)) _active.Add(this);
+        }
+
+        private void OnDisable() => _active.Remove(this);
 
         public void Apply()
         {

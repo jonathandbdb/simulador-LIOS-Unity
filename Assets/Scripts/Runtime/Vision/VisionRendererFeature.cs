@@ -26,6 +26,8 @@ namespace Simulador.Vision
         public RenderPassEvent injectionPoint = RenderPassEvent.BeforeRenderingTransparents;
 
         private VisionPass _pass;
+        // Gate de CPU (3.1): recuerda el estado para loguear solo en las TRANSICIONES.
+        private bool _gateActive = true;
 
         public override void Create()
         {
@@ -35,6 +37,18 @@ namespace Simulador.Vision
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
             if (material == null) return;
+
+            // Gate de CPU: si NINGUN efecto es visible en ambos ojos (blur/contraste,
+            // astigmatismo, velo), saltear la inyeccion => se evitan los 2 blits full-screen
+            // por ojo ese frame. La decision es barata (lee estado C# agregado, no el material).
+            bool active = VisionActivity.AnyActive;
+            if (active != _gateActive)
+            {
+                _gateActive = active;
+                Debug.Log($"[Vision] Post-proceso gate {(active ? "ON (hay efecto)" : "OFF (todo en cero: se saltea)")}.");
+            }
+            if (!active) return;
+
             _pass.Setup(material);
             _pass.ConfigureInput(ScriptableRenderPassInput.Depth); // necesitamos _CameraDepthTexture
             renderer.EnqueuePass(_pass);
@@ -63,11 +77,12 @@ namespace Simulador.Vision
                 desc.depthBufferBits = 0;
                 var temp = UniversalRenderer.CreateRenderGraphTexture(renderGraph, desc, "_VisionTemp", false);
 
-                // Ping-pong: efecto (pass 0) src->temp, luego copia (pass 1) temp->src.
+                // Ping-pong por ojo: pass 0 (defocus esferico) src->temp; pass 1
+                // (astigmatismo + contraste + velo CIE) temp->src.
                 renderGraph.AddBlitPass(
-                    new RenderGraphUtils.BlitMaterialParameters(source, temp, _mat, 0), "VisionSim");
+                    new RenderGraphUtils.BlitMaterialParameters(source, temp, _mat, 0), "VisionDefocus");
                 renderGraph.AddBlitPass(
-                    new RenderGraphUtils.BlitMaterialParameters(temp, source, _mat, 1), "VisionCopyBack");
+                    new RenderGraphUtils.BlitMaterialParameters(temp, source, _mat, 1), "VisionAstigContrastVeil");
             }
         }
     }

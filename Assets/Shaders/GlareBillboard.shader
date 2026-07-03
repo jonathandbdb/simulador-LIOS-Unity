@@ -35,10 +35,14 @@ Shader "Simulador/GlareBillboard"
             float glare_pupil_l, glare_pupil_r;
             float glare_star_l, glare_star_r;
             float glare_rays_l, glare_rays_r;
-            // Astigmatismo: ajuste GLOBAL (un solo valor para ambos ojos).
-            float glare_astig, glare_astig_angle;
+            // Astigmatismo POR OJO (los setea GlareController.SetAstigmatism).
+            float glare_astig_l, glare_astig_r;
+            float glare_astig_angle_l, glare_astig_angle_r;
             // Override de ojo para el stream (camara mono). 0=normal, 1=izq, 2=der.
             float _StreamForceEye;
+            // Umbrales de facing UNIFICADOS con el velo (los publica GlareController desde
+            // FacingLo/FacingHi; fuente unica C#). smoothstep(Lo, Hi, dot(haz, haciaCamara)).
+            float _GlareFacingLo, _GlareFacingHi;
 
             // === Por instancia (MaterialPropertyBlock; material compartido) ===
             float4 src_color;   // .rgb color de la fuente
@@ -53,8 +57,6 @@ Shader "Simulador/GlareBillboard"
             #define ASTIG_ANG_RADIUS 0.12
             #define ASTIG_WIDTH      0.02
             #define ASTIG_GAIN       2.2
-            #define RING_POS         0.62
-            #define RING_WIDTH       0.11
             #define DIST_REF_M       8.0
             #define TOWARD_CAM_FRAC  0.10
 
@@ -95,7 +97,8 @@ Shader "Simulador/GlareBillboard"
                 float v_star  = saturate(left ? glare_star_l  : glare_star_r);
                 float v_rays  = left ? glare_rays_l : glare_rays_r;
                 float v_pupil = saturate(left ? glare_pupil_l : glare_pupil_r);
-                float v_astig = saturate(glare_astig);
+                float v_astig = saturate(left ? glare_astig_l : glare_astig_r);
+                float v_astig_angle = left ? glare_astig_angle_l : glare_astig_angle_r;
 
                 float3 origin = float3(unity_ObjectToWorld._m03, unity_ObjectToWorld._m13, unity_ObjectToWorld._m23);
                 float3 camPos = _WorldSpaceCameraPos;
@@ -106,7 +109,7 @@ Shader "Simulador/GlareBillboard"
                 if (dot(src_dir.xyz, src_dir.xyz) > 0.25)
                 {
                     float3 beam = normalize(mul((float3x3)unity_ObjectToWorld, src_dir.xyz));
-                    facing = smoothstep(0.05, 0.35, dot(beam, toward));
+                    facing = smoothstep(_GlareFacingLo, _GlareFacingHi, dot(beam, toward));
                 }
 
                 float pupilScale = lerp(1.0, PUPIL_GAIN, v_pupil);
@@ -133,7 +136,7 @@ Shader "Simulador/GlareBillboard"
                 o.uv = IN.uv;
                 o.p0 = float4(haloR / angMax, starR / angMax, astigR / angMax, v_fade);
                 o.p1 = float4(v_halo, v_star, v_rays, v_pupil);
-                o.p2 = float3(v_astig, glare_astig_angle, seed);
+                o.p2 = float3(v_astig, v_astig_angle, seed);
                 return o;
             }
 

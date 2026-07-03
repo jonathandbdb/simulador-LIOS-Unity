@@ -1,12 +1,15 @@
 // VisionPostProcess.shader — Simulacion de visualizacion por IOL (post-proceso URP).
 // Port de features/vision_shaders/sprint2_blur_test.gdshader (Godot).
 //
-// Hace (1:1 con el original): depth->metros (proyeccion inversa) + blur dioptrico
-// + perdida de contraste, BIFURCADO por ojo (unity_StereoEyeIndex).
+// Hace: depth->metros (proyeccion inversa) + blur dioptrico ESFERICO + astigmatismo
+// (cilindro) + perdida de contraste + velo de encandilamiento, BIFURCADO por ojo
+// (unity_StereoEyeIndex). Dos passes: pass 0 = solo esfera (defocus) -> _VisionTemp;
+// pass 1 = cilindro + contraste + velo sobre esa imagen ya desenfocada. Asi el smear
+// astigmatico opera SOBRE la esfera (correctitud optica) sin re-samplear el original.
 // Halo / starburst los dibujan los billboards de GlareSource (F4). El astigmatismo
-// se REFUERZA aca con un desenfoque DIRECCIONAL global (la imagen se borronea a lo
+// se REFUERZA aca con un desenfoque DIRECCIONAL por ojo (la imagen se borronea a lo
 // largo del eje, como el astigmatismo optico real) ademas del trazo sobre las luces;
-// lo manejan los globals glare_astig (0..1) y glare_astig_angle (rad).
+// lo manejan los globals glare_astig_l/r (0..1) y glare_astig_angle_l/r (rad).
 //
 // Multiview (Single Pass Instanced / Vulkan): se samplea SIEMPRE con las macros
 // _X (SAMPLE_TEXTURE2D_X) y SampleSceneDepth, que indexan el slice del ojo correcto.
@@ -36,9 +39,10 @@ Shader "Simulador/VisionPostProcess"
         float2 _BookScreenUV;
         float _BookScreenRadius;
 
-        // === Astigmatismo GLOBAL (lo setea GlareController.SetAstigmatism via
-        // Shader.SetGlobalFloat). glare_astig 0..1 = magnitud; angle en radianes. ===
-        float glare_astig, glare_astig_angle;
+        // === Astigmatismo POR OJO (lo setea GlareController.SetAstigmatism via
+        // Shader.SetGlobalFloat). glare_astig_l/r 0..1 = magnitud; angle en radianes. ===
+        float glare_astig_l, glare_astig_r;
+        float glare_astig_angle_l, glare_astig_angle_r;
 
         // === Override de ojo para el stream de la tablet (camara mono). La setea
         // StreamingCapture: 0 = normal (usa unity_StereoEyeIndex), 1 = forzar izq,
@@ -118,7 +122,10 @@ Shader "Simulador/VisionPostProcess"
         }
         ENDHLSL
 
-        // Pass 0: efecto (blur dioptrico + contraste, por ojo).
+        // Pass 0: blur dioptrico ESFERICO (defocus), por ojo. Escribe la imagen
+        // desenfocada por la esfera a _VisionTemp; el pass 1 le aplica el cilindro
+        // (astigmatismo) ENCIMA + contraste + velo. Separar asi permite que el smear
+        // astigmatico opere sobre la imagen ya desenfocada (ver Frag del pass 1).
         Pass
         {
             Name "VisionSim"
@@ -152,17 +159,17 @@ Shader "Simulador/VisionPostProcess"
                 int forcedEye = (int)_StreamForceEye;
                 if (forcedEye != 0) eyeIdx = forcedEye - 1;
 
-                float fFar, fInt, fNear, prof, desMax, contrast;
+                float fFar, fInt, fNear, prof, desMax;
                 UNITY_BRANCH
                 if (eyeIdx == 0)
                 {
                     fFar = _FocoLejosL; fInt = _FocoIntermedioL; fNear = _FocoCercaL;
-                    prof = _ProfundidadFocoL; desMax = _DesenfoqueMaxL; contrast = _ContrastLossL;
+                    prof = _ProfundidadFocoL; desMax = _DesenfoqueMaxL;
                 }
                 else
                 {
                     fFar = _FocoLejosR; fInt = _FocoIntermedioR; fNear = _FocoCercaR;
-                    prof = _ProfundidadFocoR; desMax = _DesenfoqueMaxR; contrast = _ContrastLossR;
+                    prof = _ProfundidadFocoR; desMax = _DesenfoqueMaxR;
                 }
 
                 float blurAmount = saturate(BlurFromFocus(effDist, fFar, fInt, fNear, prof, desMax));
@@ -178,13 +185,43 @@ Shader "Simulador/VisionPostProcess"
                     color = lerp(base, blurred, blurAmount);
                 }
 
-                // Astigmatismo: desenfoque DIRECCIONAL global a lo largo del eje. Es
-                // GLOBAL (mismo valor ambos ojos); se nota en toda la imagen, no solo
-                // en las luces. Se suma al trazo de los billboards de glare.
-                float astig = saturate(glare_astig);
+                // Solo la esfera aca; el cilindro (astig), contraste y velo van en el pass 1.
+                return half4(color, 1.0);
+            }
+            ENDHLSL
+        }
+
+        // Pass 1: astigmatismo (cilindro) + contraste + velo, por ojo. _BlitTexture aca
+        // es _VisionTemp = salida del pass 0 (imagen ya desenfocada por la ESFERA). El smear
+        // astigmatico opera sobre esa imagen (el cilindro se aplica sobre la esfera, no sobre
+        // la imagen nitida): correctitud optica, y sin re-samplear la imagen original.
+        Pass
+        {
+            Name "AstigContrastVeil"
+            HLSLPROGRAM
+            #pragma vertex Vert
+            #pragma fragment FragPost
+
+            half4 FragPost(Varyings input) : SV_Target
+            {
+                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
+                float2 uv = input.texcoord;
+                float2 texel = _ScreenSize.zw;
+
+                int eyeIdx = (int)unity_StereoEyeIndex;
+                int forcedEye = (int)_StreamForceEye;
+                if (forcedEye != 0) eyeIdx = forcedEye - 1;
+
+                // Imagen ya desenfocada por la esfera (defocus dioptrico) = salida del pass 0.
+                half3 color = SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, uv).rgb;
+
+                // Astigmatismo: desenfoque DIRECCIONAL a lo largo del eje, POR OJO, SOBRE la
+                // imagen ya desenfocada (DirBlur samplea _VisionTemp). Se nota en toda la
+                // imagen, no solo en las luces; se suma al trazo de los billboards de glare.
+                float astig = saturate(eyeIdx == 0 ? glare_astig_l : glare_astig_r);
                 if (astig > 0.001)
                 {
-                    float a = glare_astig_angle;
+                    float a = eyeIdx == 0 ? glare_astig_angle_l : glare_astig_angle_r;
                     float2 dir = float2(cos(a), sin(a));
                     float2 step = dir * texel * (ASTIG_BLUR_PX * astig);
                     half3 astigCol = DirBlur(uv, step);
@@ -192,6 +229,7 @@ Shader "Simulador/VisionPostProcess"
                 }
 
                 // Perdida de contraste: compresion alrededor de pivote BAJO (no levanta negros).
+                float contrast = eyeIdx == 0 ? _ContrastLossL : _ContrastLossR;
                 color = (color - CONTRAST_PIVOT) * (1.0 - contrast) + CONTRAST_PIVOT;
 
                 // Encandilamiento (disability glare): velo de luminancia ADITIVO (straylight)
@@ -206,28 +244,15 @@ Shader "Simulador/VisionPostProcess"
                     float L = veilAmt * (0.35 + 0.65 * concentrated);  // pedestal uniforme + glow
                     half3 veil = _GlareVeilTint.rgb;
                     color += veil * L;                                  // straylight aditivo (HDR cerca -> bloom)
-                    // leve perdida de saturacion del velo (la luz parasita "lava" el color)
-                    half lum = dot(color, half3(0.299, 0.587, 0.114));
+                    // leve perdida de saturacion del velo (la luz parasita "lava" el color).
+                    // Luminancia FOTOPICA de la imagen mostrada: base unica Rec.709 (ITU-R BT.709,
+                    // primarios sRGB). Distinta a los pesos ESCOTOPICOS del velo (esos miden cuanto
+                    // dispersa la FUENTE de noche; esto mide el gris percibido de la imagen).
+                    half lum = dot(color, half3(0.2126, 0.7152, 0.0722));
                     color = lerp(color, lum.xxx, veilAmt * 0.12);
                 }
 
                 return half4(color, 1.0);
-            }
-            ENDHLSL
-        }
-
-        // Pass 1: copia simple (para devolver el temp al color de camara).
-        Pass
-        {
-            Name "Copy"
-            HLSLPROGRAM
-            #pragma vertex Vert
-            #pragma fragment FragCopy
-
-            half4 FragCopy(Varyings input) : SV_Target
-            {
-                UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-                return SAMPLE_TEXTURE2D_X(_BlitTexture, sampler_LinearClamp, input.texcoord);
             }
             ENDHLSL
         }
