@@ -4,6 +4,8 @@ from typing import Optional
 
 from sqlmodel import Field, SQLModel
 
+from app.utils import utcnow
+
 
 # ---------------------------------------------------------------------------
 # Dispositivos (visores) registrados
@@ -20,8 +22,8 @@ class Device(SQLModel, table=True):
     # NULL = licencia permanente (decision tomada en Sprint 0).
     license_expiry: Optional[date] = None
     notes: Optional[str] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +41,7 @@ class Version(SQLModel, table=True):
     pck_sha256: str = Field(description="SHA256 hex del PCK para verificacion de integridad")
     changelog: str = Field(default="", description="Notas de release")
     is_active: bool = Field(default=False, description="Solo una version puede estar activa")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +54,7 @@ class LensCatalog(SQLModel, table=True):
     version: str = Field(description='Version del catalogo, ej. "1.2.0"')
     data: str = Field(description="JSON string con el catalogo completo")
     is_active: bool = Field(default=False)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +67,7 @@ class UpdateLog(SQLModel, table=True):
     device_id: str = Field(index=True)
     event: str = Field(description="manifest_check, download_start, hash_ok, update_success, ...")
     detail: str = Field(default="")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------
@@ -78,4 +80,4 @@ class AdminUser(SQLModel, table=True):
     username: str = Field(unique=True, index=True)
     password_hash: str = Field(description="bcrypt hash")
     role: str = Field(default="superadmin", description="superadmin | viewer")
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=utcnow)

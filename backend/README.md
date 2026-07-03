@@ -42,7 +42,7 @@ backend/
 | `GET /` | Info del servicio + listado de endpoints |
 | `GET /healthz` | Health check (Caddy / Docker) |
 | `GET /api/manifest.json` | Version activa (consumida por F5 UpdateManager) |
-| `POST /api/verify` | Verificacion de licencia (consumida por F4 LicenseManager). Rate-limited a 1 req/min/IP |
+| `POST /api/verify` | Verificacion de licencia (consumida por F4 LicenseManager). Rate-limited a 10 req/min/IP |
 | `GET /api/lenses` | Catalogo de lentes activo (consumido por F1 DataManager) |
 | `POST /api/log` | Recepcion de logs del visor (UpdateManager + LicenseManager los envian) |
 | `GET /docs` | Swagger UI generado por FastAPI |
@@ -91,12 +91,11 @@ MinIO console: http://localhost:9001 (usuario: minioadmin / minioadmin).
    cp .env.example .env
    # editar .env:
    #   DOMAIN=api.tu-dominio.com
-   #   AUTO_HTTPS=on
+   #   SCHEME=             (vacio — Caddy usa HTTPS automatico via Let's Encrypt)
    #   PORT=443
    #   POSTGRES_PASSWORD=<openssl rand -hex 24>
    #   JWT_SECRET=<openssl rand -hex 32>
    #   ADMIN_DEFAULT_PASS=<password fuerte>
-   #   API_KEY_CI=<openssl rand -hex 32>
    #   PUBLIC_BASE_URL=https://api.tu-dominio.com
    docker compose up -d
    ```
@@ -133,9 +132,25 @@ Al primer arranque, `app/seed.py` crea:
 
 El seed es idempotente: solo crea registros que no existen.
 
-## TODO Sprints siguientes
+## Migraciones (Alembic)
 
-- **Sprint 8:** routers/admin.py con JWT auth + CRUD completo + uploads a MinIO.
-- **Sprint 8:** templates Jinja2 + HTMX + Tailwind para el panel.
-- **Sprint 11:** endpoint `/api/admin/versions` con API key (no JWT) para CI/CD.
-- **Cuando el schema se estabilice:** migrar de `SQLModel.metadata.create_all` a Alembic.
+El arranque del contenedor aplica migraciones Alembic (`app/migrations.py`)
+en vez de `SQLModel.metadata.create_all`. Ver `docs/backend.md` para el
+detalle de como adopta Alembic una BD ya existente y como generar nuevas
+revisiones.
+
+## Tests
+
+```bash
+pip install -r api/requirements-dev.txt
+cd api && python -m pytest
+```
+
+Los tests usan SQLite en memoria (no dependen de Docker ni Postgres). Ver
+`docs/backend.md` para el detalle.
+
+## TODO / deuda pendiente
+
+- UI de cambio de contrasena del admin (hoy solo via `.env` + reseed).
+- Uploads del panel acumulan el archivo completo en memoria; multipart si los
+  binarios crecen.

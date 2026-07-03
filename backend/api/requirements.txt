@@ -1,6 +1,7 @@
 fastapi==0.115.5
 uvicorn[standard]==0.32.1
 sqlmodel==0.0.22
+alembic==1.14.0
 psycopg[binary]==3.2.3
 pydantic==2.10.3
 pydantic-settings==2.7.0

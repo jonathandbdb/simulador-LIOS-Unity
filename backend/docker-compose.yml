@@ -10,8 +10,8 @@
 #   docker compose up -d
 #   curl http://localhost:8080/api/manifest.json
 #
-# Uso prod (con TLS):
-#   Editar .env: DOMAIN=api.tu-dominio.com, AUTO_HTTPS=on
+# Uso prod (con TLS automatico via Caddy/Let's Encrypt):
+#   Editar .env: DOMAIN=api.tu-dominio.com, SCHEME= (vacio), PORT=443
 #   docker compose up -d
 #   curl https://api.tu-dominio.com/api/manifest.json
 
@@ -61,7 +61,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-me}
       ADMIN_DEFAULT_USER: ${ADMIN_DEFAULT_USER:-admin}
       ADMIN_DEFAULT_PASS: ${ADMIN_DEFAULT_PASS:-admin123}
-      API_KEY_CI: ${API_KEY_CI:-dev-ci-key}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       # El seed lee este archivo para sembrar el catalogo de lentes inicial

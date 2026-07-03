@@ -9,10 +9,10 @@ Sprint 3 alcance:
 Sprint 8 agregara /api/admin/* con JWT + CRUD completo.
 """
 import json
-from datetime import date, datetime
+from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
@@ -21,6 +21,7 @@ from sqlmodel import Session, select
 
 from app.database import get_session
 from app.models import Device, LensCatalog, UpdateLog, Version
+from app.utils import utcnow
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api", tags=["public"])
@@ -84,10 +85,7 @@ def get_manifest(session: SessionDep) -> ManifestResponse:
         select(Version).where(Version.is_active == True)  # noqa: E712
     ).first()
     if version is None:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "No hay version activa publicada."},
-        )
+        raise HTTPException(status_code=503, detail="No hay version activa publicada.")
     return ManifestResponse(
         min_apk_version=version.min_apk_version,
         current_apk_version=version.apk_version,
@@ -103,11 +101,12 @@ def get_manifest(session: SessionDep) -> ManifestResponse:
 # POST /api/verify
 # ---------------------------------------------------------------------------
 @router.post("/verify")
-@limiter.limit("1/minute")
+@limiter.limit("10/minute")
 def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
     """Verifica si un device_id tiene licencia valida.
 
-    Rate-limited a 1 request/min/IP para evitar brute-force.
+    Rate-limited a 10 requests/min/IP para evitar brute-force sin romper
+    clinicas donde varios visores comparten IP publica por NAT.
     Decision Sprint 0: licencias permanentes (license_expiry NULL = permanente).
     """
     device = session.exec(
@@ -116,7 +115,7 @@ def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
 
     # Actualizar last_seen / last_ip si el device existe (auditoria).
     if device is not None:
-        device.last_seen = datetime.utcnow()
+        device.last_seen = utcnow()
         device.last_ip = request.client.host if request.client else None
 
     if device is None:
@@ -168,10 +167,7 @@ def get_lenses(session: SessionDep) -> LensesResponse:
         select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
     ).first()
     if catalog is None:
-        return JSONResponse(
-            status_code=503,
-            content={"detail": "No hay catalogo de lentes activo."},
-        )
+        raise HTTPException(status_code=503, detail="No hay catalogo de lentes activo.")
     data = json.loads(catalog.data)
     return LensesResponse(
         version=data.get("version", catalog.version),

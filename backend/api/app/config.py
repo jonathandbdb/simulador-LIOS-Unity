@@ -26,10 +26,23 @@ class Settings(BaseSettings):
     jwt_secret: str = "dev-jwt-secret-change-me"
     admin_default_user: str = "admin"
     admin_default_pass: str = "admin123"
-    api_key_ci: str = "dev-ci-key"
+
+    # CORS de la API publica /api/*. Coma-separado; "*" = cualquier origen.
+    # El panel /admin es server-rendered (mismo origen, cookie httpOnly) y no
+    # depende de CORS. Unity (UnityWebRequest) tampoco es un browser: CORS no
+    # aplica a ese cliente. Por eso el wildcard es seguro siempre que
+    # allow_credentials quede en False (ver main.py) — Starlette no permite
+    # combinar wildcard con credenciales.
+    cors_origins: str = "*"
 
     # Logging
     log_level: str = "info"
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        if self.cors_origins.strip() == "*":
+            return ["*"]
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
 
 settings = Settings()

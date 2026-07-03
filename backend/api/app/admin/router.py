@@ -29,6 +29,7 @@ from app.admin.templating import LANG_COOKIE, get_lang, render
 from app.config import settings
 from app.database import get_session
 from app.models import AdminUser, Device, LensCatalog, UpdateLog, Version
+from app.utils import utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -166,7 +167,7 @@ def devices_create(
     existing = session.exec(select(Device).where(Device.device_id == device_id)).first()
     if existing is not None:
         return _flash_redirect("/admin/devices", "Duplicate device_id", "error")
-    now = datetime.utcnow()
+    now = utcnow()
     d = Device(
         device_id=device_id.strip(),
         name=name.strip(),
@@ -194,7 +195,7 @@ def devices_edit(
     d.name = name.strip()
     d.status = status
     d.license_expiry = _parse_date(license_expiry)
-    d.updated_at = datetime.utcnow()
+    d.updated_at = utcnow()
     session.add(d)
     session.commit()
     return _flash_redirect("/admin/devices", "OK")
@@ -428,7 +429,7 @@ def logs_csv(
     for r in rows:
         w.writerow([r.created_at.isoformat(), r.device_id, r.event, r.detail])
     buf.seek(0)
-    filename = f"logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+    filename = f"logs_{utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
     return StreamingResponse(
         iter([buf.getvalue()]),
         media_type="text/csv",
