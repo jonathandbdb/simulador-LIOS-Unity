@@ -113,6 +113,28 @@ Render por frame (URP RenderGraph):
   `Assets/Prefabs/Cars` (frente del auto = +Z local) en dos carriles (`laneX=±2.6 m`); carril
   derecho se aleja (se ven pilotos), izquierdo viene de frente (faros). Wrap entre `startZ=70` y
   `endZ=-14`, `speed=16 m/s`. Tinta solo el material llamado "Body" vía MaterialPropertyBlock.
+- `Assets/Shaders/WindowPortal.shader` — "portal" de paisaje para la ventana del consultorio
+  (`Consultorio/EnlargedWindow`): lo usan los VIDRIOS del marco `WindowFrame` (modelo
+  `window/WINDOW.fbx`, PVC 3 paños + alféizar; su helper `CTRL_Hole` va desactivado y su slot
+  "Glass" se reemplaza por `WindowView.mat`) y el quad de respaldo `BackdropBig`
+  (`EnlargedWindow_Backdrop.asset`, 3 cm detrás del marco, tapa el hueco original de la pared).
+  El shader samplea el paisaje
+  (`consultorio_paisaje.png`, en `WindowView.mat`) por DIRECCIÓN DE VISTA → paisaje a infinito
+  con paralaje correcto en VR, no un "cuadro" plano. La imagen se mapea a un SECTOR angular
+  acotado, NO a la esfera 360 (mapeo 360 dejaba ~230 px visibles por la ventana y pixelaba):
+  `_HFovDeg` (120°) × `_VFovDeg` (67° = 120·alto/ancho), `_YawCenterDeg` (-40.5° = casa+molino
+  centrados frente a la ventana), `_HorizonV` (0.49 = fila del horizonte, pitch 0). Import de la
+  textura anti-pixelado: NPOT `None` (resolución nativa 2752×1536, sin resample a POT), SIN
+  mipmaps (se samplea LOD 0), override Android ASTC 4x4, wrap Clamp. XR: `GetCameraPositionWS()`
+  (por-ojo en single-pass instanced). Skybox de la escena: `ConsultorioSkybox.mat`
+  (Skybox/Panoramic, misma textura; en la práctica no se ve — la ventana lo tapa y de noche la
+  cámara va en SolidColor). **Gotcha sol/destellos:** el sol de día (`Consultorio/DayWindow`:
+  `SunCore` disco + `SunGlare`/`SunGlare2` billboards clínicos) debe quedar DELANTE de los
+  vidrios-portal (son opacos; el sol original a 15 m detrás de la pared quedaba tapado). Está en
+  s≈4.20 sobre la línea de vista asiento→ventana, reescalado ×0.31 para conservar tamaño angular.
+  **Gotcha:** `Consultorio` tiene scale 0.37 → `EnlargedWindow` compensa con localScale 1/0.37
+  (sus mallas están en metros de mundo); el cuarto del FBX está rotado ~62° (las paredes NO están
+  alineadas a los ejes del mundo).
 - `Assets/Scripts/Runtime/Vision/BookHolder.cs` — mide distancia libro→cámara (suavizada) y la pasa
   al material como `_BookDistanceM` + máscara en pantalla `_BookScreenUV` / `_BookScreenRadius`
   (radio angular real del libro × 1.45, clamp 0.06..0.45). El shader usa esa distancia dentro de
