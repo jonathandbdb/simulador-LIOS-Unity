@@ -12,9 +12,10 @@ limpieza de overrides) está separada en clases PURAS testeables en EditMode. Es
 ## Arquitectura actual
 
 ```
-StreamingAssets/lentes.json ─┐ (defaults embebidos, base del merge)
-persistentDataPath/lentes.json ─┤ cache (última copia buena del backend)
-GET http://192.168.88.198:8080/api/lenses ─┘ sync en background (no bloquea)
+StreamingAssets/config.json ─┐ (opcional: backend_url) ─┐
+StreamingAssets/lentes.json ─┤ (defaults embebidos, base del merge)  │
+persistentDataPath/lentes.json ─┤ cache (última copia buena del backend) │
+GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄────────┘
         │
         ▼
   CatalogParser.Parse / MergeMissingParams   (lógica pura)
@@ -30,9 +31,17 @@ GET http://192.168.88.198:8080/api/lenses ─┘ sync en background (no bloquea)
 - `Assets/Scripts/Runtime/Data/DataManager.cs` — MonoBehaviour singleton. Se auto-crea antes de
   cargar la escena (`[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]`). Orquesta carga, sync,
   aplicación de lentes (`ApplyLens(lensId, eye)` con eye `"left" | "right" | "both"`), overrides
-  en vivo (`OverrideParams`) y su persistencia con debounce. Config backend hardcodeada:
-  `backendUrl = "http://192.168.88.198:8080"` (LAN de desarrollo), endpoint `/api/lenses`,
-  timeout 5 s.
+  en vivo (`OverrideParams`) y su persistencia con debounce. Config backend (P2.4): el
+  `[SerializeField] backendUrl = "http://192.168.88.198:8080"` es el default legacy (en la
+  práctica inconfigurable en el Inspector: `DataManager` se crea por código, no hay instancia en
+  la escena) — `LoadBackendConfig()` intenta sobreescribirlo con
+  `Assets/StreamingAssets/config.json` opcional (`{"backend_url": "..."}`) ANTES del sync;
+  archivo ausente o inválido → se mantiene el default. Endpoint `/api/lenses`, timeout 5 s.
+- `Assets/StreamingAssets/config.json` — config opcional del visor (P2.4). Único campo soportado:
+  `backend_url`. Se lee con el MISMO mecanismo (`LoadStreamingText` / `UnityWebRequest`) con que
+  ya se lee `lentes.json` de `StreamingAssets` en Android (`jar://`). El archivo del repo trae la
+  IP LAN de desarrollo actual (`http://192.168.88.198:8080`) — cambiarlo ahí para apuntar a otro
+  backend sin recompilar.
 - `Assets/Scripts/Runtime/Data/CatalogModel.cs` — POCOs Newtonsoft: `ParamSpec {default,min,max}`,
   `LensDef {id,nombre,descripcion,params}` (params como `Dictionary<string,ParamSpec>` para
   tolerar claves nuevas del backend sin recompilar), `LensCatalog {version,catalogo}` (sin
@@ -44,20 +53,31 @@ GET http://192.168.88.198:8080/api/lenses ─┘ sync en background (no bloquea)
   FALTANTES por lente desde los defaults embebidos; nunca pisa valores existentes; devuelve
   cuántos agregó) y `CountLenses`.
 - `Assets/Scripts/Runtime/Data/LensEngine.cs` — lógica pura: `BuildEyeState(lens, savedOverrides)`
-  (defaults del catálogo + overrides encima), `ComputeBlend(leftId, rightId)` (true si ambos ojos
-  tienen lente y son distintas; solo informativo) y `CleanOverrides(saved, new, catalogParams,
-  epsilon=0.0005)` (si un valor vuelve al default dentro de epsilon el override se ELIMINA;
-  ignora la clave `lens_id`).
-- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.4.0-clinical`,
+  (defaults del catálogo + overrides encima, clampeados con `ClampToSpec`), `ClampToSpec(key,
+  value, specs)` (clamp a `[min, max]` del `ParamSpec` de esa clave; sin spec conocido o sin
+  rango válido pasa sin clamp), `ComputeBlend(leftId, rightId)` (true si ambos ojos tienen lente
+  y son distintas; solo informativo) y `CleanOverrides(saved, new, catalogParams, epsilon=0.0005)`
+  (si un valor vuelve al default dentro de epsilon el override se ELIMINA; ignora la clave
+  `lens_id`).
+- `Assets/Scripts/Runtime/Data/DataManagerLogic.cs` (P6.5) — lógica pura extraída de
+  `DataManager` para poder testearla sin corrutinas/IO: `BuildSyncUrl(backendUrl, endpoint)`
+  (concatena normalizando la barra, evita `"//"` si `backendUrl` trae trailing slash) y
+  `SerializeLensOverrides`/`TryParseLensOverrides` (round-trip de `lens_overrides.json`; el parseo
+  nunca tira excepción, devuelve `false` ante JSON inválido/vacío/nulo). `DataManager` llama a
+  estas mismas funciones — no hay una reimplementación paralela para los tests.
+- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.5.0-clinical`,
   3 lentes: `monofocal`, `panoptix`, `vivity`).
-- `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de la lógica pura + un test de
-  integración sobre el JSON real.
+- `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de `CatalogParser`/`LensEngine`
+  + un test de integración sobre el JSON real.
+- `Assets/Tests/EditMode/DataManagerLogicTests.cs` (P6.5, nuevo) — tests de `DataManagerLogic`
+  (URL de sync + round-trip de overrides). Ver "Límite de cobertura" más abajo para lo que
+  queda deliberadamente FUERA de esta suite.
 
 ### Schema del JSON (contrato con el backend)
 
 ```json
 {
-  "version": "0.4.0-clinical",           // string
+  "version": "0.5.0-clinical",           // string
   "catalogo": [                           // lista ordenada (define el orden de ciclado A/B)
     {
       "id": "monofocal",                 // string, clave única
@@ -72,7 +92,7 @@ GET http://192.168.88.198:8080/api/lenses ─┘ sync en background (no bloquea)
 }
 ```
 
-Params clínicos actuales (11 por lente en `Assets/StreamingAssets/lentes.json`):
+Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`):
 
 | Clave | Unidad / rango | Significado |
 |---|---|---|
@@ -87,19 +107,32 @@ Params clínicos actuales (11 por lente en `Assets/StreamingAssets/lentes.json`)
 | `destello_intensity` | 0–1 | intensidad del starburst |
 | `destello_rayos` | 0–16 (cantidad) | número de rayos del starburst |
 | `straylight` | 0–1 | escala del velo de disability glare por ojo |
+| `astig_magnitude` | 0–1 (default 0) | magnitud normalizada del astigmatismo residual (misma escala del shader) |
+| `astig_axis_deg` | grados, 0–180 (default 0) | eje del astigmatismo (notación oftálmica; C# lo pasa a radianes) |
+
+> **Astigmatismo residual (P4.4, v0.5.0):** default **0 en las 3 lentes** — una LIO no genera
+> astigmatismo per se; el knob representa el astigmatismo residual del PACIENTE (córneal/quirúrgico)
+> que el clínico dializa con sliders. Alimenta el pipeline per-eye ya existente vía `GlareController`
+> (grados→radianes → globals `glare_astig_l/r`, `glare_astig_angle_l/r`). Detalle óptico y
+> precedencia catálogo vs comando live `set_astigmatism` en `docs/vision-optica.md`.
 
 ### Orden de carga (`InitializeAsync`)
 
 1. `LoadLensOverrides()` desde `persistentDataPath/lens_overrides.json` (corrupto ⇒ se ignora).
 2. Defaults embebidos: `StreamingAssets/lentes.json` por UnityWebRequest (en Android vive dentro
    del APK, `jar://`; en desktop se antepone `file://`). Se parsean y guardan para el merge.
-3. Cache: `persistentDataPath/lentes.json` si existe y parsea → `MergeMissingParams` con defaults
+3. **(P2.4)** `LoadBackendConfig()`: intenta `StreamingAssets/config.json` con el mismo mecanismo;
+   si existe y trae `backend_url` no vacío, sobreescribe `backendUrl` (log `DataManager: backendUrl
+   desde config.json -> ...`). Archivo ausente/inválido ⇒ se mantiene el default serializado, sin
+   loguear error (solo un warning si el archivo existe pero no parsea).
+4. Cache: `persistentDataPath/lentes.json` si existe y parsea → `MergeMissingParams` con defaults
    → `CatalogLoaded(version, "cache", count)`. Si no, defaults → `CatalogLoaded(..., "defaults", ...)`.
-4. Sync en background (no bloquea el arranque): `GET {backendUrl}/api/lenses`, timeout 5 s.
-   Éxito (200 + JSON válido) ⇒ guarda el texto crudo en cache, merge con defaults, reemplaza el
-   catálogo, `CatalogLoaded(..., "backend", ...)` + `CatalogSyncedWithBackend(version)`. Cualquier
-   fallo (inalcanzable, no-200, JSON inválido, excepción síncrona por cleartext bloqueado) ⇒
-   `CatalogSyncFailed(mensaje)` y se sigue con el catálogo local.
+5. Sync en background (no bloquea el arranque): `GET {backendUrl}/api/lenses` (con el `backendUrl`
+   ya resuelto en el paso 3), timeout 5 s. Éxito (200 + JSON válido) ⇒ guarda el texto crudo en
+   cache, merge con defaults, reemplaza el catálogo, `CatalogLoaded(..., "backend", ...)` +
+   `CatalogSyncedWithBackend(version)`. Cualquier fallo (inalcanzable, no-200, JSON inválido,
+   excepción síncrona por cleartext bloqueado) ⇒ `CatalogSyncFailed(mensaje)` y se sigue con el
+   catálogo local.
 
 ### Eventos de DataManager
 
@@ -119,8 +152,18 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 
 ## Decisiones y porqués
 
-- Lógica pura (`CatalogParser`, `LensEngine`) separada del MonoBehaviour → testeable en EditMode
-  sin escena ni IO.
+- Lógica pura (`CatalogParser`, `LensEngine`, `DataManagerLogic`) separada del MonoBehaviour →
+  testeable en EditMode sin escena ni IO.
+- **Límite de cobertura de tests (P6.5)** → `DataManager` es un orquestador STATEFUL con
+  corrutinas + `UnityWebRequest` + debounce por `Coroutine`/`WaitForSeconds`; testearlo de verdad
+  exigiría una interfaz de IO/red inyectable y mocks pesados (fake `UnityWebRequest`, fake reloj
+  para el debounce) — redisñar `DataManager` solo para poder mockearlo no es minimal-footprint
+  para lo que aporta. Estrategia elegida: extraer a `DataManagerLogic` (P6.5, arriba) SOLO lo que
+  sale barato y es genuinamente lógica pura (sin cambiar el control de flujo de `DataManager`, que
+  sigue llamando a esas mismas funciones) — el resto (la cadena defaults→cache→backend en sí, la
+  aplicación del debounce, los eventos disparándose en el momento correcto) sigue validándose por
+  play mode (ver Cómo probar) y no tiene tests unitarios. Esto es una decisión de costo/beneficio,
+  no un descuido: no hay plan de agregar mocks de IO a este proyecto.
 - `params` como Dictionary dinámico → el backend puede agregar params nuevos sin recompilar la app.
 - `MergeMissingParams` con los defaults embebidos → un catálogo viejo (cache o backend sin migrar)
   sin claves nuevas (p.ej. `destello_*`, `straylight`) no deja efectos apagados que el shader soporta.
@@ -137,20 +180,30 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
   `GET /api/lenses` y `defaults/lentes.json` es el catálogo semilla del backend. Cambiar claves,
   tipos o rangos exige tocar AMBOS lados (Unity + backend); `CatalogModel.cs` lo advierte
   ("NO cambiar claves ni rangos").
-- **`LensEngine` y `CatalogParser` son lógica pura testeable: tocarlas ⇒ extender
-  `Assets/Tests/EditMode/DataLogicTests.cs`** en el mismo cambio.
-- **Drift real hoy**: `defaults/lentes.json` (lado backend) sigue en `0.3.0-clinical` SIN
-  `straylight`, mientras `Assets/StreamingAssets/lentes.json` está en `0.4.0-clinical` con 11
-  params. Un sync exitoso serviría un catálogo sin `straylight`; lo salva `MergeMissingParams`,
-  pero el contrato está desincronizado.
-- **El test de integración está desactualizado**: `StreamingAssets_RealCatalog_...` asserta versión
-  `"0.3.0-clinical"` y 10 params por lente; el JSON real tiene `"0.4.0-clinical"` y 11
-  (`straylight`). Ese test FALLA contra el catálogo actual hasta que se actualice.
-- **`backendUrl` está hardcodeada a una IP LAN** (`http://192.168.88.198:8080`); es HTTP cleartext:
-  en Android puede lanzar excepción síncrona al iniciar el request (está atrapada y degrada a
-  `CatalogSyncFailed`), pero requiere permitir cleartext o cambiar a HTTPS para producción.
-- **`min`/`max` de `ParamSpec` no se aplican en runtime**: ni `BuildEyeState` ni `OverrideParams`
-  clampean; hoy el clamp depende de la UI (tablet). Un valor fuera de rango entra tal cual.
+- **`LensEngine`, `CatalogParser` y `DataManagerLogic` son lógica pura testeable: tocarlas ⇒
+  extender `Assets/Tests/EditMode/DataLogicTests.cs` (los dos primeros) o
+  `DataManagerLogicTests.cs` (el tercero)** en el mismo cambio.
+- **`backendUrl` es configurable vía `StreamingAssets/config.json`, default legacy la IP LAN**
+  (`http://192.168.88.198:8080`, P2.4): cambiar de backend ya no exige recompilar, solo editar
+  ese JSON (o generar builds con configs distintas). Sigue siendo HTTP cleartext: en Android puede
+  lanzar excepción síncrona al iniciar el request (está atrapada y degrada a `CatalogSyncFailed`),
+  y requiere permitir cleartext o cambiar a HTTPS para producción — eso no cambió.
+- **`config.json` se lee ANTES de la cache/defaults pero el log de la URL efectiva puede
+  confundirse con la del sync**: si el archivo existe, el log `backendUrl desde config.json -> ...`
+  sale primero; el log de sync (`sync con backend -> {url}/api/lenses`) sale después y ya usa esa
+  URL — son dos logs distintos, no una contradicción.
+- **`min`/`max` de `ParamSpec` SI se aplican en runtime** (defensa en profundidad aunque el canal
+  tiene auth por PIN, P1.1: un cliente ya autenticado igual podria inyectar `override_params`
+  fuera de rango — bug, version distinta, etc.). El clamp
+  vive en `LensEngine.ClampToSpec(key, value, specs)` (logica pura, testeable) y se invoca en
+  DOS puntos: `LensEngine.BuildEyeState` (overrides guardados en `lens_overrides.json`, por si el
+  archivo esta corrupto o editado a mano) y `DataManager.OverrideParams` (overrides en vivo desde
+  la tablet/WS, el vector real). Reglas del clamp: si la clave no tiene `ParamSpec` conocido
+  (param nuevo/desconocido) pasa SIN clamp, igual que antes; si el spec no define un rango valido
+  (`max <= min` — pasa cuando `min`/`max` faltan en el JSON, ya que son `float` no-nullable en
+  `CatalogModel.cs` y Newtonsoft los deja en `0,0`) tambien pasa sin clamp, para no aplastar el
+  valor a cero. La UI de la tablet sigue siendo la primera linea de defensa (UX); esto es la
+  segunda linea, en el servidor.
 - **Una cache corrupta no se borra**: si `persistentDataPath/lentes.json` no parsea se ignora en
   cada arranque (warning), pero el archivo queda hasta que un sync exitoso lo sobrescriba.
 - **`ApplyLens` con id inexistente solo loguea warning** y no toca el estado: el ciclado de
@@ -159,22 +212,37 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 ## Cómo probar
 
 1. Editor: Window → General → Test Runner → EditMode → correr `Simulador.Tests.EditMode`
-   (`DataLogicTests`): parseo válido/inválido, merge sin pisar existentes, defaults + overrides,
-   blend, limpieza de overrides e integración contra el JSON real (ver gotcha: hoy ese último
-   está desactualizado y falla).
+   (**19 tests, todos verdes**): `DataLogicTests` (13 — parseo válido/inválido, merge sin pisar
+   existentes, defaults + overrides con clamp, blend, limpieza de overrides e integración contra
+   el JSON real `0.5.0-clinical`/13 params por lente) + `DataManagerLogicTests` (6, P6.5 — armado
+   de URL de sync con/sin trailing slash, round-trip de `lens_overrides.json` con JSON válido e
+   inválido). Sin ventana de Test Runner: `Simulador → Run EditMode Tests`
+   (`Assets/Scripts/Editor/EditModeTestRunner.cs`) loguea el resumen `passed/failed/skipped` + el
+   detalle de cada falla a la consola — útil para verificar desde MCP (`unity_execute_menu_item` +
+   `unity_console_log`) sin abrir la ventana.
 2. Play mode: en consola debe aparecer `DataManager: catalogo vX cargado desde defaults|cache (3
    lentes)` y luego `sync con backend -> http://192.168.88.198:8080/api/lenses` (con el backend
    apagado, el fallo de sync es esperado y no bloquea).
-3. Backend local: levantar `backend/docker-compose.yml`, apuntar `backendUrl` a esa IP y verificar
+3. Backend local: levantar `backend/docker-compose.yml`, editar `Assets/StreamingAssets/config.json`
+   con la IP de ese backend (o apuntar `backendUrl` directo si se prefiere sin el config) y
+   verificar en consola `DataManager: backendUrl desde config.json -> ...` seguido de
    `catalogo vX sincronizado desde backend` + que se escribió `persistentDataPath/lentes.json`.
 4. Overrides: llamar `DataManager.Instance.OverrideParams(...)` (o mover sliders desde la tablet),
    esperar 1 s y verificar `lens_overrides.json` en `persistentDataPath`; volver el valor al
    default y comprobar que la clave desaparece del archivo.
+5. **`config.json` (P2.4):** con el archivo presente (default del repo:
+   `http://192.168.88.198:8080`), Play mode debe loguear `DataManager: backendUrl desde
+   config.json -> http://192.168.88.198:8080` antes del log de sync. Borrar/renombrar el archivo
+   temporalmente y volver a Play → no debe aparecer ese log ni ningún error, y el sync debe seguir
+   usando el default serializado (mismo comportamiento que antes de esta tarea).
 
 ## Pendientes / deuda
 
-- Actualizar `StreamingAssets_RealCatalog_ParsesWithExpectedClinicalValues` a `0.4.0-clinical` /
-  11 params.
-- Sincronizar `defaults/lentes.json` del backend con `straylight` (y versionar el contrato).
-- Hacer configurable `backendUrl` (hoy IP LAN hardcodeada, HTTP cleartext).
-- Clamp de overrides a `min`/`max` de `ParamSpec` en `LensEngine`/`OverrideParams`.
+- Contrato compartido: los nuevos params `astig_magnitude`/`astig_axis_deg` (v0.5.0) están en
+  `Assets/StreamingAssets/lentes.json` pero **aún no en `backend/defaults/lentes.json`**; el merge
+  con defaults embebidos (`MergeMissingParams`) los rellena si el backend sirve un catálogo viejo,
+  pero conviene sincronizar el backend en una tarea futura (@backend-dev).
+- **(P6.5) `DataManager` en sí sigue sin tests unitarios** (ver "Límite de cobertura" en
+  Decisiones): la cadena defaults→cache→backend, el debounce de guardado y los eventos solo se
+  validan por play mode. Aceptado como límite deliberado, no como deuda a resolver — solo
+  reconsiderar si el proyecto adopta una capa de IO inyectable/mockeable más en general.

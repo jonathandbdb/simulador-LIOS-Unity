@@ -70,8 +70,8 @@ Tres assembly definitions — respetar sus fronteras:
 - **URP por tiers**: `Assets/Settings/` tiene pares PC (`PC_Renderer`/`PC_RPAsset`) y Mobile
   (`Mobile_Renderer`/`Mobile_RPAsset`). **Quest usa el tier Mobile** — cambios de render features
   van al tier correcto, no asumir un solo pipeline asset.
-- **Escenas**: `Main.unity` (visor VR), `Tablet.unity` (tablet). `SampleScene.unity` es resto de
-  plantilla — no agregar nada ahí.
+- **Escenas**: `Main.unity` (visor VR), `Tablet.unity` (tablet). No hay otras escenas
+  (`SampleScene.unity`, resto de plantilla, fue eliminada).
 - Tras mutar una escena vía MCP: `unity_scene_save` **siempre**.
 
 ## 📱 IL2CPP — no-negociables
@@ -130,7 +130,7 @@ completo en `docs/README.md`.
 ## 🚫 Restricciones
 
 - No introducir dependencias/paquetes nuevos sin justificación explícita.
-- No tocar `Assets/TutorialInfo/` ni `SampleScene` (restos de plantilla).
+- No tocar `Assets/TutorialInfo/` (resto de plantilla).
 - No hardcodear IPs/URLs nuevas (la del backend en `DataManager.cs` es deuda conocida — ver
   `docs/catalogo-lentes.md`).
 - Git: **nunca** commit/push por iniciativa propia; solo a pedido y solo al remote `lios`.

@@ -35,7 +35,7 @@ El sistema se compone de **tres piezas que cooperan en red local**:
 
 El clínico se sienta junto al paciente con la tablet; el paciente lleva el visor. El clínico cambia de lente o ajusta un parámetro en la tablet y el paciente ve el cambio al instante, mientras el clínico monitoriza el resultado en la pantalla de la tablet. La comunicación visor↔tablet es **totalmente local** (WebSocket + autodescubrimiento UDP), sin depender de internet.
 
-> El proyecto se originó como prototipo en Godot y se ha **reimplementado y ampliado en Unity 6 + URP**, que es la versión presentada en este TFM. El catálogo de lentes embebido (v`0.3.1-clinical`) está calibrado con valores clínicos para tres lentes representativas: **Monofocal estándar**, **PanOptix Pro** (trifocal difractiva) y **Vivity EDOF**.
+> El proyecto se originó como prototipo en Godot y se ha **reimplementado y ampliado en Unity 6 + URP**, que es la versión presentada en este TFM. El catálogo de lentes embebido (v`0.5.0-clinical`) está calibrado con valores clínicos para tres lentes representativas: **Monofocal estándar**, **PanOptix Pro** (trifocal difractiva) y **Vivity EDOF**.
 
 ---
 
@@ -132,8 +132,9 @@ adb logcat -s Unity         # ver logs desde el visor
 
 #### Compilar la TABLET (Android, sin VR)
 
-La tablet **no** usa OpenXR (si no, pantalla negra en un dispositivo sin VR). Hay un build script dedicado que desactiva temporalmente los XR loaders:
+La tablet **no** usa OpenXR (si no, pantalla negra en un dispositivo sin VR). Hay un build script dedicado que desactiva temporalmente los XR loaders y usa un `applicationIdentifier` propio:
 
+- Package name: `com.simulador.tablet` (distinto del visor — pueden convivir instalados en el mismo dispositivo).
 - Desde el editor: menú **`Simulador → Build Tablet (Android)`**.
 - Por CLI (headless):
 
@@ -165,8 +166,7 @@ Desde el editor: *Window → General → Test Runner → EditMode → Run All*. 
 ├── Assets/
 │   ├── Scenes/
 │   │   ├── Main.unity            # Escena del VISOR (VR)
-│   │   ├── Tablet.unity          # Escena de la TABLET de control
-│   │   └── SampleScene.unity     # Escena de plantilla (sin uso)
+│   │   └── Tablet.unity          # Escena de la TABLET de control
 │   ├── Scripts/
 │   │   ├── Runtime/
 │   │   │   ├── Data/             # Catálogo y motor de lentes

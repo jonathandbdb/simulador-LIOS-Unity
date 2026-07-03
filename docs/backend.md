@@ -13,16 +13,21 @@ Stack: FastAPI 0.115 + uvicorn (Python 3.12), SQLModel, Postgres 16, MinIO, Cadd
 | `backend/docker-compose.yml` | 4 servicios: `api` (FastAPI), `db` (postgres:16-alpine), `bucket` (MinIO, consola en `127.0.0.1:9001`), `caddy` (reverse proxy/TLS). Monta `defaults/lentes.json` como volumen read-only en `/seed/lentes.json` del `api`. |
 | `backend/Caddyfile` | Site address `{$SCHEME}{$DOMAIN}:{$PORT}`; `/healthz` respondido por Caddy, el resto `reverse_proxy api:8000`. Con `DOMAIN` vacío escucha en cualquier hostname (acceso por IP de LAN desde Quest/tablet). |
 | `backend/api/Dockerfile` | python:3.12-slim + libpq5/curl, uvicorn en :8000 con `--proxy-headers`, healthcheck a `/healthz`. |
-| `backend/api/app/main.py` | App FastAPI; monta routers público/admin/files y `/static`; en startup: `init_db()` (create_all), `seed()`, `ensure_bucket()`. Handler global que convierte `HTTPException(303, Location=...)` en redirect (mecanismo del login admin). CORS abierto (`*`). |
-| `backend/api/app/config.py` | `Settings` (pydantic-settings) leídos de entorno/.env: `database_url`, `s3_*`, `public_base_url`, `jwt_secret`, `admin_default_user/pass`, `api_key_ci`, `log_level`. |
-| `backend/api/app/database.py` | Engine SQLAlchemy (`pool_pre_ping=True`), `init_db()` = `SQLModel.metadata.create_all` (sin Alembic todavía), dependency `get_session`. |
+| `backend/api/app/main.py` | App FastAPI; monta routers público/admin/files y `/static`. Arranque vía `lifespan` (no `@app.on_event`, deprecado): `run_migrations()` (Alembic), `seed()`, `ensure_bucket()`. Handler global que convierte `HTTPException(303, Location=...)` en redirect (mecanismo del login admin). CORS configurable (`CORS_ORIGINS`, default `*`) con `allow_credentials=False`. |
+| `backend/api/app/config.py` | `Settings` (pydantic-settings) leídos de entorno/.env: `database_url`, `s3_*`, `public_base_url`, `jwt_secret`, `admin_default_user/pass`, `cors_origins` (+ property `cors_origins_list`), `log_level`. |
+| `backend/api/app/database.py` | Engine SQLAlchemy (`pool_pre_ping=True`; para SQLite —solo tests— usa `StaticPool` + `check_same_thread=False`), `init_db()` = `SQLModel.metadata.create_all` (fallback solo para tests, ver más abajo), dependency `get_session`. |
+| `backend/api/app/migrations.py` | `run_migrations()`: aplica Alembic (`upgrade head`) en el arranque normal del contenedor. Si detecta tablas de la app sin `alembic_version` (BD creada antes por `create_all`), hace `stamp` a `_INITIAL_REVISION` (`"0001"`, NO `head`) antes del `upgrade head` — así, si ya existe una revisión posterior a la inicial, el `upgrade` sí la aplica en vez de saltearla. |
+| `backend/api/app/utils.py` | `utcnow()`: helper que devuelve `datetime.now(timezone.utc)` sin tzinfo (naive UTC) — reemplaza a `datetime.utcnow()` (deprecado desde Python 3.12) sin cambiar el formato de columnas `timestamp without time zone` ya existentes en Postgres. |
+| `backend/api/alembic/`, `backend/api/alembic.ini` | Migraciones Alembic. `env.py` lee la URL desde `app.config.settings` (no del `.ini`) e importa `app.models` para poblar `target_metadata`. **A propósito NO llama `logging.config.fileConfig()`** (ver Gotchas — pisaba el logging de la app). Una sola revisión (`0001_initial_schema`), escrita a mano (no autogenerada) para no tener que reflejar/tocar la BD real al introducirla — replica el schema que ya generaba `create_all`. |
 | `backend/api/app/models.py` | Modelos SQLModel: `Device` (device_id único, status active/suspended/pending, `license_expiry` NULL = permanente), `Version` (apk/asset version, URLs, `pck_sha256`, una sola `is_active`), `LensCatalog` (JSON string versionado, una sola activa), `UpdateLog` (eventos de update por device), `AdminUser` (bcrypt hash, rol). |
 | `backend/api/app/routers.py` | Endpoints públicos `/api/*` + rate limiter (slowapi). |
-| `backend/api/app/seed.py` | Seed idempotente en startup: admin user, catálogo desde `/seed/lentes.json`, `Version` dummy, device de test `DEV_TEST_001`. |
+| `backend/api/app/seed.py` | Seed idempotente en startup: admin user, catálogo desde `/seed/lentes.json`, `Version` dummy, device de test `DEV_TEST_001`. Logging (`logging`, no `print()`). |
 | `backend/api/app/admin/` | Panel admin: `router.py` (login, dashboard, CRUD devices/lenses/versions, logs con filtros/CSV), `auth.py` (JWT en cookie httpOnly), `templating.py` + `i18n.py` (Jinja2, es/en), `storage.py` (boto3 → MinIO), `files.py` (proxy público `/files/<key>`). |
 | `backend/api/app/templates/` | `base/login/dashboard/devices/lenses/versions/logs.html` (Jinja2 + HTMX). |
-| `defaults/lentes.json` | Semilla del catálogo (v`0.3.0-clinical`, 3 lentes: monofocal, panoptix, vivity; 10 params clínicos por lente con default/min/max). |
-| `backend/.env.example` | Plantilla de `.env`: DOMAIN/SCHEME/PORT, PUBLIC_BASE_URL, POSTGRES_*, MINIO_*, S3_BUCKET, JWT_SECRET, ADMIN_DEFAULT_*, API_KEY_CI, LOG_LEVEL. |
+| `defaults/lentes.json` | Semilla del catálogo (v`0.5.0-clinical`, 3 lentes: monofocal, panoptix, vivity; 13 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg`). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/MD5 en cada actualización). |
+| `backend/.env.example` | Plantilla de `.env`: DOMAIN/SCHEME/PORT, PUBLIC_BASE_URL, POSTGRES_*, MINIO_*, S3_BUCKET, JWT_SECRET, ADMIN_DEFAULT_*, CORS_ORIGINS, LOG_LEVEL. |
+| `backend/api/requirements-dev.txt` | Deps de test (`pytest`, `httpx`) además de `requirements.txt`. No se instala en la imagen de producción. |
+| `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit), `test_admin_smoke.py` (login admin), `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. |
 
 ```
 Quest / Tablet ──HTTP──▶ caddy :8080/:443 ──▶ api :8000 ──▶ db (Postgres 16)
@@ -35,9 +40,9 @@ Browser admin ──▶ /admin (Jinja2+HTMX, cookie JWT)
 
 | Endpoint | Consumidor | Notas |
 |----------|-----------|-------|
-| `GET /api/lenses` | `DataManager.TrySyncWithBackend()` — hace GET a `backendUrl + "/api/lenses"` con timeout 5 s | Devuelve `{version, catalogo:[...]}` del `LensCatalog` activo; 503 si no hay activo. |
-| `GET /api/manifest.json` | UpdateManager (visor) | Versión activa: `min_apk_version`, URLs de APK/PCK, `pck_sha256`. 503 sin versión activa. |
-| `POST /api/verify` | LicenseManager (visor) | Body `{device_id,...}`; 403 con `reason` (`DEVICE_NOT_FOUND` / `DEVICE_SUSPENDED` / `LICENSE_EXPIRED`) o `status: ok`. **Rate-limited 1 req/min/IP.** Actualiza `last_seen`/`last_ip`. |
+| `GET /api/lenses` | `DataManager.TrySyncWithBackend()` — hace GET a `backendUrl + "/api/lenses"` con timeout 5 s | Devuelve `{version, catalogo:[...]}` del `LensCatalog` activo; 503 (`HTTPException`, `{"detail": "..."}`) si no hay activo. |
+| `GET /api/manifest.json` | UpdateManager (visor) | Versión activa: `min_apk_version`, URLs de APK/PCK, `pck_sha256`. 503 (`HTTPException`, `{"detail": "..."}`) sin versión activa. |
+| `POST /api/verify` | LicenseManager (visor, no implementado aún en Unity) | Body `{device_id,...}`; 403 plano `{status, reason, message}` (`DEVICE_NOT_FOUND` / `DEVICE_SUSPENDED` / `LICENSE_EXPIRED`) o `status: ok`. **Sin `response_model` a propósito** (ver Decisiones) — no confundir con las rutas `response_model` de arriba. **Rate-limited 10 req/min/IP.** Actualiza `last_seen`/`last_ip`. |
 | `POST /api/log` | visor | Batch de eventos; acepta devices desconocidos (debugging). Sin rate limit. |
 | `GET /files/{key}` | visor (descarga APK/PCK) | Proxy streaming a MinIO; así el manifest publica URLs `public_base_url/files/...` sin exponer MinIO ni firmar tokens. |
 | `GET /healthz`, `GET /`, `GET /docs` | humanos/infra | Health, índice, Swagger. |
@@ -53,18 +58,21 @@ La URL que usa Unity está hardcodeada en `Assets/Scripts/Runtime/Data/DataManag
 
 ### Seed del catálogo
 
-`_seed_lens_catalog` lee `/seed/lentes.json` (volumen desde `defaults/lentes.json`; fallback inline mínimo si no está montado). Lógica de promoción: si el catálogo activo en BD tiene una versión listada en `_KNOWN_SEED_VERSIONS` (`0.0.1-seed`, `0.1.0-fallback`, `0.2.0-noche`, `0.3.0-clinical`) se considera seed no editado y se reemplaza por la versión nueva del JSON; si NO está en esa lista, se asume edición manual del admin y **no se pisa**.
+`_seed_lens_catalog` lee `/seed/lentes.json` (volumen desde `defaults/lentes.json`; fallback inline mínimo si no está montado). Lógica de promoción: si el catálogo activo en BD tiene una versión listada en `_KNOWN_SEED_VERSIONS` (`0.0.1-seed`, `0.1.0-fallback`, `0.2.0-noche`, `0.3.0-clinical`, `0.4.0-clinical`, `0.4.0-fallback`, `0.5.0-clinical`) se considera seed no editado y se reemplaza por la versión nueva del JSON; si NO está en esa lista, se asume edición manual del admin y **no se pisa**. El fallback inline (1 lente, sin `straylight` ni `astig_*`) usa su propia versión `0.4.0-fallback` — nunca la versión clínica real (`0.5.0-clinical`) — precisamente para que, si el volumen aparece más tarde con el catálogo completo, la promoción se dispare (versiones distintas) en vez de hacer short-circuit por igualdad de versión con contenido mentido. **Cada versión nueva de `defaults/lentes.json` debe agregarse a `_KNOWN_SEED_VERSIONS`** (`backend/api/app/seed.py`) o no se auto-promueve (verificado en vivo al pasar de `0.4.0-clinical` a `0.5.0-clinical`: `docker compose logs api` mostró el reemplazo del catálogo y `GET /api/lenses` devolvió la versión nueva con `astig_magnitude`/`astig_axis_deg`).
 
 ## Decisiones y porqués
 
 - **Compose con 4 servicios y Caddy delante** → TLS automático (Let's Encrypt) en prod sin tocar la app; en local, `DOMAIN` vacío + `SCHEME=http://` permiten acceder por IP de LAN desde el Quest.
 - **`${DOMAIN-localhost}` (guion, no `:-`) en el compose** → un `DOMAIN=` vacío en `.env` NO cae al default; ese vacío es justamente el modo "escuchar en cualquier hostname".
-- **SQLModel + `create_all` en vez de Alembic** → schema aún inestable; migrar a Alembic cuando se congele (comentario en `database.py`).
+- **Alembic en vez de `create_all`** → el arranque corre `run_migrations()` (`app/migrations.py`). Adopta BDs existentes creadas por versiones previas (`create_all`, sin Alembic) detectando tablas de la app sin `alembic_version` y haciendo `stamp` a `_INITIAL_REVISION` (`"0001"`) — **no a `head`** — antes de un `upgrade head` que aplica cualquier migración posterior a esa. Estampar `head` directamente sería incorrecto en cuanto exista una revisión `0002+`: la BD vieja quedaría marcada como si ya tuviera ese DDL sin haberlo corrido (columnas faltantes silenciosas). Hoy `head == "0001"` así que el efecto observable es el mismo, pero el código ya está preparado para cuando deje de serlo. `init_db()` (`create_all`) sigue existiendo solo como fallback para los tests con SQLite en memoria.
 - **Proxy `/files/<key>` en vez de URLs directas a MinIO** → MinIO no se expone al exterior y las URLs del manifest no necesitan tokens firmados.
 - **JWT en cookie httpOnly para el admin (no Bearer)** → el panel es server-rendered (Jinja2+HTMX); la cookie evita manejar tokens en JS y `httponly` mitiga XSS.
-- **`/api/verify` rate-limited a 1/min/IP** → anti brute-force de device_ids; `/api/log` sin límite porque un update legítimo emite varios eventos.
+- **CORS con `allow_origins` configurable (`CORS_ORIGINS`, default `*`) y `allow_credentials=False` siempre** → Starlette no permite combinar wildcard con credenciales (era la incoherencia previa). El panel `/admin` es server-rendered y va por cookie de mismo origen (no necesita CORS); la API pública la consume Unity (`UnityWebRequest`), que no es un browser y no aplica CORS. Por eso `allow_credentials=False` es seguro incluso con wildcard; si algún día un browser cross-origin necesita pegarle a `/api/*` con credenciales, hay que fijar `CORS_ORIGINS` a orígenes explícitos (no basta con la lista, Starlette también exige `allow_credentials=True` en ese caso).
+- **`/api/verify` rate-limited a 10/min/IP** (antes 1/min) → 1/min rompía con NAT: varios visores de una misma clínica comparten IP pública y se bloqueaban entre sí. 10/min sigue siendo anti brute-force razonable; `/api/log` sin límite porque un update legítimo emite varios eventos.
+- **`/api/verify` sin `response_model` (deliberado)** → a diferencia de `/api/manifest.json` y `/api/lenses` (que sí tienen `response_model` y por eso sus 503 se convirtieron de `JSONResponse` cruda a `HTTPException` para que el schema de OpenAPI sea fiel), `/api/verify` devuelve formas distintas en éxito (`VerifyResponse`) y en 403 (`VerifyDenied`, plano, sin nested `detail`) — es el contrato documentado para el futuro `LicenseManager` de Unity. Convertirlo a `HTTPException(403, detail=...)` anidaría la respuesta bajo `"detail"` y rompería esa forma, así que se dejó como estaba (deuda de fidelidad de OpenAPI, no de comportamiento).
 - **Licencias permanentes por defecto (`license_expiry` NULL)** y **pre-registro manual de devices** (desconocido = 403) → decisiones de Sprint 0.
 - **Seed idempotente con lista de versiones "conocidas"** → permite actualizar el catálogo por git pull + restart sin pisar recalibraciones hechas desde el panel.
+- **`datetime.utcnow()` reemplazado por `utils.utcnow()` (naive UTC), no por `datetime.now(timezone.utc)` aware** → evita mezclar naive/aware en las columnas `timestamp without time zone` ya existentes en Postgres sin cambiar el formato guardado ni arriesgar comparaciones (ninguna hoy compara estos campos, pero es la opción de menor riesgo hacia adelante).
 - **Uploads acumulados en memoria (`storage.py`)** → simplicidad; APK+PCK ~150 MB es aceptable, migrar a multipart si crece.
 
 ## Gotchas
@@ -72,11 +80,11 @@ La URL que usa Unity está hardcodeada en `Assets/Scripts/Runtime/Data/DataManag
 - **`defaults/lentes.json` es contrato compartido con Unity.** `CatalogParser.cs` (Unity) parsea el mismo schema `{version, catalogo:[{id, nombre, descripcion, params:{clave:{default,min,max}}}]}` que sirve `/api/lenses` y que siembra el seed. Cambiar claves o estructura exige tocar **ambos lados** (backend/defaults y `Assets/Scripts/Runtime/Data/CatalogParser.cs` + `CatalogModel.cs` + `Assets/StreamingAssets/lentes.json`). Unity tolera params NUEVOS sin recompilar (`MergeMissingParams` completa faltantes desde los defaults embebidos), pero renombrar o cambiar tipos rompe.
 - **`admin/admin123` y `dev-jwt-secret-change-me` jamás a producción.** Son los defaults de `config.py`/compose/`.env.example`. El dashboard muestra un aviso si siguen activos, pero nada lo impide. No hay UI de cambio de contraseña: rotar vía `.env` **antes del primer arranque** (el seed solo crea el user si no existe; cambiar `.env` después no actualiza el hash en BD — hay que borrar el user o la BD).
 - **Si el catálogo activo fue editado desde el panel, el seed nunca más lo actualiza** (versión fuera de `_KNOWN_SEED_VERSIONS`). Deseado, pero sorprende: subir un `defaults/lentes.json` nuevo no cambia nada hasta activar manualmente un catálogo en `/admin/lenses`. Además, cada versión de seed nueva debe agregarse a `_KNOWN_SEED_VERSIONS` o no se auto-promoverá en la siguiente.
-- **Deriva de versiones del catálogo:** el embebido de Unity (`Assets/StreamingAssets/lentes.json`) va por `0.4.0-clinical` mientras `defaults/lentes.json` sigue en `0.3.0-clinical`. Un visor con backend accesible pisará su catálogo 0.4.0 por el 0.3.0 del backend (el merge repone params faltantes, no valores recalibrados). Mantenerlos sincronizados.
 - **El device de test `DEV_TEST_001` y la `Version` dummy** los crea el seed siempre; eliminarlos antes de producción (el dummy tiene URLs `/dummy/...` inexistentes y SHA256 de archivo vacío).
-- **`/api/verify` devuelve 403 al segundo intento en menos de 1 min** desde la misma IP (429 de slowapi en realidad); al probar con curl repetido parece "roto" sin serlo.
-- **`backend/README.md` menciona `AUTO_HTTPS=on`**, variable que no existe en el compose ni en `.env.example`; el mecanismo real de HTTPS es `DOMAIN=<dominio>` + `SCHEME=` (vacío) + `PORT=443`.
-- **CORS está abierto (`*`)** con `allow_credentials=True`; pendiente de restringir (comentario "Sprint 9+" en `main.py`).
+- **`/api/verify` devuelve 429 después del 10º intento en menos de 1 min** desde la misma IP (slowapi); al probar con curl en loop rápido parece "roto" sin serlo.
+- **Adopción de Alembic en BD existente**: la detección es "hay tablas de la app pero no `alembic_version`" → `stamp` a `_INITIAL_REVISION` (`"0001"`, constante en `app/migrations.py`), seguido de `upgrade head`. Esto asume que toda BD sin `alembic_version` tiene el schema exacto de `0001` (cierto hoy, es lo único que generaba `create_all`). Si el día de mañana se agrega `0002` y de verdad existiera una BD pre-Alembic con un schema *distinto* al de `0001` (no debería pasar, pero), este mecanismo no lo detecta — asume `0001` siempre.
+- **Tests (`backend/api/tests/`) fuerzan `DATABASE_URL=sqlite:///:memory:` en `conftest.py` antes de importar `app.*`** — si se agregan nuevos tests que importan módulos de la app fuera de ese conftest (o se reordena la colección de pytest), revisar que el env var siga fijándose primero; `Settings()` es un singleton leído una sola vez al importar `app.config`.
+- **`alembic/env.py` NO llama `logging.config.fileConfig(config.config_file_name)`, a propósito.** Es el default del template de Alembic, pero `run_migrations()` corre `env.py` desde DENTRO del proceso de la app (no como CLI standalone): `fileConfig()` reconfigura el logger root con el nivel/handler de `[logger_root]` en `alembic.ini` (nivel `WARNING`) y pisa el `logging.basicConfig(level=...)` de `main.py` para el resto de la vida del proceso — silenciaba TODO log de la app (`seed`, `ensure_bucket`, "Backend listo en...") después del primer "Aplicando migraciones Alembic..." de cada arranque. Detectado en vivo: el catálogo se promovía bien (`0.4.0-clinical → 0.5.0-clinical`) pero sin ningún log después de esa línea. Si se necesita el formato lindo de `alembic.ini` al correr `alembic <cmd>` como CLI suelto (fuera de la app), hoy no lo tiene — usa el logger root desnudo (solo WARNING+, sin handler).
 
 ## Cómo probar
 
@@ -94,7 +102,15 @@ curl -X POST http://localhost:8080/api/verify \
 # → {"status":"ok","device_name":"Visor de desarrollo",...}
 curl -X POST http://localhost:8080/api/verify \
      -H "Content-Type: application/json" -d '{"device_id":"NOEXISTE"}'
-# → 403 DEVICE_NOT_FOUND (esperar 1 min entre llamadas por el rate limit)
+# → 403 DEVICE_NOT_FOUND (10 req/min/IP de cuota antes del 429 de slowapi)
+```
+
+Tests (SQLite en memoria, sin Docker):
+```bash
+cd backend/api
+python -m venv .venv && .venv/Scripts/activate   # o source .venv/bin/activate
+pip install -r requirements-dev.txt
+python -m pytest -v
 ```
 
 - Panel admin: `http://localhost:8080/admin` → login `admin`/`admin123` → dashboard con avisos de credenciales inseguras.
@@ -104,10 +120,7 @@ curl -X POST http://localhost:8080/api/verify \
 
 ## Pendientes / deuda
 
-- Migrar de `SQLModel.metadata.create_all` a Alembic cuando el schema se estabilice.
-- Restringir CORS al dominio del panel (hoy `*`).
-- Endpoint `/api/admin/versions` con API key (`API_KEY_CI`) para CI/CD — la variable existe pero nada la consume aún.
+- `/api/verify` no tiene `response_model` (por diseño, ver Decisiones) — su 403/200 no aparecen tipados en el OpenAPI generado; documentado ahí, no se resuelve sin tocar el contrato con el futuro `LicenseManager` de Unity.
+- Endpoint `/api/admin/versions` con API key para CI/CD (Sprint 11) — no existe todavía; el `API_KEY_CI` que quedaba sin consumidor se quitó de `config.py`/compose/`.env.example` (si se implementa, agregar el setting de nuevo).
 - UI de cambio de contraseña del admin (hoy solo vía `.env` + reseed).
-- `backend/README.md` desactualizado: no lista el subpaquete `admin/`, marca como "Sprint 8 pendiente" el panel ya implementado y referencia `AUTO_HTTPS` inexistente.
-- Sincronizar `defaults/lentes.json` (0.3.0-clinical) con el embebido de Unity (0.4.0-clinical) y agregar la versión nueva a `_KNOWN_SEED_VERSIONS`.
 - Uploads del panel acumulan el archivo completo en memoria; multipart si los binarios crecen.

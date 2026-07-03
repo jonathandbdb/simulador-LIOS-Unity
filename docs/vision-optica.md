@@ -12,7 +12,7 @@ Todo está **bifurcado por ojo** (`unity_StereoEyeIndex`): cada ojo puede llevar
 
 ```
 DataManager (catálogo, EyeState por ojo)
-   │ evento VisionStateChanged(eye, state)
+   │ evento VisionStateChanged(eye, state)   [los 3 heredan de VisionStateBinder → ciclo de vida común]
    ├─► VisionParamsBinder ──► Material VisionPostProcess (_XxxL/_XxxR)
    ├─► GlareController ─────► Shader globals glare_*_l / glare_*_r (billboards)
    └─► DisabilityGlareController ─ lee "straylight" por ojo
@@ -20,27 +20,64 @@ DataManager (catálogo, EyeState por ojo)
               └─► globals _GlareVeilL/R, _GlareVeilUV, _GlareVeilTint
 
 Render por frame (URP RenderGraph):
-  opacos + skybox ─► VisionRendererFeature (blur+contraste+velo, POR OJO)
+  opacos + skybox ─► VisionRendererFeature (blur+astig+contraste+velo, POR OJO)
                   ─► transparentes (billboards GlareBillboard, aditivos, SIN blur)
+  (gate de CPU: si VisionActivity.AnyActive == false, la feature NO inyecta passes ese frame)
 ```
 
 - `Assets/Scripts/Runtime/Vision/VisionRendererFeature.cs` — ScriptableRendererFeature con la API
   RenderGraph (Unity 6). Inyecta en `BeforeRenderingTransparents` dos blits ping-pong: pass 0
-  (efecto) `source→temp` y pass 1 (copia) `temp→source`. Pide `ScriptableRenderPassInput.Depth`
-  y aborta si el target activo es el backbuffer (no se puede leer+escribir).
+  (esfera/defocus) `source→temp` y pass 1 (cilindro/astig + contraste + velo) `temp→source`. Pide
+  `ScriptableRenderPassInput.Depth` y aborta si el target activo es el backbuffer (no se puede
+  leer+escribir). **Gate de CPU (3.1):** antes de `EnqueuePass` consulta `VisionActivity.AnyActive`;
+  si NINGÚN efecto es no-nulo en ambos ojos, saltea la inyección (se ahorran los 2 blits full-screen
+  por ojo). Loguea `[Vision] Post-proceso gate ON/OFF` solo en las transiciones.
+- `Assets/Scripts/Runtime/Vision/VisionActivity.cs` — estado agregado "hay efecto" por ojo para el
+  gate. Lo escriben (con estado C# ya conocido, NO leyendo el material): `VisionParamsBinder`
+  (`ParamsL/R = max(desenfoque_max, contrast_loss)`), `GlareController` (`AstigL/R`),
+  `DisabilityGlareController` (`VeilL/R` = velo **suavizado** actual, no el target). `AnyActive` es
+  el OR con epsilon 0.001 sobre los 6 campos. Criterio conservador: `desenfoque_max > 0` mantiene el
+  pass aunque todo esté en foco (no se sabe per-pixel sin correr el shader). Sin histéresis: el velo
+  es continuo (suavizado exponencial), no titila al cruzar el epsilon. Un
+  `[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` resetea los 6 estáticos a 0 al entrar a
+  Play (simetría con `GlareBillboardInstance.ResetRegistry`): en fast-enter-playmode sin domain
+  reload los estáticos conservarían el último valor de la sesión previa y el gate arrancaría ON
+  espurio hasta que los binders repongan su estado real.
 - `Assets/Shaders/VisionPostProcess.shader` — el post-proceso en sí (ver fórmulas abajo).
-- `Assets/Scripts/Runtime/Vision/VisionParamsBinder.cs` — puente DataManager→material. Mapea claves
+- `Assets/Scripts/Runtime/Vision/VisionStateBinder.cs` — **clase base abstracta (P6.1)** de los tres
+  suscriptores de `DataManager.VisionStateChanged`. Centraliza el ciclo de vida que triplicaban:
+  coroutine `Start` que espera al singleton `DataManager`, suscripción al evento, despacho inicial
+  por ojo (`ApplyEyeState("left"/"right", …)`) y desuscripción en `OnDisable`. Las subclases sólo
+  implementan `protected abstract ApplyEyeState(eye, state)` (su mapeo específico). Dos hooks
+  virtuales preservan las diferencias sutiles SIN homogeneizar: `OnAfterInitialDispatch()` (trabajo
+  extra dentro de la MISMA coroutine tras el despacho inicial — lo usa `VisionParamsBinder` para el
+  blend demo opt-in que espera al catálogo) y `OnBinderDisable()` (limpieza extra en `OnDisable` — lo
+  usa `DisabilityGlareController` para resetear `_GlareVeilL/R` + `VisionActivity.Veil*`).
+  `GlareController` conserva su propio `OnEnable` (publica los umbrales de facing), independiente de
+  este ciclo de vida, por lo que no necesita hook. Los tres MonoBehaviours mantienen su nombre de
+  clase (referencias serializadas en `Main.unity`).
+- `Assets/Scripts/Runtime/Vision/VisionParamsBinder.cs` — puente DataManager→material (hereda
+  `VisionStateBinder`). Mapea claves
   del catálogo a uniforms por ojo: `foco_lejos_m→_FocoLejosL/_FocoLejosR`,
   `foco_intermedio_m→_FocoIntermedioL/R`, `foco_cerca_m→_FocoCercaL/R`,
   `profundidad_foco_m→_ProfundidadFocoL/R`, `desenfoque_max→_DesenfoqueMaxL/R`,
   `contrast_loss→_ContrastLossL/R`. Además aplica un blend demo al arrancar
   (`applyDemoBlendOnStart`: monofocal OI / panoptix OD).
-- `Assets/Scripts/Runtime/Vision/GlareController.cs` — DataManager→shader globals de los billboards:
+- `Assets/Scripts/Runtime/Vision/GlareController.cs` — DataManager→shader globals de los billboards
+  (hereda `VisionStateBinder`; `ApplyEyeState` delega en `SetEyeGlobals`):
   `halo_intensity→glare_halo_l/r`, `halo_extra_rings→glare_pupil_l/r`,
   `destello_intensity→glare_star_l/r`, `destello_rayos→glare_rays_l/r`. Escala por escenario:
   halos × `haloScale`, destellos × `starScale`, `destello_rayos` (cantidad) nunca se escala.
-  Expone `SetAstigmatism(enabled, magnitudNorm 0..1, ánguloRad)` → globals `glare_astig` /
-  `glare_astig_angle` (GLOBAL, mismo valor para ambos ojos; lo llama la capa Net/tablet).
+  **Astigmatismo del catálogo (P4.4):** `SetEyeGlobals` también lee `astig_magnitude` (0..1) y
+  `astig_axis_deg` (grados→radianes) del estado del ojo y los publica por el MISMO camino per-eye
+  que el comando live, llamando `SetAstigmatism` (independiente de `halosEnabled`: el astigmatismo es
+  un defecto óptico, no un halo). Expone `SetAstigmatism(eye, enabled, magnitudNorm 0..1, ánguloRad)`
+  con `eye ∈ "left"|"right"|"both"` (misma convención que `DataManager.OverrideParams`) → globals
+  PER-EYE `glare_astig_l/r` y `glare_astig_angle_l/r` (patrón `glare_*_l/r`) + `VisionActivity.AstigL/R`
+  (gate de CPU); cada global es el estado por ojo, independiente del otro. Los consumen ambos shaders
+  (billboards y post-proceso). Publica los umbrales de facing (`_GlareFacingLo/Hi`) en **`OnEnable`**
+  (no en `Start`): `Start` es una coroutine que espera a `DataManager`, y hasta que resolvía, el
+  billboard hacía `smoothstep(0,0,·)` degenerado los primeros frames (ver gotcha).
 - `Assets/Shaders/GlareBillboard.shader` — halo + starburst + trazo astigmático procedurales sobre
   un quad que sigue a la cámara con tamaño angular constante. Aditivo (`Blend One One`),
   `ZTest LEqual` (se ocluye tras geometría). Constantes angulares en radianes:
@@ -54,13 +91,24 @@ Render por frame (URP RenderGraph):
 - `Assets/Scripts/Runtime/Vision/GlareBillboardInstance.cs` — componente serializable por fuente:
   `srcColor`, `srcEnergy` (faro = 1.0, relativo), `srcDir` (dirección local del haz; 0 =
   omnidireccional), `seed`, `distanceInvariant` (sol). Reaplica todo por MaterialPropertyBlock en
-  `OnEnable` y dibuja gizmos de dirección en editor.
-- `Assets/Scripts/Runtime/Vision/DisabilityGlareController.cs` — encandilamiento clínico (abajo).
+  `OnEnable` y dibuja gizmos de dirección en editor. **Registro estático (3.3):** mantiene una lista
+  estática `Active` (read-only) por `OnEnable`/`OnDisable` que consume `DisabilityGlareController` en
+  lugar de escanear la escena; `[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` la limpia al
+  arrancar Play (robusto ante fast-enter-play-mode donde los statics no se resetean).
+- `Assets/Scripts/Runtime/Vision/DisabilityGlareController.cs` — encandilamiento clínico (abajo;
+  hereda `VisionStateBinder`, `ApplyEyeState` delega en `ReadStray` y `OnBinderDisable` resetea el velo).
 - `Assets/Scripts/Runtime/Vision/ScenarioManager.cs` — cambia consultorio ↔ ruta_noche: activa el
   root, muestra/oculta el libro, setea ambiente (día: `ambientLight (0.55,0.52,0.45)`, sol
   direccional configurado pero OFF; noche: ambiente `(0.14,0.14,0.15)`, `reflectionIntensity 0`,
   luna direccional 0.3 casi neutra sin sombras, fondo `SolidColor` casi negro), recoloca el rig XR
-  y setea `_PupilScene` (0 = día, 1 = noche). De día `haloScale=0.2` y `starScale=0.7`.
+  y fija el TARGET de pupila (`_pupilTarget` 0 = día, 1 = noche). De día `haloScale=0.2` y
+  `starScale=0.7`. **Pupila dinámica (4.6):** `Update()` interpola `_PupilScene` hacia el target con
+  constantes de tiempo ASIMÉTRICAS (constricción rápida `pupilConstrictTau≈0.9 s`, redilatación lenta
+  `pupilDilateTau≈3 s`; el reflejo fotomotor no es instantáneo y la dilatación es más lenta que la
+  constricción [9]), más una **miosis transitoria** opcional (`glareMiosisGain`) que baja el target
+  cuando hay velo intenso mirado de frente (proxy `VisionActivity.Veil`), reduciendo el desenfoque por
+  efecto estenopeico. En `Start` arranca ya en el target (sin rampa al cargar). Verificado:
+  1→0.012 a día (rápido), 0→0.74→~1 a noche (más lento).
 - `Assets/Scripts/Runtime/Vision/NightTraffic.cs` — tráfico bidireccional: instancia prefabs de
   `Assets/Prefabs/Cars` (frente del auto = +Z local) en dos carriles (`laneX=±2.6 m`); carril
   derecho se aleja (se ven pilotos), izquierdo viene de frente (faros). Wrap entre `startZ=70` y
@@ -72,49 +120,133 @@ Render por frame (URP RenderGraph):
 - `Assets/Scripts/Runtime/Vision/SimuladorInput.cs` — mandos Quest (acciones creadas en código):
   A = cicla lente ojo izquierdo, B = ojo derecho, X = toggle halos, Y = cambia de escenario.
 - `Assets/Scripts/Runtime/Vision/HudController.cs` — HUD world-space anclado a la cámara: FPS,
-  escenario, lente por ojo, estado de halos (UI legacy, sin TMP).
+  escenario, lente por ojo, estado de halos (UI legacy, sin TMP). Última línea de emparejamiento:
+  sin tablet autenticada muestra `PIN tablet: NNNNNN` (de `NetworkController.Instance.PairingPin`)
+  para que el clínico lo tipee en la tablet; con al menos una autenticada
+  (`NetworkController.AuthenticatedClientCount > 0`) pasa a `Tablet conectada` y deja de exponer el
+  PIN. Sin `NetworkController.Instance` (escenas/momentos sin red) no dibuja la línea.
 - `Assets/Scripts/Runtime/Vision/GlareTestRig.cs` — rig de verificación: baja la luz y spawnea 3
   lámparas emisivas con billboards de glare al frente, a altura de ojos.
 
-### Post-proceso: modelo dióptrico (VisionPostProcess, pass 0)
+### Post-proceso: modelo dióptrico (VisionPostProcess, dos passes)
 
+El efecto está partido en dos passes para que el astigmatismo (cilindro) opere sobre la imagen ya
+desenfocada por el defocus (esfera) — correctitud óptica: el ojo aplica esfera+cilindro como una
+PSF combinada, no el cilindro sobre la imagen nítida.
+
+**Pass 0 — esfera (defocus), `source→temp`:**
 1. `depth → metros`: `SampleSceneDepth` + `ComputeWorldSpacePosition` → distancia radial a cámara.
 2. `Diopters(d) = 1 / max(d, 0.05)` (dioptrías = 1/metros, clamp a 5 cm).
 3. Error de enfoque: `errD = min(|D(d) − D(foco)|)` sobre los focos ACTIVOS (foco = 0 ⇒ no usado).
 4. Tolerancia: `tolD = profundidad_foco_m × DOF_M_TO_D(0.5)` [D]. Blur:
    `blur = desenfoque_max × saturate(max(errD − tolD, 0) / MAX_DEFOCUS_D)`, con
    `MAX_DEFOCUS_D = 1.5 D` (error que satura el blur). De noche `blur ×= lerp(1, 1.35, _PupilScene)`.
-5. Box blur de 4 taps bilineales en diagonales, radio `BLUR_RADIUS_PX(7) × blur`.
-6. Astigmatismo global: smear direccional de 7 taps gaussianos a lo largo del eje
-   (`glare_astig_angle`), largo `ASTIG_BLUR_PX(22 px) × glare_astig`.
+5. Box blur de 4 taps bilineales en diagonales, radio `BLUR_RADIUS_PX(7) × blur`. Escribe a temp.
+
+**Pass 1 — cilindro + contraste + velo, `temp→source`** (`_BlitTexture` = temp = imagen ya
+esfero-desenfocada):
+6. Astigmatismo POR OJO: smear direccional de 7 taps gaussianos a lo largo del eje
+   (`glare_astig_angle_l/r`), largo `ASTIG_BLUR_PX(22 px) × glare_astig_l/r` (selección por
+   `eyeIdx`, respeta `_StreamForceEye`). `DirBlur` samplea **temp** (la imagen desenfocada), no el
+   original: el cilindro hereda el defocus de la esfera.
 7. Contraste: `color = (color − 0.22) × (1 − contrast_loss) + 0.22` (pivote bajo: no levanta negros).
 8. Velo de encandilamiento (aditivo, después del contraste — ver siguiente sección).
 
-### Disability glare (velo por ojo)
+Coste: cuando astig = 0 el pass 1 es 1 tap (copia) y el pass 0 hasta 5 taps; con astig activo el
+pass 1 sube a 7 taps. Antes (monolítico) el pass 0 hacía ~12 taps y el pass 1 era copia (~13 total);
+ahora ~6 con astig off, ~12 con astig on: coste ≈ igual o menor, y sin re-samplear el original.
 
-`DisabilityGlareController` implementa un modelo tipo CIE **aproximado** (comentario del código:
-"Modelo CIE aproximado"; no usa la constante literal 10·E/θ² de la CIE general disability glare
-equation — el término angular es un cono suavizado). Por cada `GlareBillboardInstance` activo:
+**Coeficientes perceptuales empíricos, PENDIENTES de calibración** (no tocar sin datos): `DOF_M_TO_D
+= 0.5` (mapea profundidad de foco en m a tolerancia dióptrica), `MAX_DEFOCUS_D = 1.5 D` (error que
+satura el blur) y `CONTRAST_PIVOT = 0.22`. Se eligieron a ojo; la calibración correcta es contra
+**defocus curves** publicadas (agudeza vs desenfoque) de cada LIO: PanOptix trifocal — Kohnen et al.
+[7]; Vivity EDOF — McCabe et al. [8]; y una monofocal de referencia. Tarea futura (recalibración),
+fuera de esta tanda.
+
+### Disability glare (velo por ojo) — CIE general disability glare equation
+
+`DisabilityGlareController` implementa la **CIE general disability glare equation** en su forma simple
+de **Stiles-Holladay** (Vos 1984; CIE 146:2002 [1][2][3]): `Lveil = 10·Egl / θ²`, con θ en GRADOS y
+validez `1° < θ < 30°`. Egl (iluminancia de la fuente en el ojo) se modela como
+`energía · luminancia_mesópica · (1/d²) · facing`. Itera `GlareBillboardInstance.Active` (registro
+estático). Por cada fuente activa:
 
 ```
-f        = clamp01(InverseLerp(outer=42°, inner=5°, ángulo))²        # concentración angular
-lum      = clamp01(0.10·R + 0.78·G + 0.12·B)                          # luminancia mesópica
-                                                                       # (Purkinje: rojo ~10× menos)
+θ        = ángulo(gaze, dirección→fuente) en grados;   cull si θ ≥ outer(42°)
+angular  = θmin²(1°) / max(θ, θmin)²                                  # CIE 1/θ²  [1][2]
+           × (1 − smoothstep(θmax(30°) → outer(42°)))                 # caída suave fin de validez CIE
+           # NORMALIZADO a pico 1 en θmin=1° (la constante 10 cd/m²·deg²/lux se absorbe en la
+           # normalización: modelo sin unidades; se corrige la FORMA, no la magnitud del ref)
+lum      = clamp01(0.02·R + 0.70·G + 0.28·B)                          # luminancia ESCOTÓPICA V'(λ)
+                                                                       # CIE 1951 sobre sRGB [4]
+                                                                       # (Purkinje: rojo casi no dispersa)
 distFactor = refDist²(4 m) / max(d², nearClamp²(2 m))                  # ley 1/d² (iluminancia en ojo)
 distGate   = smoothstep entre fullWeight(10 m) y cutoff(20 m)          # fuente lejana no aporta
              (sol: distanceInvariant ⇒ distFactor = distGate = 1)
-facing     = SmoothStep sobre dot(haz, −dirFuente→ojo) si srcDir ≠ 0   # el faro que se aleja no encandila
+facing     = SmoothStep sobre dot(haz, −dirFuente→ojo) si srcDir ≠ 0   # umbrales GlareController.FacingLo/Hi
 oclusión   = Physics.Linecast(cámara, fuente, occluders) ⇒ aporte 0
-w = max(srcEnergy, 0.01) · lum · distFactor · distGate · f · facing
+w = max(srcEnergy, 0.01) · lum · distFactor · distGate · angular · facing
 ```
 
-Velo final: `veil_ojo = min(maxVeil=0.6, straylight_ojo × Σw × sensitivity(0.18) × pupila)`, con
-`pupila = 1.5` en ruta_noche (`nightPupilFactor`) y 1.0 de día. Suavizado temporal exponencial
-`k = 1 − e^(−5·dt)`. Se publica en `_GlareVeilL/_GlareVeilR` + UV de la fuente dominante
-(`_GlareVeilUV`) y tinte cálido `_GlareVeilTint (1, 0.95, 0.85)`. En el shader:
+Término de edad CIE 146:2002 [2][3] `[1 + (A/62.5)⁴]` (campo serializado `age`, default **70 años** =
+edad media típica de cirugía de catarata [5]): se aplica NORMALIZADO al paciente de referencia
+(`CalibAge = 70`) → a la edad default el factor es 1 (no cambia la intensidad global); cambiar `age`
+escala el velo relativo a ese paciente (más edad ⇒ más dispersión ⇒ más velo).
+
+Velo final: `veil_ojo = min(maxVeil=0.6, straylight_ojo × Σw × sensitivity(0.25) × pupila × ageFactor)`,
+con `pupila` = `nightPupilFactor` en ruta_noche y 1.0 de día. Suavizado temporal exponencial
+`k = 1 − e^(−5·dt)`. Se publica en `_GlareVeilL/_GlareVeilR` (y en `VisionActivity.VeilL/R`, el valor
+suavizado, para el gate de CPU) + UV de la fuente dominante (`_GlareVeilUV`) y tinte cálido
+`_GlareVeilTint (1, 0.95, 0.85)`. En el shader:
 `L = veil × (0.35 + 0.65·exp(−|uv−src|²/0.05))` (pedestal uniforme + glow en la fuente), se SUMA
 `tint × L` (straylight aditivo: levanta negros = baja contraste como el velo real) y desatura
-`veil × 0.12`. Las magnitudes son **normalizadas** (energía relativa, faro = 1.0), no cd/m² físicos.
+`veil × 0.12` usando luminancia **Rec.709** [6]. Las magnitudes son **normalizadas** (energía
+relativa, faro = 1.0), no cd/m² físicos.
+
+**Por qué 1/θ² y no el cono previo:** el término angular viejo (`InverseLerp(42°,5°,θ)²`) era casi
+plano hasta 5° y caía lineal hasta 42°; la CIE `1/θ²` está mucho más concentrada en la línea de
+visión. Verificado (velo normalizado, misma fuente/energía): frontal θ≈1° → 0.31 en ambos modelos
+(intensidad del ref preservada); a **15° el viejo daba ~0.165 (media) y el nuevo ~0.001** — el glare
+deja de "lavar" la escena apenas apartás la mirada, como en la clínica.
+
+### Optotipo ETDRS (agudeza funcional en consultorio) — P4.5
+
+Cartilla de agudeza tipo **ETDRS** (Ferris et al. 1982 [10]) en el escenario consultorio, para que el
+paciente LEA la línea mínima con cada LIO (medición funcional, no solo demo). Es **contenido de
+escena** (sin script de runtime, footprint cero de código): un GameObject raíz `OptotipoETDRS` bajo
+`ScenarioContainer/Consultorio`, así que **se enciende/apaga solo con el escenario** (ScenarioManager
+activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni toggle nuevo).
+
+- **Layout**: 12 filas × 5 letras, progresión logMAR en pasos de 0.1, de **logMAR 1.0 (20/200)** arriba
+  a **logMAR 0.0 (20/20)** y una fila extra **-0.1 (20/16)** abajo. Cada fila etiquetada al margen
+  izquierdo con logMAR + Snellen (20/x). Letras **Sloan** (C D H K N O R S V Z). Alto contraste: texto
+  negro (TMP SDF, unlit) sobre panel blanco **unlit** (`Assets/Materials/OptotypeBackground.mat`, URP
+  Unlit doble cara) → contraste garantizado, la iluminación de la sala no lo lava.
+- **Calibración angular** (fórmula, en la doc por ser la fuente de verdad clínica): a distancia D la
+  letra de agudeza logMAR L subtiende en altura `θ(L) = 5·10^L` arcmin (5 arcmin = 20/20). Altura
+  física de la letra: **`h(L) = 2·D·tan(θ(L)/2) = 2·D·tan(2.5·10^L arcmin)`** (arcmin→rad ×π/10800).
+  **Distancia de diseño: D = 4.0 m** (estándar ETDRS): las alturas de letra están calibradas para
+  4.0 m exactos desde la posición del ojo medida en Editor (`camPos≈(0.274, 1.118, -0.500)`) hasta la
+  cartilla (`(0.274, 1.118, 3.500)`, a la derecha de la ventana → pared sólida detrás, sin cielo/sol
+  que lave; no interfiere con el libro ni la ventana). Ojo: la posición REAL del ojo depende del
+  origen sentado del rig (`ScenarioManager.consultorioOriginPos=(-0.35,-0.05,-0.40)`, mirando +X) y
+  de la altura/postura del usuario → la distancia efectiva puede variar ~±1% (≈ ±0.005 logMAR,
+  despreciable clínicamente). Verificado: cap-height renderizado del renglón 20/20 =
+  **5.818 mm** = target `h(0.0)=2·4·tan(2.5 arcmin)=5.818 mm` ✓. Alturas por fila a 4 m: 20/200=5.82 cm,
+  20/100=2.92 cm, 20/40=1.16 cm, 20/20=5.82 mm, 20/16=4.62 mm. El tamaño de fuente TMP se calibra con
+  `fontSize = h(L)/ratio`, `ratio = capHeight/fontSize = 0.07554` medido de la fuente.
+- **Limitación tipográfica (desvío documentado)**: no hay fuente Sloan en el proyecto → se usa
+  `Inter-SemiBold SDF` (la TMP geométrica de la tablet, `Assets/Resources/TabletFonts`). El **layout
+  logMAR y las alturas angulares son correctos**; la tipografía **no es Sloan** ⇒ no es un equivalente
+  clínico EXACTO de agudeza absoluta, sí un instrumento **comparativo entre lentes** (misma cartilla,
+  distinta LIO). El espaciado inter-letra es el de TMP (no el "1 ancho de letra" ETDRS estricto): la
+  cota clínica es la ALTURA (define el MAR), que sí está calibrada.
+- **Uso clínico**: con el paciente sentado en consultorio, pedirle que mire la cartilla (pared a su
+  derecha) y lea **la línea más baja que pueda** con cada LIO. La agudeza = el logMAR/Snellen de esa
+  fila (etiquetado al margen). Comparar entre lentes (aplicar OI/OD y ciclar) da la pérdida funcional
+  relativa. A 4 m todas las LIOs del catálogo enfocan (foco lejano 6 m), así que a distancia el
+  diferenciador es el **contraste** (`contrast_loss`): la panoptix (0.20) lava los renglones bajos y
+  el paciente "pierde líneas" respecto de la monofocal — verificado con captura nítido vs panoptix.
 
 ## Decisiones y porqués
 
@@ -128,14 +260,42 @@ Velo final: `veil_ojo = min(maxVeil=0.6, straylight_ojo × Σw × sensitivity(0.
   plano de `_CameraDepthTexture` devuelve el depth del ojo izquierdo en el ojo derecho.
 - Distancia del libro medida en CPU (`_BookDistanceM` + máscara) → el depth del libro en la mano
   no es confiable para la curva de focos.
-- Ponderación mesópica anti-rojo (0.10/0.78/0.12) → efecto Purkinje: un piloto rojo encandila
-  ~10× menos que un faro blanco del mismo brillo.
+- Luminancia mesópica del velo = pesos ESCOTÓPICOS V'(λ) CIE 1951 sobre sRGB (0.02/0.70/0.28) [4] →
+  de noche (visión escotópica/mesópica) el rojo casi no dispersa (Purkinje): un piloto rojo encandila
+  mucho menos que un faro blanco. Distinta base que la luminancia FOTÓPICA Rec.709 (0.2126/0.7152/
+  0.0722) [6] de la desaturación del velo en el shader: aquélla mide cuánto DISPERSA la fuente de
+  noche; ésta el gris percibido de la imagen mostrada (cada una con su base correcta, 4.3).
 - `distanceInvariant` en el sol → fuente "al infinito": el velo no debe atenuar por 1/d².
+- Facing UNIFICADO (4.2): una sola definición de los umbrales `smoothstep(Lo=0.05, Hi=0.35, dot(haz,
+  →cámara))` para billboard (halo) y velo. Fuente única = consts `GlareController.FacingLo/FacingHi`;
+  C# las usa directo y las publica como globals de shader `_GlareFacingLo/_GlareFacingHi` que lee el
+  billboard (HLSL y C# no comparten constantes → publicar es lo robusto: un solo lugar que cambiar).
+- Curvas de distancia billboard vs velo DIVERGEN a propósito (4.2): el **velo** usa `1/d²` (iluminancia
+  real en el ojo, ley del inverso del cuadrado — es straylight físico). El **billboard** usa fade
+  `src_energy·DIST_REF_M/dist` (`1/d`) porque representa el PATRÓN de glare renderizado, de extensión
+  angular fija, que debe seguir visible a distancia; con `1/d²` los halos de luces lejanas
+  desaparecerían demasiado rápido. Son efectos distintos (patrón perceptual vs iluminancia), no una
+  incoherencia.
 - Material del billboard COMPARTIDO + parámetros por instancia vía MaterialPropertyBlock → un solo
   material instanciable; `GlareBillboardInstance` existe porque el MPB no se serializa.
 - Tope `maxVeil=0.6` y suavizado temporal → confort VR (evitar flashes bruscos).
 - `_StreamForceEye` (0/1/2) → la captura mono del stream a tablet (`Assets/Scripts/Runtime/Net/StreamingCapture.cs`)
   puede forzar qué ojo se renderiza sin afectar el render estéreo (default 0).
+- Post-proceso en DOS passes (esfera → cilindro+contraste+velo) → que el smear astigmático opere
+  sobre la imagen ya desenfocada (correctitud óptica) reusando el pass 1 que antes solo copiaba;
+  coste de taps ≈ igual o menor que el monolítico y sin re-samplear el original (3.2).
+- Gate de CPU vía `VisionActivity` (estado C#, no material) → saltear los 2 blits full-screen por ojo
+  cuando no hay ningún efecto activo (lente perfecta / sin astig / sin velo) es el ahorro más grande
+  para el presupuesto GPU de Quest; los halos/starburst (billboards) no dependen del post-proceso, así
+  que se siguen viendo con el gate cerrado (3.1).
+- Registro estático de fuentes de glare (`GlareBillboardInstance.Active`) → elimina el
+  `FindObjectsByType` cada 0.5 s: una fuente nueva encandila el mismo frame y no hay costo de escaneo
+  periódico (3.3).
+- Base `VisionStateBinder` (P6.1) → los tres suscriptores de `VisionStateChanged` triplicaban el mismo
+  boilerplate (espera del singleton, suscripción/despacho por ojo, desuscripción). Extraerlo a una base
+  abstracta con un abstract (`ApplyEyeState`) + dos hooks virtuales deja cada subclase con SOLO su
+  lógica de dominio, sin homogeneizar las diferencias sutiles (blend demo, reset del velo, facing en
+  `OnEnable`). Los nombres de clase MonoBehaviour NO cambian (referencias serializadas en `Main.unity`).
 
 ## Gotchas
 
@@ -147,39 +307,110 @@ Velo final: `veil_ojo = min(maxVeil=0.6, straylight_ojo × Σw × sensitivity(0.
   necesita el MonoScript para serializar la referencia en prefabs (si no, "Missing Script").
 - **El MPB no se serializa**: sin `Apply()` en `OnEnable` los billboards de escena/prefab quedarían
   invisibles en el build.
-- **`applyDemoBlendOnStart = true` en `VisionParamsBinder`** pisa las lentes al arrancar con
-  monofocal/panoptix; apagarlo para demos reales.
-- **`DisabilityGlareController` refresca fuentes con `FindObjectsByType` cada 0.5 s**: una fuente
-  nueva puede tardar hasta medio segundo en encandilar; también es costo de escaneo periódico.
+- **`applyDemoBlendOnStart` en `VisionParamsBinder` es opt-in (default `false`)**: al arrancar
+  se respetan las lentes reales/persistidas. Activarlo (inspector) solo para reproducir el blend
+  demo monofocal(OI)/panoptix(OD); no dejarlo prendido en la escena o pisa las lentes reales.
+- **Las fuentes de glare se registran solas** (`GlareBillboardInstance.OnEnable/OnDisable` →
+  `Active`): `DisabilityGlareController` itera esa lista, sin `FindObjectsByType` ni lag de 0.5 s.
+  El `[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` limpia la lista al entrar a Play; si se
+  agregan fuentes por instanciación en runtime, aparecen en cuanto su `OnEnable` corre (mismo frame).
+- **El gate de CPU depende de que los binders publiquen en `VisionActivity`**: si agregás un efecto
+  nuevo al post-proceso (uniforme por ojo), sumá su señal a `VisionActivity` o el gate lo apagará
+  cuando el resto esté en cero (el efecto no se vería). El gate usa `desenfoque_max` como proxy del
+  blur (conservador: no sabe per-pixel si algo está fuera de foco).
 - **La oclusión usa `Physics.Linecast` con `occluders = ~0`**: geometría sin collider NO ocluye el
   velo (los billboards mismos no tienen collider, así que no se auto-bloquean).
+- **Precedencia astigmatismo catálogo vs live (P4.4)**: dos fuentes escriben los MISMOS globals
+  `glare_astig_l/r` + `glare_astig_angle_l/r` — el catálogo (`astig_magnitude`/`astig_axis_deg` vía
+  `GlareController.SetEyeGlobals` en cada `VisionStateChanged`) y el comando live no-persistente
+  `set_astigmatism` (tablet → `NetworkController` → `SetAstigmatism`). Regla: **último que escribe
+  gana**. Consecuencia sutil: un `set_astigmatism` live queda pisado por el SIGUIENTE
+  `VisionStateChanged` (cualquier `ApplyLens`/`OverrideParams` de cualquier param re-asserta el valor
+  del catálogo). Si se quisiera que el live tenga prioridad estable habría que introducir un flag de
+  override — deuda, no implementada (el pipeline actual prioriza que el catálogo sea la fuente
+  persistente y el live un ajuste efímero).
+- **Los umbrales de facing se publican en `GlareController.OnEnable`, no en `Start`**: `Start` es
+  coroutine y espera a `DataManager`; publicar ahí dejaba `_GlareFacingLo/Hi` en 0/0 los primeros
+  frames → `smoothstep(0,0,x)` degenerado en el billboard (facing binario/indefinido). `OnEnable`
+  corre antes del primer render y no depende de `DataManager`.
 - **`destello_rayos` es CANTIDAD de rayos, no intensidad**: nunca se escala por escenario
   (la intensidad la da `destello_intensity`).
 - **Los uniforms del material persisten en el asset en editor**: el material de
   `VisionRendererFeature` y el de `VisionParamsBinder`/`BookHolder` deben ser el MISMO asset.
-- **`RING_POS`/`RING_WIDTH` en GlareBillboard.shader están definidos pero no se usan**: los anillos
-  reales están hardcodeados en el frag (0.45/0.68/0.90).
+- **El velo depende de `LateUpdate` (player loop), no solo del render**: al validar por MCP,
+  `unity_graphics_game_capture` corre `Camera.Render` pero NO avanza el player loop si el Game view no
+  tiene foco → `DisabilityGlareController.LateUpdate` no tickea y el velo queda en su último valor (0
+  al arrancar). Para evidencia sin foco: forzar el cómputo (invocar `LateUpdate` por reflexión hasta
+  converger el suavizado) o mantener el Game view visible. El blur/astig/contraste NO sufren esto: se
+  fijan por evento (binders) y los lee el shader en el render.
 
 ## Cómo probar
 
-1. Abrir `Assets/Scenes/SampleScene.unity` y entrar en Play (o build Quest vía `unity_build`).
+1. Abrir `Assets/Scenes/Main.unity` y entrar en Play (o build Quest vía `unity_build`).
 2. El HUD muestra FPS, escenario, lente por ojo y halos. Controles: **A** cicla lente OI, **B**
    cicla OD, **X** toggle halos, **Y** alterna consultorio ↔ ruta_noche.
-3. Blend demo al arrancar: OI monofocal (nítido lejos, libro ilegible) vs OD panoptix (halos y
-   anillos marcados de noche, libro legible). Cerrar un ojo por vez para comparar.
+3. Blend demo (opt-in): al arrancar se respetan las lentes reales. Para el demo por ojo activar
+   `applyDemoBlendOnStart` en el inspector de `VisionParamsBinder` → OI monofocal (nítido lejos,
+   libro ilegible) vs OD panoptix (halos y anillos marcados de noche, libro legible). Cerrar un
+   ojo por vez para comparar.
 4. Ruta nocturna: mirar un auto que viene de frente → faros blancos generan velo (más con
    panoptix, `straylight=1.0`, que con monofocal, `0.15`); los pilotos rojos casi no encandilan;
-   al mirar lejos de la luz el velo cae (cono 5°–42°).
+   al apartar la mirada el velo cae MUY rápido (CIE `1/θ²`: ~0.31 frontal → ~0.001 a 15°).
+   Nota: el velo lo computa `LateUpdate`; en el editor sin foco del Game view el player loop puede
+   no tickear (ver Gotchas) — validar en Play con el Game view visible o en build.
 5. Consultorio: acercar/alejar el libro; con monofocal se desenfoca a ~40 cm y mejora al brazo
    extendido; el sol por la ventana produce destello (starburst) pero halos casi nulos (día).
 6. Aislado: agregar `GlareTestRig` a la escena para 3 lámparas de prueba con billboards.
+7. **Optotipo ETDRS (consultorio):** en consultorio, mirar la cartilla `OptotipoETDRS` en la pared a
+   la derecha (a 4 m). Pedirle al paciente que lea la línea más baja legible con cada LIO; la fila
+   está etiquetada con su agudeza (logMAR / 20-x). Comparar nítido (sin lente) vs una LIO con
+   `contrast_loss` (p.ej. panoptix) → se pierden los renglones bajos por pérdida de contraste. A 4 m
+   todas las LIOs enfocan (foco lejano 6 m): el diferenciador a distancia es el contraste, no el blur.
 
 ## Pendientes / deuda
 
-- `GlareController.SetAstigmatism` solo se invoca desde la capa Net (tablet); no hay parámetro de
-  astigmatismo en el catálogo de lentes.
-- El modelo de velo es normalizado (sin unidades fotométricas reales cd/m²/lux); calibración
-  clínica pendiente si se necesita comparabilidad con literatura CIE.
-- `RING_POS`/`RING_WIDTH` muertos en `Assets/Shaders/GlareBillboard.shader` (limpiar o usar).
-- Comentario en `GlareController.cs` ("el gating por escenario llega en F5") quedó desactualizado:
-  ya lo hace `ScenarioManager`.
+- **Astigmatismo en el catálogo: CERRADO (P4.4).** Ya existen `astig_magnitude` (0..1) y
+  `astig_axis_deg` (0..180) como params estándar del catálogo (v`0.5.0-clinical`, default 0 en las 3
+  lentes) — ajustables con sliders y persistentes/overrideables como cualquier param.
+  `GlareController.SetEyeGlobals` los mapea a los globals per-eye. El comando live `set_astigmatism`
+  (Net/tablet) sigue funcionando como override efímero encima (ver gotcha de precedencia). Deuda
+  coordinada: el test de integración de `DataLogicTests` quedó rojo por el bump de versión/conteo de
+  params → lo actualiza @unity-dev (dueño de `Assets/Tests/`).
+- **Astigmatismo per-eye: CERRADO en ambos lados (P2.2).** La API y ambos shaders resuelven
+  astigmatismo por ojo (`glare_astig_l/r`, `glare_astig_angle_l/r`); `NetworkController` ya lee
+  `cmd["eye"]` (comando `set_astigmatism`, default `"both"`) y llama la firma con ojo. La
+  sobrecarga legacy `SetAstigmatism(enabled, magnitud, ángulo)` (marcada `// SIM`) se eliminó de
+  `GlareController` — no queda código muerto. Detalle de protocolo en `docs/networking.md`.
+- El modelo de velo es normalizado (sin unidades fotométricas reales cd/m²/lux): se corrige la FORMA
+  de la curva (CIE `1/θ²`) pero la escala es relativa (faro = 1.0). Calibración fotométrica absoluta
+  (cd/m²/lux) pendiente si se necesita comparabilidad cuantitativa con literatura CIE.
+- Coeficientes de defocus/contraste (`DOF_M_TO_D`, `MAX_DEFOCUS_D`, `CONTRAST_PIVOT`) empíricos,
+  pendientes de recalibrar contra defocus curves publicadas por LIO: PanOptix — Kohnen et al. [7];
+  Vivity — McCabe et al. [8]. Tanda futura.
+- Pupila: la miosis transitoria por glare (`glareMiosisGain`) modula `_PupilScene` (→ blur) pero NO
+  el `nightPupilFactor` del velo (sigue escalonado por escenario). Unificar pupila blur↔velo es deuda
+  menor si se busca coherencia total.
+
+## Referencias
+
+- **[1]** Vos, J.J. (1984). *Disability glare — a state of the art report.* CIE Journal, 3(2), 39–53.
+  (Aproximación de Stiles-Holladay `Lveil = k·Egl/θ²`.)
+- **[2]** CIE 146:2002. *CIE equations for disability glare.* (Ecuación general + término de edad
+  `[1+(A/62.5)⁴]`.)
+- **[3]** Stiles, W.S. (1929) / Holladay, L.L. (1926) — formulación original del velo equivalente por
+  luz difusa (base histórica de la forma `1/θ²`).
+- **[4]** CIE (1951). *Scotopic luminous efficiency function V'(λ)* (observador escotópico estándar).
+  Pesos escotópicos sobre primarios sRGB ≈ 0.02/0.70/0.28 (aproximación).
+- **[5]** Edad media de cirugía de catarata ~70–74 años en cohortes de LIO (usado como paciente de
+  referencia CIE, `age`/`CalibAge` = 70).
+- **[6]** ITU-R BT.709. Coeficientes de luminancia fotópica sRGB `Y = 0.2126R + 0.7152G + 0.0722B`.
+- **[7]** Kohnen, T. et al. — defocus curve de la trifocal difractiva AcrySof IQ PanOptix (agudeza vs
+  desenfoque). Objetivo de calibración de los coeficientes de defocus.
+- **[8]** McCabe, C. et al. — defocus curve de la EDOF no difractiva AcrySof IQ Vivity. Objetivo de
+  calibración de los coeficientes de defocus.
+- **[9]** Reflejo fotomotor pupilar: latencia ~0.2–0.5 s y constricción (~1 s) más rápida que la
+  redilatación (varios s) — p.ej. Ellis, C.J. (1981), *The pupillary light reflex in normal
+  subjects*, Br J Ophthalmol 65:754–759. Base de las constantes de tiempo asimétricas de la pupila.
+- **[10]** Ferris, F.L. III, Kassoff, A., Bresnick, G.H., Bailey, I. (1982). *New visual acuity charts
+  for clinical research.* Am J Ophthalmol 94(1):91–96. (Diseño de la cartilla ETDRS: progresión
+  logMAR 0.1, 5 letras Sloan por fila, espaciado proporcional.) Base del optotipo del consultorio.
