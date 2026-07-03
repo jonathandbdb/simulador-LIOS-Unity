@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEditor.XR.Management;
 using UnityEngine;
@@ -18,7 +19,11 @@ namespace Simulador.EditorTools
     ///
     /// Como el target Android es compartido con el build de Quest, este script apaga el
     /// loader de OpenXR SOLO durante el build del tablet y lo restaura SIEMPRE despues
-    /// (incluso si el build falla), dejando la config de Quest intacta.
+    /// (incluso si el build falla), dejando la config de Quest intacta. Mismo patron
+    /// (setear -> try/finally restaurar) para el applicationIdentifier/productName
+    /// (P6.7): visor y tablet comparten el mismo Player Settings del target Android, asi
+    /// que sin esto ambos APKs saldrian con el package del visor (com.simulador.vr) y no
+    /// podrian convivir instalados en el mismo dispositivo.
     ///
     /// Uso:
     ///   - Menu: Simulador > Build Tablet (Android)
@@ -29,6 +34,11 @@ namespace Simulador.EditorTools
         const string ScenePath = "Assets/Scenes/Tablet.unity";
         const string OutputPath = "Builds/Android/Simulador.apk";
         const string XrConfigKey = "com.unity.xr.management.loader_settings";
+
+        // P6.7: identifier/nombre propios de la tablet. El visor (build normal, fuera
+        // de este script) sigue con com.simulador.vr / "Simulador" (Project Settings).
+        const string TabletApplicationIdentifier = "com.simulador.tablet";
+        const string TabletProductName = "Simulador Tablet";
 
         [MenuItem("Simulador/Build Tablet (Android)")]
         public static void BuildTabletMenu()
@@ -58,11 +68,23 @@ namespace Simulador.EditorTools
             var manager = GetAndroidXrManager();
             var savedLoaders = manager != null ? GetLoaders(manager) : null;
 
+            // P6.7: guardar el identifier/nombre ANTES de tocarlos (mismo momento que
+            // los loaders XR) para poder restaurarlos pase lo que pase.
+            var androidTarget = NamedBuildTarget.Android;
+            string savedApplicationIdentifier = PlayerSettings.GetApplicationIdentifier(androidTarget);
+            string savedProductName = PlayerSettings.productName;
+
             try
             {
                 // Apagar XR para Android: vaciar la lista de loaders.
                 if (manager != null)
                     SetLoaders(manager, new List<Object>());
+
+                // Identifier propio de la tablet: sin esto, el APK sale con
+                // com.simulador.vr (el del visor) y no pueden convivir instalados en
+                // el mismo dispositivo -- instalar uno reemplaza al otro.
+                PlayerSettings.SetApplicationIdentifier(androidTarget, TabletApplicationIdentifier);
+                PlayerSettings.productName = TabletProductName;
 
                 Directory.CreateDirectory(Path.GetDirectoryName(OutputPath));
 
@@ -78,9 +100,12 @@ namespace Simulador.EditorTools
             }
             finally
             {
-                // Restaurar SIEMPRE los loaders XR originales (Quest queda intacto).
+                // Restaurar SIEMPRE los loaders XR y el identifier/nombre originales
+                // (el proyecto vuelve a quedar configurado para el visor, Quest intacto).
                 if (manager != null)
                     SetLoaders(manager, savedLoaders);
+                PlayerSettings.SetApplicationIdentifier(androidTarget, savedApplicationIdentifier);
+                PlayerSettings.productName = savedProductName;
             }
         }
 

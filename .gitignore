@@ -121,3 +121,6 @@ backend/.env
 
 # Config local de Claude Code (permisos por usuario, no committear)
 .claude/settings.local.json
+
+# Artefactos de scripts/ci-local.sh (logs, XML de tests, venv temporal)
+/ci-artifacts/
