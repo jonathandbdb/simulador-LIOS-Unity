@@ -86,14 +86,33 @@ namespace Simulador.Tablet
                 Hint = "Luz parasita intraocular: ante una fuente brillante (sol/faros) vela la imagen y baja el contraste (disability glare). Trifocal alto, EDOF medio, monofocal bajo.",
                 Unit = "", Fmt = "F2",
             },
+            // P4.4: astigmatismo residual PERSISTENTE por lente (vive en el catalogo,
+            // distinto del ajuste LIVE de la card "Astigmatismo" -- ver
+            // TabletController.BuildAstigCard/SendAstigmatism y el hint que agrega esa
+            // card sobre la precedencia entre ambos).
+            ["astig_magnitude"] = new Entry
+            {
+                Label = "Astigmatismo residual",
+                Hint = "Astigmatismo NO corregido por la lente: borronea la imagen en un eje. 0 = sin astigmatismo residual.",
+                Unit = "", Fmt = "F2",
+            },
+            ["astig_axis_deg"] = new Entry
+            {
+                Label = "Eje del astigmatismo",
+                Hint = "Orientacion del eje de mayor borrosidad (0-180°). Solo relevante si hay astigmatismo residual (>0).",
+                Unit = "°", Fmt = "F0",
+            },
         };
 
-        // Orden clinico de presentacion: focos -> blur -> disfotopsias. Parametros
-        // del catalogo que no esten aca se agregan al final (orden del catalogo).
+        // Orden clinico de presentacion: focos -> blur/astigmatismo (ambos son error
+        // refractivo, a diferencia de los halos/destellos que son artefactos difractivos)
+        // -> disfotopsias. Parametros del catalogo que no esten aca se agregan al final
+        // (orden del catalogo).
         public static readonly string[] ORDER =
         {
             "foco_lejos_m", "foco_intermedio_m", "foco_cerca_m",
             "profundidad_foco_m", "desenfoque_max",
+            "astig_magnitude", "astig_axis_deg",
             "halo_intensity", "halo_extra_rings",
             "destello_intensity", "destello_rayos",
             "straylight",
