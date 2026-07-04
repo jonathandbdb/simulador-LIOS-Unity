@@ -356,6 +356,19 @@ activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni tog
   izquierdo con logMAR + Snellen (20/x). Letras **Sloan** (C D H K N O R S V Z). Alto contraste: texto
   negro (TMP SDF, unlit) sobre panel blanco **unlit** (`Assets/Materials/OptotypeBackground.mat`, URP
   Unlit doble cara) → contraste garantizado, la iluminación de la sala no lo lava.
+- **El post-proceso de visión ALCANZA las letras (P4.5-fix)**: por defecto los `TextMeshPro` usan el
+  material de fuente `Inter-SemiBold SDF Material` en **cola Transparent (renderQueue 3000)**, y el pass
+  se inyecta en `BeforeRenderingTransparents` → las letras se dibujaban DESPUÉS del pass y quedaban
+  NÍTIDAS mientras la sala se veía borrosa/astigmática (bug clínico: la cartilla debe leerse BAJO los
+  efectos de la LIO, no exenta). Fix: los 24 TMP (`row_*` + `label_*`) usan un material dedicado
+  **`Assets/Materials/OptotypeText.mat`** (copia del material de fuente, mismo shader
+  `TextMeshPro/Mobile/Distance Field` y mismo atlas `Inter-SemiBold SDF Atlas`) con **`renderQueue = 2450`**
+  (rango opaco, ≤2500). Así las letras se dibujan en la fase opaca (después del panel opaco en 2000, que
+  las precede y contra el que hacen alpha-blend) y quedan capturadas por el pass → reciben defocus, astig
+  y contraste como el resto de la escena. NO se tocó el material de fuente compartido (lo usa la UI de la
+  tablet, sigue en 3000); el AA/nitidez base de las letras NO se degrada en cola opaca (verificado con
+  captura sin efectos). Verificado en play (consultorio, astig fuerte): letras deformadas junto con la
+  sala (`capturas/optotipo_fix_despues.png`) vs base nítida (`capturas/optotipo_fix_base.png`).
 - **Calibración angular** (fórmula, en la doc por ser la fuente de verdad clínica): a distancia D la
   letra de agudeza logMAR L subtiende en altura `θ(L) = 5·10^L` arcmin (5 arcmin = 20/20). Altura
   física de la letra: **`h(L) = 2·D·tan(θ(L)/2) = 2·D·tan(2.5·10^L arcmin)`** (arcmin→rad ×π/10800).
@@ -477,6 +490,14 @@ activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni tog
   al arrancar). Para evidencia sin foco: forzar el cómputo (invocar `LateUpdate` por reflexión hasta
   converger el suavizado) o mantener el Game view visible. El blur/astig/contraste NO sufren esto: se
   fijan por evento (binders) y los lee el shader en el render.
+- **El post-proceso solo alcanza el rango OPACO (renderQueue ≤ 2500)**: el pass se inyecta en
+  `BeforeRenderingTransparents`, así que TODO lo que se dibuja en cola Transparent (≥2501) — TMP SDF
+  por defecto (3000), billboards de glare, HUD overlay — queda EXENTO de blur/astig/contraste/velo.
+  Es deliberado para los billboards y el HUD (deben componerse nítidos ENCIMA), pero fue un bug para el
+  optotipo (letras nítidas sobre sala borrosa). Regla: **cualquier contenido que DEBA verse afectado por
+  la visión del paciente tiene que estar en el rango opaco** (≤2500). Para TMP: material dedicado con
+  `renderQueue` forzado a 2450 (ver `OptotypeText.mat`), NUNCA mutar el material de fuente compartido
+  (rompería la cola de la UI de la tablet, que comparte `Inter-SemiBold SDF`).
 
 ## Cómo probar
 
