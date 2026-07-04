@@ -23,6 +23,7 @@ original, con extensiones de flujo clínico propias del simulador.
 | `Assets/Scripts/Runtime/Tablet/TabletButton.cs` | Botón custom (hereda `Selectable`): fill + borde + texto con color por estado (normal/hover/pressed), modo toggle y callbacks `OnClick`/`OnToggled`. Reemplaza el `ColorBlock` de uGUI. |
 | `Assets/Scripts/Runtime/Tablet/LensCardView.cs` | Card de lente: nombre, descripción clínica, chips OD/OI que marcan en qué ojo(s) está aplicada; tap = aplicar. |
 | `Assets/Scripts/Runtime/Tablet/ParamRowView.cs` | Fila de ajuste fino: label + valor formateado + slider + hint clínico. `SetValueSilent` sincroniza sin re-emitir. |
+| `Assets/Scripts/Runtime/Tablet/ScrollFriendlySlider.cs` (nuevo, usabilidad táctil) | Subclase de `Slider` que le cede el drag vertical al `ScrollRect` padre en vez de consumirlo (ver Decisiones "Usabilidad táctil"). Usada por `TabletUiKit.Slider()` en vez del `Slider` estándar. |
 | `Assets/Scripts/Runtime/Tablet/ParamMeta.cs` | Metadata clínica estática de los parámetros del catálogo (ver abajo). |
 | `Assets/Scenes/Tablet.unity` | Escena mínima: raíces `TabletApp` (con `TabletController`), `Directional Light` y `Main Camera`. Nada de UI serializada. |
 | `Assets/Resources/TabletFonts/` | `Inter-Regular SDF` e `Inter-SemiBold SDF` (TMP_FontAsset), cargados con `Resources.Load` en `Start()`. |
@@ -258,6 +259,37 @@ TabletController.Start()
   catálogo/escenarios/vision_state (y que también corre tras una reconexión exitosa, P2.5) procesa
   la respuesta tal cual. Cero estado nuevo del lado tablet más allá del botón y su handler
   (`OnRefreshPressed`), que solo valida que el WS esté abierto antes de mandar el comando.
+- **Usabilidad táctil: 3 fixes puntuales + lock a landscape (decisión de producto, sin rediseño)**
+  → el operador reportó que el scroll de "Ajuste fino" se sentía mal al dedo. Diagnóstico: (1)
+  `EventSystem.pixelDragThreshold` nunca se seteaba (default 10 px REALES, ~5dp en pantallas
+  ~320dpi — más chico que el touch-slop nativo de Android ~8dp) → taps leídos como drag y
+  viceversa; fix en `TabletController.BuildUI()`: `pixelDragThreshold = max(10, round(10 *
+  Screen.dpi / 160))` (≈10dp; si `Screen.dpi` es 0 cae al default 10). (2) `ScrollColumn`
+  (`TabletUiKit.cs`) usaba `movementType = Clamped` (se sentía "duro" al llegar a un extremo) y
+  el `decelerationRate` default (0.135, frena seco al soltar); ahora `Elastic` (rebote nativo,
+  `elasticity` default 0.1) + `decelerationRate = 0.25f` (deslizamiento más suave); `inertia`
+  queda en su default `true`. `scrollSensitivity` (24) se deja tal cual — uGUI solo lo usa para
+  la rueda del mouse en el Editor, NO afecta touch (fuente de confusión si se lo toca esperando
+  un efecto en device). (3) Los `Slider` de "Ajuste fino"/Astigmatismo (`Slider` estándar de
+  uGUI) solo implementan `IDragHandler`, no `IBeginDragHandler`/`IEndDragHandler` — si el gesto
+  arrancaba sobre el track/handle, el `ScrollRect` ancestro nunca se entera aunque el dedo se
+  mueva sobre todo en vertical. Fix: `ScrollFriendlySlider` (nuevo) agrega esas dos interfaces;
+  en `OnBeginDrag` mira la dirección dominante de `eventData.delta` (vertical → reenvía
+  begin/drag/end al `ScrollRect` cacheado por `GetComponentInParent` vía
+  `ExecuteEvents.ExecuteHierarchy`, sin mover el valor; horizontal → comportamiento normal del
+  Slider) y además pisa `OnInitializePotentialDrag` sin llamar a `base` (Slider fuerza
+  `useDragThreshold = false` para responder al instante, pero eso da un delta casi nulo en el
+  primer frame; dejando el default `true` el `pixelDragThreshold` ya ajustado acumula
+  movimiento antes de disparar `OnBeginDrag`, con una dirección ya representativa).
+  `TabletUiKit.Slider()` crea `ScrollFriendlySlider` en vez de `Slider` — nada más cambió
+  (`ParamRowView`/los sliders de Astigmatismo siguen tipados `Slider`, la subclase es
+  compatible). **Landscape lock (decisión de producto explícita, NO se rediseña la UI para
+  portrait):** `TabletController.Start()` fija `Screen.autorotateToPortrait/
+  autorotateToPortraitUpsideDown = false` y `autorotateToLandscapeLeft/Right = true` +
+  `Screen.orientation = ScreenOrientation.AutoRotation` ANTES de `BuildUI()` — es runtime-only
+  (no toca `ProjectSettings.asset`, compartido con el visor; `TabletController` solo corre en
+  `Tablet.unity`), y permite landscape en ambos sentidos (el layout de dos columnas de
+  `BuildMainScreen` no distingue landscape-left de landscape-right).
 
 ## Gotchas
 - **No hay prefabs de UI: sin Play no hay nada.** La escena `Tablet.unity` solo tiene `TabletApp`;
@@ -364,6 +396,18 @@ TabletController.Start()
   referenciaba, `apply_lens` del visor solo loguea warning y no cambia el estado de ese ojo — el
   preset "falla en silencio" para esa lente puntual (el resto de los comandos del preset sí se
   mandan). No hay validación cliente-side de que los ids de un preset sigan existiendo.
+- **`ScrollFriendlySlider` decide la dirección UNA sola vez por gesto (en `OnBeginDrag`) y no
+  vuelve a evaluarla:** si el operador empieza arrastrando horizontal (mueve el slider) y a
+  mitad de gesto curva el dedo hacia vertical sin soltar, sigue moviendo el valor (no se pasa a
+  scrollear a mitad de camino) — comportamiento esperado de cualquier gesto de drag, no un bug.
+  Tampoco toca `OnPointerDown` (el tap-to-jump del `Slider` base al tocar el track sigue
+  intacto): el fix es solo sobre el DRAG, no sobre el toque inicial.
+- **El lock a landscape es runtime-only, no hardware:** `Screen.orientation =
+  ScreenOrientation.AutoRotation` + las 4 flags `autorotateTo*` en `TabletController.Start()`
+  dependen de que el sensor de orientación del device esté habilitado; si el usuario tiene la
+  rotación del SISTEMA Android bloqueada en portrait, la app puede arrancar en portrait hasta
+  que el sistema permita rotar. `ProjectSettings.asset` (compartido con el visor) sigue con las
+  4 orientaciones habilitadas a propósito — no se tocó, es contrato compartido.
 - **`presets.json` no tiene versión/migración:** a diferencia de `lentes.json` (`version` +
   `MergeMissingParams`), el archivo de presets es un snapshot crudo del `vision_state` de cuando
   se guardó. Si el shape de `vision_state` cambia a futuro (nuevo campo obligatorio, etc.) un
@@ -467,6 +511,17 @@ TabletController.Start()
     debe pedir el PIN de nuevo ni pasar por ninguna pantalla intermedia (sigue en `MainScreen`
     todo el tiempo); la lista de lentes/escenarios se repuebla en el momento. Ver
     `docs/networking.md` para el test cruzado con un segundo cliente WS.
+14. **Usabilidad táctil (device real, el Editor no reproduce touch-slop ni DPI real):** en
+    "Ajuste fino" con varias filas (más contenido que el alto de la columna), arrastrar el dedo
+    VERTICALMENTE empezando encima de un slider → la columna debe scrollear (el valor del
+    slider NO debe cambiar). Arrastrar HORIZONTALMENTE sobre el mismo slider → debe mover el
+    valor normal (sin scrollear la columna). Tocar (tap corto, sin arrastrar) un slider o un
+    `TabletButton`/card → debe registrar el tap limpio, sin que se sienta como un micro-drag.
+    Soltar el dedo tras un arrastre rápido sobre la columna → debe deslizar con inercia y
+    frenar gradual (no seco) y, si se llega a un extremo, rebotar levemente (Elastic). Rotar el
+    device 180° en landscape (de landscape-left a landscape-right) → la UI debe re-rotar sola;
+    intentar poner el device en portrait → la UI NO debe rotar a portrait (queda en el último
+    landscape válido).
 
 ## Pendientes / deuda
 - El lockout es global del lado del visor (no por tablet/IP): si otro cliente en la LAN agotó el

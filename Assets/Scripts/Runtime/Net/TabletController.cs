@@ -113,6 +113,17 @@ namespace Simulador.Tablet
         // ============================================================
         private void Start()
         {
+            // Decision de producto: la app queda bloqueada a landscape (ambos
+            // sentidos) — el layout de dos columnas de BuildMainScreen (stream +
+            // columna scrolleable) asume ese aspecto, no se rediseña para
+            // portrait. Runtime-only (no toca ProjectSettings, compartido con el
+            // visor): esta clase solo corre en Tablet.unity.
+            Screen.autorotateToPortrait = false;
+            Screen.autorotateToPortraitUpsideDown = false;
+            Screen.autorotateToLandscapeLeft = true;
+            Screen.autorotateToLandscapeRight = true;
+            Screen.orientation = ScreenOrientation.AutoRotation;
+
             var regular = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-Regular SDF");
             var semibold = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-SemiBold SDF");
             _isDark = LoadThemePref();
@@ -863,8 +874,20 @@ namespace Simulador.Tablet
             scaler.matchWidthOrHeight = 0.5f;
 
             if (FindFirstObjectByType<UnityEngine.EventSystems.EventSystem>() == null)
-                new GameObject("EventSystem", typeof(UnityEngine.EventSystems.EventSystem),
+            {
+                var esGo = new GameObject("EventSystem", typeof(UnityEngine.EventSystems.EventSystem),
                     typeof(UnityEngine.InputSystem.UI.InputSystemUIInputModule));
+                // Default de pixelDragThreshold son 10 px REALES (no dp): en una
+                // pantalla ~320dpi eso es ~5dp, mas chico que el touch-slop nativo
+                // de Android (~8dp) -> taps que se leen como drag y viceversa.
+                // Escalamos el umbral por densidad (10dp de referencia); si
+                // Screen.dpi no esta disponible (Editor, algunos devices) cae al
+                // default de 10.
+                var es = esGo.GetComponent<UnityEngine.EventSystems.EventSystem>();
+                es.pixelDragThreshold = Screen.dpi > 0f
+                    ? Mathf.Max(10, Mathf.RoundToInt(10f * Screen.dpi / 160f))
+                    : 10;
+            }
 
             // Fondo general.
             var bg = new GameObject("Background", typeof(RectTransform), typeof(Image));

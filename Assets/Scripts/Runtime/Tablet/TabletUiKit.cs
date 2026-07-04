@@ -300,7 +300,9 @@ namespace Simulador.Tablet
         {
             var root = new GameObject("Slider", typeof(RectTransform));
             root.transform.SetParent(parent, false);
-            var slider = root.AddComponent<UnityEngine.UI.Slider>();
+            // ScrollFriendlySlider (no Slider base): le cede el drag vertical
+            // al ScrollColumn ancestro en vez de robarlo (ver su summary).
+            var slider = root.AddComponent<ScrollFriendlySlider>();
             Size(RT(root), minH: 40, prefH: 40);
 
             // Track de fondo.
@@ -426,7 +428,15 @@ namespace Simulador.Tablet
             var scroll = root.AddComponent<ScrollRect>();
             root.AddComponent<RectMask2D>();
             scroll.horizontal = false; scroll.vertical = true;
-            scroll.movementType = ScrollRect.MovementType.Clamped;
+            // Elastic (con el elasticity default 0.1) da el rebote nativo al
+            // llegar a un extremo con el dedo; Clamped se sentia "duro". La
+            // deceleracion mas baja (default 0.135) hace que el scroll frene
+            // seco al soltar; 0.25 desliza mas suave (inertia queda en su
+            // default true).
+            scroll.movementType = ScrollRect.MovementType.Elastic;
+            scroll.decelerationRate = 0.25f;
+            // scrollSensitivity NO afecta touch (uGUI lo usa solo para la
+            // rueda del mouse en el Editor) — se deja el valor existente.
             scroll.scrollSensitivity = 24;
 
             var viewport = new GameObject("Viewport", typeof(RectTransform));
