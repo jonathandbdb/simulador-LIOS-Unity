@@ -268,7 +268,7 @@ namespace Simulador.Tablet
         }
 
         // Pantalla de PIN: se intercala entre ConnectScreen y MainScreen cuando hace
-        // falta el PIN de emparejamiento (host sin PIN guardado en memoria, o
+        // falta el PIN de emparejamiento (host sin token persistente valido, o
         // reintento tras auth_fail/auth_locked, ver OnSessionPinScreenRequested).
         private void ShowPinScreen(string host, string message = "")
         {
@@ -370,9 +370,10 @@ namespace Simulador.Tablet
             StartConnectFlow(host);
         }
 
-        // Antes de abrir el WebSocket hace falta el PIN de emparejamiento del visor:
-        // si ya quedo guardado en memoria para este host (sesion previa exitosa) se
-        // reusa sin volver a pedirlo; si no, se pide con el PinScreen.
+        // Antes de abrir el WebSocket hace falta autenticarse contra el visor: si hay
+        // un token persistente de un enlace previo (pairing.json, ver
+        // TabletSession.TryGetCachedToken) se reusa sin pedir el PIN; si no, se pide
+        // con el PinScreen (primer enlace, o el token quedo invalido/revocado).
         private void StartConnectFlow(string host)
         {
             if (string.IsNullOrEmpty(host))
@@ -380,8 +381,8 @@ namespace Simulador.Tablet
                 SetConnectStatus("Ingresá la IP del visor o tocá uno detectado.", true);
                 return;
             }
-            if (_session.TryGetCachedPin(host, out var savedPin))
-                BeginConnect(host, savedPin);
+            if (_session.TryGetCachedToken(host, out var savedToken))
+                BeginConnectWithToken(host, savedToken);
             else
                 ShowPinScreen(host);
         }
@@ -405,7 +406,19 @@ namespace Simulador.Tablet
             _session.Connect(host, pin);
         }
 
+        private void BeginConnectWithToken(string host, string token)
+        {
+            ShowConnectScreen("Conectando a " + host + "...");
+            _session.ConnectWithToken(host, token);
+        }
+
         private void OnDisconnectPressed() => _session.Disconnect();
+
+        // Boton "Desvincular" (header): revoca el token de esta tablet en el visor y
+        // olvida el emparejamiento local con el host actual (ver
+        // TabletSession.Unpair) -- vuelve al ConnectScreen y la proxima conexion a
+        // este visor va a pedir el PIN de nuevo.
+        private void OnUnpairPressed() => _session.Unpair();
 
         // P5.4: refresh en caliente -- pide {"cmd":"refresh"}; el visor responde con
         // el mismo payload del "hello" (BuildHello reusado del lado visor) y
@@ -1020,6 +1033,11 @@ namespace Simulador.Tablet
             _kit.StatusBadge(header, out _statusDot, out _statusText);
             var disconnect = _kit.Button(header, "Desconectar", BtnStyle.Ghost, false, 44, 14);
             disconnect.OnClick = OnDisconnectPressed;
+            // Emparejamiento persistente por token (ver docs/networking.md): discreto,
+            // al lado de Desconectar -- accion poco frecuente (revocar el
+            // emparejamiento), no un boton principal del flujo clinico.
+            var unpair = _kit.Button(header, "Desvincular", BtnStyle.Ghost, false, 44, 14);
+            unpair.OnClick = OnUnpairPressed;
         }
 
         private void BuildBody(Transform parent)

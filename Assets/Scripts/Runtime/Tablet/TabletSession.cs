@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using Newtonsoft.Json.Linq;
 using Simulador.Net;
 using UnityEngine;
@@ -9,10 +10,12 @@ namespace Simulador.Tablet
     /// <summary>
     /// Capa de sesion/protocolo de la tablet, separada de la UI (P6.2). Plain C# (NO
     /// MonoBehaviour): posee el <see cref="WebSocketClient"/> y el
-    /// <see cref="DiscoveryListener"/>, el flujo de conexion/emparejamiento por PIN,
-    /// la maquina de reconexion automatica (P2.5) y el estado de sesion (vision_state,
-    /// catalogo, escenarios, cache de PIN por host). Expone eventos tipados hacia la
-    /// UI y no toca ningun componente de Unity UI directamente -- <see cref="Net.TabletController"/>
+    /// <see cref="DiscoveryListener"/>, el flujo de conexion/emparejamiento (PIN de
+    /// 6 digitos o token persistente, ver docs/networking.md "emparejamiento opcion
+    /// B"), la maquina de reconexion automatica (P2.5) y el estado de sesion
+    /// (vision_state, catalogo, escenarios, mapa host -> token persistido en
+    /// pairing.json). Expone eventos tipados hacia la UI y no toca ningun componente
+    /// de Unity UI directamente -- <see cref="Net.TabletController"/>
     /// (MonoBehaviour) es quien construye pantallas/widgets y reacciona a estos eventos.
     ///
     /// Port 1:1 (refactor mecanico, ver docs/tablet.md) del codigo que antes vivia
@@ -34,12 +37,24 @@ namespace Simulador.Tablet
         private string _currentHost = "";
         private readonly Dictionary<string, float> _seenHosts = new();
 
-        // --- Emparejamiento por PIN (en memoria, nunca a disco) ---
-        private readonly Dictionary<string, string> _pinByHost = new();
-        private string _pendingAuthPin = "";
+        // --- Emparejamiento persistente por token (opcion B, ver docs/networking.md) ---
+        // Reemplaza el cache de PIN en memoria: el token que devuelve el visor tras
+        // un PIN correcto se persiste en persistentDataPath/pairing.json (mapa
+        // host -> token) y se reusa en reconexiones futuras (manuales o
+        // automaticas) sin volver a pedir el PIN, incluso si la tablet o el visor
+        // se reiniciaron. Gotcha: la clave es la IP del host, que puede cambiar con
+        // DHCP -- degradacion aceptable, en ese caso vuelve a pedir el PIN una vez.
+        private const string PairingFileName = "pairing.json";
+        private readonly Dictionary<string, string> _tokenByHost = new();
+        private string _pendingAuthPin;
+        private string _pendingAuthToken;
         private bool _authFailed;
+        private string _authFailReason; // "pin" | "token", valido solo junto con _authFailed
         private bool _authLocked;
         private int _authLockRetrySeconds;
+        private string _manualDisconnectMessage = "Sesión finalizada.";
+
+        private static string PairingPath => Path.Combine(Application.persistentDataPath, PairingFileName);
 
         // --- Reconexion automatica (P2.5) ---
         // Ante una caida NO manual de una sesion activa, reintenta solo a la ultima
@@ -110,6 +125,8 @@ namespace Simulador.Tablet
         // ============================================================
         public void Begin()
         {
+            LoadPairing();
+
             _ws = new WebSocketClient();
             _ws.Connected += OnWsConnected;
             _ws.Disconnected += OnWsDisconnected;
@@ -119,6 +136,27 @@ namespace Simulador.Tablet
             _disc = new DiscoveryListener();
             _disc.VisorDiscovered += host => _seenHosts[host] = Time.time;
             _disc.Start();
+        }
+
+        // ---------------- Persistencia del emparejamiento (pairing.json) ----------------
+        private void LoadPairing()
+        {
+            if (!File.Exists(PairingPath)) return;
+            string text;
+            try { text = File.ReadAllText(PairingPath); }
+            catch (Exception) { return; } // archivo corrupto/ilegible: se ignora, arranca vacio
+            if (PairingStore.TryParsePairingMap(text, out var parsed))
+            {
+                _tokenByHost.Clear();
+                foreach (var kv in parsed) _tokenByHost[kv.Key] = kv.Value;
+                Debug.Log($"Tablet: {_tokenByHost.Count} emparejamiento(s) cargados.");
+            }
+        }
+
+        private void SavePairing()
+        {
+            try { File.WriteAllText(PairingPath, PairingStore.SerializePairingMap(_tokenByHost)); }
+            catch (Exception) { Debug.LogWarning($"Tablet: no se pudo escribir {PairingPath}"); }
         }
 
         /// <summary>Llamar desde el Update() del MonoBehaviour de UI (drena WS/discovery, cuenta atras de reconexion).</summary>
@@ -155,19 +193,21 @@ namespace Simulador.Tablet
         // ============================================================
         // Conexion / PIN
         // ============================================================
-        public bool TryGetCachedPin(string host, out string pin)
+        /// <summary>Token persistente de un enlace previo con este host (pairing.json), si existe.</summary>
+        public bool TryGetCachedToken(string host, out string token)
         {
-            if (_pinByHost.TryGetValue(host, out pin) && !string.IsNullOrEmpty(pin)) return true;
-            pin = null;
+            if (_tokenByHost.TryGetValue(host, out token) && !string.IsNullOrEmpty(token)) return true;
+            token = null;
             return false;
         }
 
-        /// <summary>Abre el WebSocket hacia host y manda el auth con pin al conectar. La UI ya debe haber mostrado el ConnectScreen "Conectando a host..." antes de llamar esto.</summary>
-        public void Connect(string host, string pin)
+        private void ConnectInternal(string host, string pin, string token)
         {
             _currentHost = host;
             _pendingAuthPin = pin;
+            _pendingAuthToken = token;
             _authFailed = false;
+            _authFailReason = null;
             // MAYOR (revision post-split, heredado): _manualDisconnect puede haber
             // quedado en true si el usuario cancelo una reconexion automatica mientras
             // esperaba el backoff (sin conexion en vuelo, sin evento de socket que lo
@@ -178,12 +218,35 @@ namespace Simulador.Tablet
             _ws.Connect(host, WsPort);
         }
 
-        /// <summary>Desconexion manual (boton "Desconectar" de la UI).</summary>
-        public void Disconnect()
+        /// <summary>Abre el WebSocket hacia host y manda el auth con PIN al conectar (primer enlace, o PinScreen tras un token invalido/revocado). La UI ya debe haber mostrado el ConnectScreen "Conectando a host..." antes de llamar esto.</summary>
+        public void Connect(string host, string pin) => ConnectInternal(host, pin, null);
+
+        /// <summary>Abre el WebSocket hacia host y manda el auth con el token cacheado (reconexion sin pedir PIN, ver TryGetCachedToken).</summary>
+        public void ConnectWithToken(string host, string token) => ConnectInternal(host, null, token);
+
+        /// <summary>Desconexion manual (boton "Desconectar" de la UI, o Unpair). "message" es lo que ve el ConnectScreen al volver.</summary>
+        public void Disconnect(string message = "Sesión finalizada.")
         {
             _manualDisconnect = true;
+            _manualDisconnectMessage = message;
             _reconnecting = false; // defensivo: no hay Reconectar visible en MainScreen, pero por si acaso
             _ws.Close();
+        }
+
+        /// <summary>
+        /// Boton "Desvincular" de la UI: pide al visor que revoque el token de ESTE
+        /// cliente y borra el token local de _currentHost, sin esperar confirmacion
+        /// del visor -- el comando sale por el mismo socket ANTES del Close() (mismo
+        /// hilo, mismo orden de escritura), y aunque se perdiera, el peor caso es un
+        /// token huerfano en paired_tokens.json que se limpia borrando ese archivo
+        /// del lado visor (ver docs/networking.md).
+        /// </summary>
+        public void Unpair()
+        {
+            SendCommand(new JObject { ["cmd"] = "unpair" });
+            if (!string.IsNullOrEmpty(_currentHost) && _tokenByHost.Remove(_currentHost))
+                SavePairing();
+            Disconnect("Desvinculado. Ingresá el PIN si querés volver a conectarte.");
         }
 
         public bool SendCommand(JObject cmd)
@@ -197,7 +260,10 @@ namespace Simulador.Tablet
         {
             _connecting = false;
             Connected?.Invoke();
-            SendCommand(new JObject { ["type"] = "auth", ["pin"] = _pendingAuthPin });
+            var auth = new JObject { ["type"] = "auth" };
+            if (!string.IsNullOrEmpty(_pendingAuthToken)) auth["token"] = _pendingAuthToken;
+            else auth["pin"] = _pendingAuthPin;
+            SendCommand(auth);
         }
 
         private void OnWsDisconnected()
@@ -228,12 +294,18 @@ namespace Simulador.Tablet
             }
             if (_authFailed)
             {
-                // PIN invalido (p.ej. el visor reinicio y genero un PIN nuevo): no tiene
-                // sentido seguir reintentando solo, hace falta el PIN nuevo del clinico.
+                // PIN invalido (p.ej. el visor reinicio y genero un PIN nuevo), o token
+                // invalido/revocado (_authFailReason == "token": visor reseteado o
+                // Desvincular hecho desde otro lado, ver OnText) -- en ambos casos no
+                // tiene sentido seguir reintentando solo, hace falta el PIN del clinico.
                 _authFailed = false;
                 _connecting = false;
                 _reconnecting = false;
-                PinScreenRequested?.Invoke("PIN incorrecto. Volvé a intentarlo.");
+                string msg = _authFailReason == "token"
+                    ? "El emparejamiento con este visor ya no es válido. Ingresá el PIN nuevamente."
+                    : "PIN incorrecto. Volvé a intentarlo.";
+                _authFailReason = null;
+                PinScreenRequested?.Invoke(msg);
                 return;
             }
             if (_connecting)
@@ -252,7 +324,7 @@ namespace Simulador.Tablet
             else if (_sessionActive)
             {
                 _sessionActive = false;
-                if (_manualDisconnect) ShowConnectScreenRequested?.Invoke("Sesión finalizada.", false);
+                if (_manualDisconnect) ShowConnectScreenRequested?.Invoke(_manualDisconnectMessage, false);
                 else StartReconnectLoop(); // P2.5: caida no manual -> reconexion automatica
             }
             _manualDisconnect = false;
@@ -268,14 +340,17 @@ namespace Simulador.Tablet
 
         private void StartReconnectLoop()
         {
-            if (!_pinByHost.TryGetValue(_currentHost, out var pin) || string.IsNullOrEmpty(pin))
+            if (!_tokenByHost.TryGetValue(_currentHost, out var token) || string.IsNullOrEmpty(token))
             {
-                // Sin PIN cacheado no hay con que reintentar solo (no deberia pasar si
-                // _sessionActive era true, pero por las dudas se degrada al flujo manual).
+                // Sin token cacheado no hay con que reintentar solo (no deberia pasar si
+                // _sessionActive era true -- llegar a una sesion activa ya implica que
+                // hubo un auth_ok con token, ver OnText -- pero por las dudas se degrada
+                // al flujo manual).
                 ShowConnectScreenRequested?.Invoke("Se perdió la conexión con el visor.", true);
                 return;
             }
-            _pendingAuthPin = pin;
+            _pendingAuthToken = token;
+            _pendingAuthPin = null;
             _reconnecting = true;
             _reconnectAttempt = 0;
             ReconnectStarted?.Invoke("Se perdió la conexión con el visor.");
@@ -347,25 +422,44 @@ namespace Simulador.Tablet
             string type = (string)o["type"] ?? "";
             if (type == "auth_ok")
             {
-                // PIN valido: lo dejamos en memoria para esta sesion (reconexion al
-                // mismo host sin volver a pedirlo). El hello llega en un mensaje
-                // aparte inmediatamente despues.
-                if (!string.IsNullOrEmpty(_currentHost)) _pinByHost[_currentHost] = _pendingAuthPin;
+                // Token nuevo (viene SOLO de un auth por PIN -- primer enlace o
+                // PinScreen tras un token invalido/revocado, ver HandleAuthAttempt
+                // del lado visor): se persiste para no volver a pedir el PIN. Si el
+                // auth fue por token (reconexion), el visor NO manda un token nuevo
+                // (decision de protocolo, ver docs/networking.md) y el cache
+                // existente sigue siendo valido -- no hay nada que actualizar aca.
+                // El hello llega en un mensaje aparte inmediatamente despues.
+                string newToken = (string)o["token"];
+                if (!string.IsNullOrEmpty(newToken) && !string.IsNullOrEmpty(_currentHost))
+                {
+                    _tokenByHost[_currentHost] = newToken;
+                    SavePairing();
+                }
                 AuthOk?.Invoke();
             }
             else if (type == "auth_fail")
             {
                 // El visor ya cierra esta conexion; OnWsDisconnected dispara
-                // PinScreenRequested para reintentar.
+                // PinScreenRequested para reintentar. reason=="token": el token
+                // cacheado quedo invalido/revocado (visor reseteado o Desvincular
+                // hecho desde otro lado) -- se borra, cae al flujo de PIN normal, y
+                // NO consumio el lockout de PIN del visor (ver HandleTokenAuth).
+                // reason default "pin": PIN puntual incorrecto, no hay token que borrar.
                 _authFailed = true;
-                if (!string.IsNullOrEmpty(_currentHost)) _pinByHost.Remove(_currentHost);
+                _authFailReason = (string)o["reason"] ?? "pin";
+                if (_authFailReason == "token" && !string.IsNullOrEmpty(_currentHost))
+                {
+                    _tokenByHost.Remove(_currentHost);
+                    SavePairing();
+                }
             }
             else if (type == "auth_locked")
             {
-                // El visor agoto el tope de intentos fallidos de esta sesion y esta
-                // en ventana de lockout: el PIN que mandamos puede ser el correcto,
-                // asi que NO lo descartamos (no tocamos _pinByHost). OnWsDisconnected
-                // usa el retry_in_s para el mensaje.
+                // El visor agoto el tope de intentos fallidos de PIN de esta sesion y
+                // esta en ventana de lockout (solo alcanza al flujo de PIN -- un auth
+                // por token nunca dispara auth_locked, ver HandleTokenAuth): el PIN
+                // que mandamos puede ser el correcto, asi que NO lo descartamos.
+                // OnWsDisconnected usa el retry_in_s para el mensaje.
                 _authLocked = true;
                 _authLockRetrySeconds = (int?)o["retry_in_s"] ?? 0;
             }

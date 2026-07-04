@@ -16,7 +16,7 @@ original, con extensiones de flujo clínico propias del simulador.
 
 | Archivo | Rol |
 |---|---|
-| `Assets/Scripts/Runtime/Tablet/TabletSession.cs` (nuevo, P6.2) | **Capa de sesión/protocolo.** Plain C# (NO MonoBehaviour). Posee `WebSocketClient` + `DiscoveryListener`, el flujo de conexión/emparejamiento por PIN, la máquina de reconexión automática (P2.5) y el estado de sesión (`vision_state`, catálogo, escenarios, cache de PIN por host, hosts descubiertos). Expone eventos tipados (`Connected`, `AuthOk`, `PinScreenRequested`, `ShowConnectScreenRequested`, `ReconnectStarted`, `ReconnectStatusChanged`, `HelloReceived`, `VisionStateChanged`, `FrameReceived`) y propiedades read-only (`IsConnecting`, `IsSessionActive`, `IsReconnecting`, `IsWsOpen`, `CurrentHost`, `DiscoveredHosts`, `LensesById`, `VisionState`, `Scenarios`, `ScenarioLabels`, `CurrentScenario`). Namespace `Simulador.Tablet`. |
+| `Assets/Scripts/Runtime/Tablet/TabletSession.cs` (nuevo, P6.2) | **Capa de sesión/protocolo.** Plain C# (NO MonoBehaviour). Posee `WebSocketClient` + `DiscoveryListener`, el flujo de conexión/emparejamiento (PIN de 6 dígitos o token persistente, ver Decisiones "Emparejamiento persistente por token"), la máquina de reconexión automática (P2.5) y el estado de sesión (`vision_state`, catálogo, escenarios, mapa host→token persistido en `pairing.json`, hosts descubiertos). Expone eventos tipados (`Connected`, `AuthOk`, `PinScreenRequested`, `ShowConnectScreenRequested`, `ReconnectStarted`, `ReconnectStatusChanged`, `HelloReceived`, `VisionStateChanged`, `FrameReceived`) y propiedades read-only (`IsConnecting`, `IsSessionActive`, `IsReconnecting`, `IsWsOpen`, `CurrentHost`, `DiscoveredHosts`, `LensesById`, `VisionState`, `Scenarios`, `ScenarioLabels`, `CurrentScenario`). Namespace `Simulador.Tablet`. |
 | `Assets/Scripts/Runtime/Net/TabletController.cs` | **Capa de UI.** MonoBehaviour único de la app (sigue en `Net/` con ese nombre — la escena `Tablet.unity` lo referencia por GUID del `.cs`, ver Gotchas — pero cambió de namespace `Simulador.Net` → `Simulador.Tablet`, P6.2). Construye toda la interfaz en `Start()`, crea y drena la `TabletSession` en su `Update()` (`session.Update(Time.deltaTime)`), traduce eventos de sesión → widgets (`OnSession*` handlers) y clicks → métodos de la sesión (`_session.Connect/Disconnect/SendCommand/CancelReconnect/...`). |
 | `Assets/Scripts/Runtime/Tablet/TabletUiKit.cs` | Fábrica de widgets uGUI temables: `Label`, `Button`, `Panel`/`Card`, `Slider`, `LineEdit` (TMP_InputField), `CheckToggle`, `StatusBadge`, `RawImage`, `ScrollColumn`, `Box`/`Spacer`/`Size`. Genera el sprite de esquinas redondeadas por código (9-slice cacheado por radio) y registra un callback de "repaint" por widget para retematizar en caliente. |
 | `Assets/Scripts/Runtime/Tablet/TabletPalette.cs` | Paletas Dark (consola médica, teal) y Light (historia clínica, azul); port verbatim de las constantes del `theme_builder.gd` de Godot. |
@@ -38,23 +38,28 @@ TabletController.Start()
    beacon UDP ──┴─▶ TabletSession._seenHosts ─▶ UI lee session.DiscoveredHosts en RefreshDiscovered
                     (diff in-place, poda a los 6 s sin beacon — poda vive en TabletSession.Update)
    tap visor / IP manual ─▶ UI.StartConnectFlow(host)
-      ├─ session.TryGetCachedPin(host) ─▶ UI.BeginConnect(host, pin) directo
-      └─ sin PIN guardado ─▶ UI.ShowPinScreen(host) ─▶ "Conectar" ─▶ UI.BeginConnect(host, pin)
-   UI.BeginConnect ─▶ ShowConnectScreen("Conectando...") + session.Connect(host, pin)
-   session: ws Connected ─▶ SendCommand({"type":"auth",...}) ─▶ evento Connected ─▶ UI actualiza texto
-   session: "auth_ok" ─▶ cachea el PIN ─▶ evento AuthOk ─▶ UI.SetConnectStatus(...)
+      ├─ session.TryGetCachedToken(host) ─▶ UI.BeginConnectWithToken(host, token) directo
+      └─ sin token guardado ─▶ UI.ShowPinScreen(host) ─▶ "Conectar" ─▶ UI.BeginConnect(host, pin)
+   UI.BeginConnect(WithToken) ─▶ ShowConnectScreen("Conectando...") + session.Connect/ConnectWithToken
+   session: ws Connected ─▶ SendCommand({"type":"auth","pin"|"token":...}) ─▶ evento Connected ─▶ UI actualiza texto
+   session: "auth_ok" ─▶ si trae "token" (vino de PIN) lo persiste en pairing.json ─▶ evento AuthOk ─▶ UI.SetConnectStatus(...)
    session: "auth_fail" ─▶ el visor cierra la conexión ─▶ OnWsDisconnected interno ─▶ evento
-                           PinScreenRequested ─▶ UI.ShowPinScreen("PIN incorrecto"), corta reconexión
+                           PinScreenRequested (mensaje segun reason: "pin"→"PIN incorrecto", "token"→
+                           "emparejamiento ya no válido"), corta reconexión; reason=="token" además
+                           borra la entrada de pairing.json
    session: "auth_locked" ─▶ el visor cierra la conexión ─▶ OnWsDisconnected interno:
                     si NO se estaba reconectando ─▶ evento PinScreenRequested ("Demasiados intentos...")
                     si SÍ (P2.5) ─▶ evento ReconnectStatusChanged, sigue el loop tras retry_in_s
-   session: caída NO manual de sesión activa (P2.5) ─▶ StartReconnectLoop() interno ─▶ eventos
-                    ReconnectStarted + ReconnectStatusChanged ─▶ UI.ShowReconnectScreen + backoff 2/4/8/15s
+   session: caída NO manual de sesión activa (P2.5) ─▶ StartReconnectLoop() interno (usa el token
+                    persistido de _currentHost) ─▶ eventos ReconnectStarted + ReconnectStatusChanged
+                    ─▶ UI.ShowReconnectScreen + backoff 2/4/8/15s
    session: "hello" ─▶ actualiza catálogo/vision_state/escenarios ─▶ evento HelloReceived(lenses) ─▶
                     UI.RebuildLensList/RebuildScenarioList/RefreshVisionUI/ShowMainScreen
    session: binario 'B'/'L'/'R'+JPG ─▶ separa header ─▶ evento FrameReceived(eye, jpg) ─▶
                     UI.LoadImage en RawImage por ojo + contadores del footer
    UI ─▶ session.SendCommand(apply_lens / override_params / set_astigmatism / load_scenario / refresh)
+   UI (boton Desvincular) ─▶ session.Unpair() ─▶ SendCommand({"cmd":"unpair"}) + borra token local +
+                    Disconnect("Desvinculado...") ─▶ evento ShowConnectScreenRequested
    session: "vision_state" ─▶ evento VisionStateChanged ─▶ UI.RefreshVisionUI + SyncParamRowsFromState()
 ```
 
@@ -62,11 +67,13 @@ TabletController.Start()
 - **ConnectScreen:** glifo de ojo + título, lista de visores descubiertos (botones `Visor Quest · IP`),
   estado de búsqueda, y "Conexión manual" colapsable con `LineEdit` de IP + botón Conectar.
 - **PinScreen:** se intercala entre ConnectScreen y MainScreen cuando hace falta el PIN de
-  emparejamiento (host sin PIN guardado en memoria, o reintento tras `auth_fail`/`auth_locked`).
-  Glifo + título, host destino, `LineEdit` numérico de 6 dígitos
+  emparejamiento (host SIN un token persistente válido en `pairing.json` -- primer enlace,
+  Desvincular previo, o el token quedó revocado/inválido; o reintento tras `auth_fail`/
+  `auth_locked`). Glifo + título, host destino, `LineEdit` numérico de 6 dígitos
   (`TMP_InputField.ContentType.IntegerNumber` → teclado numérico en Android) y botones
   Cancelar/Conectar. El mensaje de estado distingue PIN incorrecto ("PIN incorrecto. Volvé a
-  intentarlo.") de lockout del visor ("Demasiados intentos. Esperá Ns y volvé a intentarlo.",
+  intentarlo.") de token inválido ("El emparejamiento con este visor ya no es válido. Ingresá el
+  PIN nuevamente.") de lockout del visor ("Demasiados intentos. Esperá Ns y volvé a intentarlo.",
   con el `retry_in_s` que manda el visor). Detalle del protocolo y el modelo de amenaza en
   `docs/networking.md`.
 - **ReconnectScreen (P2.5):** se muestra ante una caída NO manual de una sesión activa. Glifo +
@@ -75,7 +82,9 @@ TabletController.Start()
   DoReconnectAttempt/OnWsDisconnected y Decisiones abajo.
 - **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), toggle de tema
   claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), badge de estado
-  (punto de color + texto) y botón Desconectar.
+  (punto de color + texto), botón Desconectar y botón **Desvincular** (emparejamiento persistente
+  por token: revoca el token de esta tablet en el visor y olvida el emparejamiento local con el
+  host actual -- ver Decisiones "Emparejamiento persistente por token").
 - **Panel de stream (izquierda):** uno o dos panes con `RawImage` dentro de un `AspectRatioFitter`
   4:3 (768/576). El split lo decide `blend_active` del `vision_state` (P2.1 — fuente única de
   verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente
@@ -178,21 +187,39 @@ TabletController.Start()
 - **Build propio con OpenXR OFF** → el target Android es compartido con Quest; si el loader OpenXR
   queda activo en una tablet sin runtime VR, la pantalla queda negra. `TabletBuild.cs` lo apaga solo
   durante el build y lo restaura siempre. Solo se menciona acá: el detalle vive en `docs/builds-deploy.md`.
-- **PIN guardado en memoria por host, nunca a disco** (P1.1) → `_pinByHost` (`Dictionary<string,
-  string>`) vive solo mientras corre la app; a diferencia de la preferencia de tema (persistida en
-  `ui_prefs.cfg`), el PIN no se escribe a `persistentDataPath` a propósito (es el secreto de
-  emparejamiento de la sesión del visor). Reconectar al mismo host en la misma sesión de la tablet
-  reusa el PIN sin volver a pedirlo; cerrar y abrir la app de nuevo, o que el visor responda
-  `auth_fail`, lo borra y hay que reingresarlo. Protocolo completo en `docs/networking.md`.
+- **Emparejamiento persistente por token, reemplaza el cache de PIN en memoria** → hasta esta
+  tarea `_pinByHost` (`Dictionary<string,string>`) vivía solo mientras corría la app (a propósito:
+  el PIN era el secreto de la sesión del visor). Cada reinicio de visor O tablet obligaba a
+  retipear el PIN — molesto en la práctica clínica. Ahora `TabletSession._tokenByHost` persiste en
+  `persistentDataPath/pairing.json` (mapa host→token, `PairingStore.SerializePairingMap`/
+  `TryParsePairingMap`): un PIN correcto devuelve un token de ~256 bits
+  (`PairingStore.GenerateToken`) que la tablet guarda y reusa en TODA reconexión futura (manual o
+  automática), sobreviviendo a reinicios de la app y del visor. Solo se vuelve al `PinScreen`
+  cuando no hay token guardado para ese host, o cuando el visor responde `auth_fail` con
+  `reason:"token"` (token inválido/revocado — se borra la entrada local y cae al flujo de PIN).
+  Protocolo completo, formato de los mensajes y modelo de amenaza en `docs/networking.md`. Gotcha
+  nuevo: la clave del mapa es la IP del host, que puede cambiar por DHCP -- degradación aceptable
+  (pide el PIN una vez más para el nuevo host, y ahí queda cacheado de nuevo).
 - **Reconexión automática solo a la última sesión, con backoff acotado (P2.5)** → una caída NO
   manual (`_manualDisconnect == false`) de una sesión que estaba `_sessionActive` dispara
-  `StartReconnectLoop()`: reintenta a `_currentHost` con el PIN de `_pinByHost` (si no hay PIN
-  cacheado, degrada al flujo manual — no debería pasar si hubo sesión activa, pero es defensivo).
+  `StartReconnectLoop()`: reintenta a `_currentHost` con el token de `_tokenByHost` (si no hay
+  token cacheado, degrada al flujo manual — no debería pasar si hubo sesión activa, ya que llegar
+  a `_sessionActive` implica que hubo un `auth_ok` con token, pero es defensivo).
   Backoff exponencial `DelayForAttempt(N) = min(2 * 2^(N-1), 15)` segundos → 2, 4, 8, 15, 15, ...
-  indefinido hasta que el usuario cancela o el visor corta el loop (`auth_fail` → PIN nuevo, no
-  tiene sentido reintentar solo). `auth_locked` es la excepción: en vez de cortar, se espera el
-  `retry_in_s` que manda el visor y se sigue reintentando (el PIN cacheado puede ser el correcto,
-  el visor ni lo evaluó). El timer solo cuenta cuando NO hay un intento en vuelo (`!_connecting`).
+  indefinido hasta que el usuario cancela o el visor corta el loop (`auth_fail` → hace falta el
+  PIN, no tiene sentido reintentar solo). `auth_locked` no puede ocurrir durante una reconexión
+  por token (ver `docs/networking.md`: el lockout de PIN no alcanza al flujo de token) -- solo
+  puede pasar si el primer enlace de esta MISMA conexión fue por PIN, en cuyo caso se espera el
+  `retry_in_s` que manda el visor y se sigue reintentando. El timer solo cuenta cuando NO hay un
+  intento en vuelo (`!_connecting`).
+- **Botón "Desvincular" (emparejamiento persistente por token)** → discreto, al lado de
+  Desconectar en el header (no es un botón del flujo clínico habitual). Manda `{"cmd":"unpair"}`
+  (comando autenticado, el visor revoca el token de ESTA tablet), borra la entrada de
+  `_tokenByHost`/`pairing.json` para el host actual y cierra la sesión localmente sin esperar
+  respuesta del visor (`TabletSession.Unpair`, ver `docs/networking.md` Gotchas sobre el orden de
+  escritura del socket) — vuelve al `ConnectScreen` con "Desvinculado..."; la próxima conexión a
+  ese visor pide el PIN de nuevo. Reset total del lado visor (todos los emparejamientos): borrar
+  `paired_tokens.json` a mano, sin UI dedicada (ver Minimal footprint en `docs/networking.md`).
 - **FPS del footer normalizado por pane, no por mensaje (P5.5)** → `StreamingCapture` manda, por
   tick (20 Hz), UN frame `'B'` fuera de blend o DOS frames `'L'`+`'R'` en blend (ver
   `docs/networking.md`); `OnBinary` cuenta cada mensaje recibido igual. Sin corrección, el footer
@@ -266,17 +293,21 @@ TabletController.Start()
   `_texRight` (RGB24 2×2 inicial que se redimensiona solo). No cachear referencias a su tamaño.
 - **`auth_fail`/`auth_locked` implican desconexión inminente:** el visor manda el mensaje y CIERRA
   esa conexión del lado servidor casi inmediatamente. `TabletSession` (P6.2: antes era
-  `TabletController`) no cierra nada por su cuenta: solo marca `_authFailed`/`_authLocked` (y en
-  el caso de `auth_locked`, `_authLockRetrySeconds`) en su `OnText`; el `Disconnected` real llega
-  poco después vía `OnWsDisconnected` (interno de `TabletSession`), que es quien dispara el evento
-  `PinScreenRequested` con el mensaje correcto (chequea `_authLocked` ANTES de `_authFailed`, son
-  mutuamente excluyentes para una misma conexión). Si se toca ese flujo, mantener el orden (flag
-  primero en `OnText`, evento en el disconnect) o la UI puede terminar mostrando el `PinScreen`
-  mientras el socket todavía figura "abierto".
-- **`auth_locked` NO limpia el PIN cacheado:** a diferencia de `auth_fail` (que borra
-  `_pinByHost[host]` porque el PIN mandado ya se sabe que está mal), `auth_locked` no toca el
-  cache — el PIN mandado puede ser el correcto, el visor ni lo evaluó. Si se agrega lógica nueva
-  alrededor de `_pinByHost`, no asumir que todo fallo de auth implica "borrar el PIN guardado".
+  `TabletController`) no cierra nada por su cuenta: solo marca `_authFailed`/`_authFailReason`/
+  `_authLocked` (y en el caso de `auth_locked`, `_authLockRetrySeconds`) en su `OnText`; el
+  `Disconnected` real llega poco después vía `OnWsDisconnected` (interno de `TabletSession`), que
+  es quien dispara el evento `PinScreenRequested` con el mensaje correcto (chequea `_authLocked`
+  ANTES de `_authFailed`, son mutuamente excluyentes para una misma conexión). Si se toca ese
+  flujo, mantener el orden (flags primero en `OnText`, evento en el disconnect) o la UI puede
+  terminar mostrando el `PinScreen` mientras el socket todavía figura "abierto".
+- **`auth_locked` NO limpia el token cacheado; `auth_fail` lo limpia SOLO si `reason=="token"`:**
+  `auth_locked` no toca `_tokenByHost` (solo puede pasar del lado de un intento por PIN, ver
+  `docs/networking.md` -- el token que se venía usando, si había uno, sigue intacto).
+  `auth_fail` con `reason=="pin"` (default) tampoco toca `_tokenByHost` (fue un PIN puntual mal
+  tipeado, no invalida un token existente de otra conexión); solo `reason=="token"` borra la
+  entrada de `_tokenByHost[host]` porque ESE token específico ya se sabe inválido/revocado. Si se
+  agrega lógica nueva alrededor de `_tokenByHost`, no asumir que todo fallo de auth implica
+  "borrar el token guardado" — depende del `reason`.
 - **Reintentar con PIN incorrecto o durante lockout exige reconectar:** el servidor no deja la
   conexión abierta para un segundo intento sobre el mismo socket (tanto `auth_fail` como
   `auth_locked` cierran esa conexión). El `PinScreen` → "Conectar" siempre pasa por
@@ -354,11 +385,13 @@ TabletController.Start()
 2. Tocar el visor detectado (o "Conectar" en manual): debe aparecer el `PinScreen` pidiendo el PIN
    de 6 dígitos (lo loguea la consola del visor: `Net: PIN de emparejamiento de esta sesion: ...`;
    en el visor real lo muestra el HUD). Ingresarlo mal a propósito una vez → "PIN incorrecto. Volvé
-   a intentarlo." y vuelve a pedirlo; ingresarlo bien → debe llegar el `hello`, pasar a la pantalla
-   principal con badge verde `Conectado · IP`, las cards del catálogo y el stream en movimiento
-   (footer con fps/MB creciendo). Probar también un PIN con ceros a la izquierda (p.ej. `000123`,
-   si el que generó el visor tiene esa forma) para confirmar que el `LineEdit` numérico no los
-   recorta ni el envío los trunca (el PIN es un string de 6 caracteres, no un número).
+   a intentarlo." y vuelve a pedirlo; ingresarlo bien → debe llegar el `auth_ok` con un token nuevo
+   (persistido en `pairing.json` de la tablet y en `paired_tokens.json` del visor, ver
+   `docs/networking.md`) seguido del `hello`, pasar a la pantalla principal con badge verde
+   `Conectado · IP`, las cards del catálogo y el stream en movimiento (footer con fps/MB
+   creciendo). Probar también un PIN con ceros a la izquierda (p.ej. `000123`, si el que generó el
+   visor tiene esa forma) para confirmar que el `LineEdit` numérico no los recorta ni el envío los
+   trunca (el PIN es un string de 6 caracteres, no un número).
 2b. **Lockout:** repetir el PIN incorrecto 3 veces (reconectando cada vez) → al cuarto intento la
    tablet debe mostrar "Demasiados intentos. Esperá Ns y volvé a intentarlo." (no "PIN
    incorrecto") aunque esta vez se ingrese el PIN correcto. Esperar los Ns indicados y reintentar
@@ -371,18 +404,31 @@ TabletController.Start()
 5. Togglear tema claro/oscuro (debe repintar todo en caliente y persistir tras reiniciar) y cambiar
    de escenario desde el header.
 6. Probar desconexión manual: botón Desconectar → "Sesión finalizada." (vuelve al `ConnectScreen`
-   directo, NO dispara reconexión automática — es el camino `_manualDisconnect`).
+   directo, NO dispara reconexión automática — es el camino `_manualDisconnect`). Volver a tocar
+   el mismo visor → debe conectar directo SIN pedir el PIN (usa el token persistido).
 6b. **Reconexión automática (P2.5, 2 dispositivos):** con la tablet conectada y activa, matar/pausar
    el visor (o cortar su Wi-Fi) sin usar el botón Desconectar de la tablet → debe aparecer el
    `ReconnectScreen` ("Se perdió la conexión con el visor." → "Reconectando… (intento N)") con
-   cuenta atrás creciente (2 s, 4 s, 8 s, tope 15 s). Reactivar el visor (mismo PIN de sesión, no
-   reiniciarlo) antes de que el clínico cancele → debe reconectar solo y volver al `MainScreen`
-   sin pedir el PIN de nuevo. Probar también "Cancelar" durante la cuenta atrás → debe volver al
-   `ConnectScreen` normal (discovery) sin más reintentos.
-6c. **Reconexión + visor reiniciado (PIN nuevo):** repetir el corte, pero esta vez REINICIAR el
-   visor (nuevo PIN de sesión) antes de que la tablet reconecte → el intento automático debe
-   recibir `auth_fail`, cortar el loop y mostrar el `PinScreen` pidiendo el PIN nuevo (no debe
-   seguir reintentando solo con el PIN viejo).
+   cuenta atrás creciente (2 s, 4 s, 8 s, tope 15 s). Reactivar el visor (sin reiniciarlo) antes de
+   que el clínico cancele → debe reconectar solo (por token, sin pedir PIN) y volver al
+   `MainScreen`. Probar también "Cancelar" durante la cuenta atrás → debe volver al `ConnectScreen`
+   normal (discovery) sin más reintentos.
+6c. **Reconexión + visor REINICIADO (emparejamiento persistente por token):** repetir el corte,
+   pero esta vez REINICIAR el visor (PIN de sesión nuevo, HUD lo muestra distinto) antes de que la
+   tablet reconecte → a diferencia del comportamiento previo a esta tarea, el intento automático
+   debe reconectar solo POR TOKEN (el token persiste en `paired_tokens.json` del visor pese al
+   reinicio) y volver al `MainScreen` SIN mostrar el `PinScreen`. Confirmar en consola del visor
+   `Net: cliente N autenticado por token, enviando hello.`.
+6d. **Token invalidado a mano:** con la tablet ya emparejada, cerrar el visor, borrar
+   `paired_tokens.json` de su `persistentDataPath` y volver a abrirlo → el siguiente intento de
+   conexión (manual o automático) de la tablet debe recibir `auth_fail` con `reason:"token"`,
+   mostrar el `PinScreen` con "El emparejamiento con este visor ya no es válido. Ingresá el PIN
+   nuevamente." y la tablet debe haber olvidado ese host de su `pairing.json` (verificar
+   reingresando el PIN correcto: debe volver a emparejar y guardar un token nuevo).
+6e. **Desvincular:** con la tablet conectada, tocar "Desvincular" en el header → debe volver al
+   `ConnectScreen` con "Desvinculado. Ingresá el PIN si querés volver a conectarte."; la consola
+   del visor debe loguear `Net: cliente N se desvinculo (token revocado).`. Tocar el mismo visor
+   de nuevo → debe pedir el `PinScreen` (ya no hay token ni del lado tablet ni del lado visor).
 7. Para device real: **Simulador → Build Tablet (Android)** genera `Builds/Android/Simulador.apk`
    (ver `docs/builds-deploy.md`). Verificar en la tablet real que el `LineEdit` del PIN abre teclado
    numérico (no el alfabético completo).
@@ -443,12 +489,13 @@ TabletController.Start()
   espera la respuesta ni si el visor tardara en contestar; como reusa el flujo de `"hello"`, el
   único indicio de éxito es que la lista de lentes/escenarios se repuebla. Aceptable para un botón
   de uso ocasional, pero si se vuelve frecuente convendría un estado de carga.
-- **`TabletSession` sin tests unitarios (P6.2):** es plain C# (sin corrutinas ni `UnityWebRequest`,
-  a diferencia de `DataManager`), así que en teoría es más testeable que antes del split — pero
-  sigue dependiendo de `WebSocketClient`/`DiscoveryListener` reales (no hay interfaz inyectable) y
-  de eventos de `Newtonsoft.Json.Linq`, así que testear la máquina de reconexión hoy exige
-  reflection + Play Mode real (ver Cómo probar), igual que se hizo para verificar el split. Si se
-  necesitara cobertura EditMode de verdad, el camino natural es extraer `DelayForAttempt` y el
-  parsing de `OnText`/`OnBinary` a funciones puras separadas (mismo patrón que
-  `DataManagerLogic.cs`, ver `docs/catalogo-lentes.md`) — no se hizo en esta tarea por ser un
-  refactor mecánico, no una tarea de cobertura.
+- **`TabletSession` sin tests unitarios de la máquina de reconexión/protocolo (P6.2):** es plain
+  C# (sin corrutinas ni `UnityWebRequest`, a diferencia de `DataManager`), así que en teoría es más
+  testeable que antes del split — pero sigue dependiendo de `WebSocketClient`/`DiscoveryListener`
+  reales (no hay interfaz inyectable) y de eventos de `Newtonsoft.Json.Linq`, así que testear la
+  máquina de reconexión hoy exige reflection + Play Mode real (ver Cómo probar), igual que se hizo
+  para verificar el split. La ÚNICA porción que sí se extrajo a lógica pura testeable es el
+  emparejamiento por token (generación + serialización, `PairingStore.cs`/`PairingStoreTests.cs`,
+  ver `docs/networking.md`) — el resto (`DelayForAttempt`, parsing de `OnText`/`OnBinary`) sigue
+  sin extraer; si se necesitara cobertura EditMode de verdad, el camino natural es el mismo patrón
+  (`DataManagerLogic.cs`, ver `docs/catalogo-lentes.md`).

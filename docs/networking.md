@@ -16,7 +16,8 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
 | `Assets/Scripts/Runtime/Net/StreamingCapture.cs` | Captura la vista del paciente (cámara propia que sigue la XR camera) y la broadcastea como JPG con header de 1 byte por ojo. |
 | `Assets/Scripts/Runtime/Net/DiscoveryBeacon.cs` | Beacon UDP del visor: broadcast a `255.255.255.255:9091` cada 2 s. |
 | `Assets/Scripts/Runtime/Net/DiscoveryListener.cs` | Lado tablet: escucha :9091 en un thread y encola las IPs de visores detectados. |
-| `Assets/Scripts/Runtime/Tablet/TabletSession.cs` (P6.2) | Consumidor de red del lado tablet: usa `DiscoveryListener` + `WebSocketClient`, parsea `hello`/`vision_state`, separa el header de los JPG del stream y expone eventos hacia `TabletController` (UI). Antes de P6.2 esto vivía en `TabletController.cs`; detalle completo del split en `docs/tablet.md`. |
+| `Assets/Scripts/Runtime/Net/PairingStore.cs` | Logica PURA (sin Unity, sin IO) del emparejamiento persistente por token: genera el token (`GenerateToken`) y serializa/deserializa las dos formas que persiste el protocolo (lista de tokens del visor, mapa host→token de la tablet). La usan tanto `NetworkController` como `TabletSession`. Cubierta por `Assets/Tests/EditMode/PairingStoreTests.cs`. |
+| `Assets/Scripts/Runtime/Tablet/TabletSession.cs` (P6.2) | Consumidor de red del lado tablet: usa `DiscoveryListener` + `WebSocketClient`, parsea `hello`/`vision_state`, separa el header de los JPG del stream y expone eventos hacia `TabletController` (UI). Antes de P6.2 esto vivía en `TabletController.cs`; detalle completo del split en `docs/tablet.md`. Tambien posee el emparejamiento persistente por token (mapa host→token en `persistentDataPath/pairing.json`). |
 | `Assets/Scripts/Runtime/Net/TabletController.cs` | Capa de UI de la tablet (namespace `Simulador.Tablet` desde P6.2): consume los eventos de `TabletSession` y decodifica los JPG en `RawImage` por ojo (detalle en `docs/tablet.md`). |
 
 ```
@@ -25,8 +26,8 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
  │ NetworkController        │                 │ TabletSession (P6.2)     │
  │  ├ DiscoveryBeacon ──────┼─UDP bcast:9091─▶│  ├ DiscoveryListener     │
  │  ├ WebSocketServer :9090 │◀──WS connect────┤  ├ WebSocketClient       │
- │  │   ◀── {"type":"auth","pin":...}  (1er mensaje, texto masked)       │
- │  │   ──▶ auth_ok | auth_fail | auth_locked   │  │                       │
+ │  │   ◀── {"type":"auth","pin":...|"token":...}  (1er mensaje, masked)  │
+ │  │   ──▶ auth_ok[+token] | auth_fail[+reason] | auth_locked  │  │      │
  │  │   ◀── {"cmd": ...}    │  (solo tras auth_ok)                       │
  │  │   ──▶ hello / vision_state (texto, solo a autenticados)            │
  │  └ StreamingCapture ─────┼──binario [B|L|R]+JPG (solo a autenticados)─▶ eventos ─▶ TabletController (UI) ─▶ RawImages por ojo │
@@ -120,19 +121,61 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
   (60 s, `unchecked`, mismo patrón que el keep-alive) y cualquier intento dentro de esa ventana
   recibe `auth_locked` (con `retry_in_s`) sin evaluar el PIN. Al expirar la ventana, o en un auth
   exitoso, `_authFailCount` se resetea a 0.
+- **Emparejamiento persistente por token (opción B)** → el PIN de 6 dígitos molestaba en la
+  práctica clínica: cualquier reinicio del visor o de la tablet obligaba a retipearlo. Ahora un
+  PIN correcto (`NetworkController.HandleAuthAttempt`) además de autenticar EMITE un token nuevo
+  (`PairingStore.GenerateToken()`, 2×`Guid.NewGuid()` en hex = 64 caracteres, ~256 bits) que viaja
+  en el `auth_ok` (`{"type":"auth_ok","token":"..."}`) y se persiste en AMBOS lados:
+  `persistentDataPath/paired_tokens.json` (visor, `List<string>` — admite varias tablets
+  emparejadas a la vez) y `persistentDataPath/pairing.json` (tablet, `Dictionary<host,token>`).
+  La serialización/parseo de las dos formas y la generación del token son lógica PURA en
+  `PairingStore` (sin Unity, sin IO), testeada en `PairingStoreTests.cs` — mismo patrón que
+  `DataManagerLogic`/`DataLogicTests` (ver `docs/catalogo-lentes.md`). El primer mensaje del
+  cliente ahora puede ser `{"type":"auth","pin":"NNNNNN"}` (primer enlace, o el token quedó
+  inválido) o `{"type":"auth","token":"..."}` (reconexión, manual o automática, sin volver a
+  pedir el PIN — `TabletSession` prueba el token ANTES de mostrar el `PinScreen`, ver
+  `docs/tablet.md`). Auth por token exitoso NO emite un token nuevo (el mismo sigue siendo la
+  credencial de esa tablet hasta que se revoque). Auth por token inválido/revocado (visor
+  reseteado sin ese token en su lista, o revocado por "Desvincular") responde
+  `{"type":"auth_fail","reason":"token"}` y **NO toca el lockout de PIN**
+  (`_authFailCount`/`_lockUntilTicks` — ver `HandleTokenAuth`): el espacio de ~256 bits hace que
+  un token viejo no sea indicio de fuerza bruta, a diferencia de un PIN de 6 dígitos. El lockout
+  de PIN sigue existiendo IDÉNTICO a antes y sigue aplicando SOLO al flujo de PIN.
+  **Desvincular**: la tablet manda `{"cmd":"unpair"}` (comando autenticado, como cualquier otro);
+  el visor resuelve el token del cliente que lo mandó vía `_tokenByClientId` (poblado al
+  autenticar, sea por PIN o por token) y lo borra de `paired_tokens.json`
+  (`NetworkController.RemovePairedToken`). No hay respuesta del visor: la tablet ya borra su
+  token local y cierra la conexión por su cuenta apenas manda el comando
+  (`TabletSession.Unpair`), confiando en el orden de escritura del mismo socket/hilo (ver
+  Gotchas). Reset total del lado visor (sin UI dedicada, a propósito — ver Minimal footprint):
+  borrar `paired_tokens.json` a mano revoca TODOS los emparejamientos de una.
 
 ## Protocolo de mensajes (texto JSON, un mensaje por frame WS)
 
-**Emparejamiento (previo a todo lo demás, ver Decisiones y porqués):**
-- Tablet → visor, primer mensaje de la conexión: `{"type":"auth","pin":"NNNNNN"}`.
-- Visor → tablet, una de tres:
-  - `{"type":"auth_ok"}` — PIN correcto; inmediatamente después manda el `hello`.
+**Emparejamiento (previo a todo lo demás, ver Decisiones y porqués — opción B, token persistente):**
+- Tablet → visor, primer mensaje de la conexión: `{"type":"auth","pin":"NNNNNN"}` (primer enlace,
+  o el token guardado quedó inválido) **o** `{"type":"auth","token":"<64 hex>"}` (reconexión con
+  el token de un enlace previo, sin pedir el PIN). Si el mensaje trae `"token"` no vacío, el
+  visor SIEMPRE evalúa esa rama (nunca mezcla pin+token).
+- Visor → tablet, tras un intento por **PIN**:
+  - `{"type":"auth_ok","token":"<64 hex>"}` — PIN correcto; el token es NUEVO (recién generado,
+    `PairingStore.GenerateToken()`) y ya quedó persistido en `paired_tokens.json`; inmediatamente
+    después manda el `hello`.
   - `{"type":"auth_fail"}` — PIN incorrecto (y no hay lockout activo); el visor cierra esa
-    conexión ahí mismo, la tablet debe reconectar para reintentar.
+    conexión ahí mismo, la tablet debe reconectar para reintentar. Sin `"reason"` (implícito
+    `"pin"`).
   - `{"type":"auth_locked","retry_in_s":N}` — se agotaron los `MaxAuthFailures` (3) intentos
     fallidos y la ventana de lockout (60 s) todavía no expiró; el visor NO evalúa el PIN mandado
     (puede ser el correcto) y cierra la conexión igual. `retry_in_s` es la cuenta regresiva
-    redondeada hacia arriba.
+    redondeada hacia arriba. Este mensaje NUNCA sale de un intento por **token** (ver abajo).
+- Visor → tablet, tras un intento por **token**:
+  - `{"type":"auth_ok"}` — token válido (sigue en `paired_tokens.json`); SIN campo `"token"` (no
+    se emite uno nuevo, el mismo sigue siendo la credencial); inmediatamente después manda el
+    `hello`.
+  - `{"type":"auth_fail","reason":"token"}` — token inválido o revocado (visor reseteado sin ese
+    token en su lista persistida, o revocado por `unpair`); el visor cierra la conexión. **No
+    incrementa `_authFailCount`/no puede disparar `auth_locked`** (ver Decisiones y porqués) — la
+    tablet debe borrar ese token local y caer al flujo de PIN (`docs/tablet.md`).
 - Cualquier mensaje que no sea `{"type":"auth",...}` antes de autenticar se ignora y el visor
   cierra la conexión sin responder.
 
@@ -165,6 +208,10 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   catálogo cambió en caliente (p.ej. sync con backend recién terminado). Nota de nombre: pese a
   llamarse informalmente "comando de refresh", sigue la convención `cmd` de todos los comandos
   autenticados (no introduce un segundo discriminador `"type"` para mensajes tablet→visor).
+- `{"cmd":"unpair"}` → revoca el token del CLIENTE QUE LO MANDA (resuelto vía
+  `_tokenByClientId[id]`, poblado al autenticar sea por PIN o por token) de
+  `paired_tokens.json`. Sin respuesta del visor: la tablet ya cierra la conexión y borra su
+  token local por su cuenta apenas lo manda (ver Decisiones y porqués, `TabletSession.Unpair`).
 - Cualquier otro `cmd` loguea warning; texto no-JSON se descarta con warning.
 
 **Stream binario:** `[1 byte header B/L/R][JPG]`, 768×576, 20 Hz, calidad JPG 85
@@ -276,20 +323,29 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   genérico enmascarado, reusado por texto y por ping/pong.
 
 ## Modelo de amenaza (resumen)
-El canal ahora **exige PIN** (P1.1, emparejamiento por PIN — ver Decisiones y porqués y Protocolo):
+El canal ahora **exige PIN o token** (emparejamiento — ver Decisiones y porqués y Protocolo):
 cualquier dispositivo en la LAN que descubra el visor (o conozca su IP) todavía puede abrir el
 socket WS, pero no puede leer catálogo/estado ni mandar comandos sin conocer el PIN de 6 dígitos
-que el visor muestra en su HUD para esa sesión. Esto sube el costo de un atacante casual en la
-misma LAN de "cualquiera que conecte" a "alguien que vio la pantalla del visor" — no es
-criptográficamente fuerte (el PIN viaja en texto plano, sin TLS) pero cierra el acceso trivial.
-Sigue **sin TLS**: el PIN y todo el tráfico posterior (comandos, vision_state, stream JPG) van sin
-cifrar; alguien que ya esté haciendo sniffing pasivo de la LAN en el momento del handshake puede
-capturar el PIN y suplantar a la tablet. TLS queda como deuda pendiente (no forma parte de esta
-tarea). El lockout de intentos fallidos (`MaxAuthFailures=3` en una ventana de `LockWindowMs=60s`,
-contado por conexión — ver Decisiones y porqués) mitiga fuerza bruta básica (3 intentos/min sobre
-un espacio de 10^6 no es practicable) sin exigir reiniciar el visor, pero al ser un contador
-global también da a un atacante en la LAN una forma barata de bloquear temporalmente al clínico
-legítimo agotando el tope a propósito (ver Gotchas).
+que el visor muestra en su HUD para esa sesión, o sin poseer un token de un enlace previo. Esto
+sube el costo de un atacante casual en la misma LAN de "cualquiera que conecte" a "alguien que vio
+la pantalla del visor, o que robó el archivo de pairing de una tablet ya emparejada" — no es
+criptográficamente fuerte (PIN y token viajan en texto plano, sin TLS) pero cierra el acceso
+trivial. Sigue **sin TLS**: el PIN, el token y todo el tráfico posterior (comandos, vision_state,
+stream JPG) van sin cifrar; alguien que ya esté haciendo sniffing pasivo de la LAN en el momento
+del handshake puede capturar el PIN o el token y suplantar a la tablet. TLS queda como deuda
+pendiente. El lockout de intentos fallidos de PIN (`MaxAuthFailures=3` en una ventana de
+`LockWindowMs=60s`, contado por conexión — ver Decisiones y porqués) mitiga fuerza bruta básica
+(3 intentos/min sobre un espacio de 10^6 no es practicable) sin exigir reiniciar el visor, pero al
+ser un contador global también da a un atacante en la LAN una forma barata de bloquear
+temporalmente al clínico legítimo agotando el tope a propósito (ver Gotchas). El lockout **NO
+aplica al token** (espacio de ~256 bits, `PairingStore.GenerateToken`): un token robado no se
+puede fuerza-brutear en ningún tiempo práctico, así que negarle el lockout no abre una vía de
+ataque nueva. El riesgo del token es distinto al del PIN: es de **duración indefinida** (hasta que
+se revoque) y viaja también sin cifrar en cada reconexión, así que **robo del archivo
+`pairing.json` de la tablet = acceso al visor hasta que se revoque** (más aún si la tablet no
+tiene bloqueo de pantalla). Revocación: botón "Desvincular" en la tablet (revoca ESE token
+puntual) o borrar `persistentDataPath/paired_tokens.json` del lado visor a mano (revoca TODOS los
+emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y porqués).
 
 ## Cómo probar
 1. **En Editor (loopback):** abrir `Assets/Scenes/Main.unity` y dar Play — `NetworkController` se
@@ -320,9 +376,29 @@ legítimo agotando el tope a propósito (ver Gotchas).
    `ws://<ip-visor>:9090` y mandar cualquier JSON que no sea `{"type":"auth","pin":...}` (o texto
    no-JSON) → el visor debe cerrar la conexión sin responder nada (loguea
    `Net: cliente N mando un comando sin autenticar; cerrando.`).
-6. **Reconexión reusando PIN:** con la tablet ya autenticada una vez, desconectar (botón
-   Desconectar) y volver a tocar el mismo visor → debe conectar directo sin mostrar el `PinScreen`
-   (usa el PIN guardado en memoria de esa sesión de la tablet).
+6. **Reconexión reusando el token persistente:** con la tablet ya autenticada una vez (ya recibió
+   el `auth_ok` con token, ver consola: no hay log directo del token pero `pairing.json` en
+   `persistentDataPath` de la tablet debe existir), desconectar (botón Desconectar) y volver a
+   tocar el mismo visor → debe conectar directo sin mostrar el `PinScreen` (usa el token
+   persistido, no el PIN). **Repetir cerrando y reabriendo la app de la tablet entera** (Stop/Play
+   en Editor, o matar/reabrir en device) → debe seguir conectando sin PIN (el token sobrevive al
+   proceso, a diferencia del PIN viejo que solo vivía en memoria). **Repetir además reiniciando el
+   VISOR** (nuevo PIN de sesión, pero el token persiste en `paired_tokens.json`) → la tablet debe
+   seguir conectando sin pedir el PIN nuevo (el token no depende del PIN de sesión).
+6b. **Token inválido tras borrar `paired_tokens.json` del visor:** con la tablet ya emparejada,
+   borrar a mano `paired_tokens.json` del `persistentDataPath` del visor y reiniciar el visor (o
+   solo el archivo si se puede sin reiniciar) → el siguiente intento de conexión de la tablet debe
+   recibir `auth_fail` con `reason:"token"`, mostrar el `PinScreen` con "El emparejamiento con
+   este visor ya no es válido. Ingresá el PIN nuevamente." y la tablet debe haber borrado esa
+   entrada de su propio `pairing.json`. Confirmar en consola del visor
+   `Net: cliente N mando un token de emparejamiento invalido o revocado; cerrando.` y que este
+   evento NO afecta el contador de lockout de PIN (probar un PIN incorrecto justo después: debe
+   seguir en 1/3, no arrastrar el fallo de token).
+6c. **Desvincular:** con la tablet conectada y autenticada, tocar "Desvincular" en el header → debe
+   volver al `ConnectScreen` con "Desvinculado. Ingresá el PIN si querés volver a conectarte."; la
+   consola del visor debe loguear `Net: cliente N se desvinculo (token revocado).`. Tocar el mismo
+   visor de nuevo → debe pedir el `PinScreen` (el token ya no está en `pairing.json` ni en
+   `paired_tokens.json`).
 7. Tocar una lente en la tablet → el visor debe cambiar el render y devolver `vision_state` (los
    chips OD/OI de la card se encienden con la confirmación).
 8. Aplicar lentes distintas por ojo → el stream debe pasar a dos paneles (frames `L` y `R` separados).
@@ -345,7 +421,7 @@ legítimo agotando el tope a propósito (ver Gotchas).
 - Sin `MulticastLock` Android en `DiscoveryListener` (documentado como "si hiciera falta se agrega").
 - Sin close handshake WS saliente (se cierra el TCP directo). El keep-alive con ping propio (ver
   Decisiones y porqués) sí está resuelto en ambos lados.
-- **Sin TLS** (ver Modelo de amenaza arriba): el PIN y el resto del tráfico van sin cifrar.
+- **Sin TLS** (ver Modelo de amenaza arriba): el PIN, el token y el resto del tráfico van sin cifrar.
 - **HUD del visor todavía no muestra `PairingPin`/`AuthenticatedClientCount`** — ambos expuestos
   como propiedad pública en `NetworkController`, falta que `Vision/` los pinte (fuera de alcance
   de esta tarea).
@@ -353,3 +429,13 @@ legítimo agotando el tope a propósito (ver Gotchas).
   bloquear también al clínico legítimo por hasta 60 s (ver Gotchas y Modelo de amenaza). Aceptado
   para el modelo de amenaza actual (LAN de consultorio, un solo visor); si hiciera falta acotarlo
   más, la vía natural es llevar el contador por IP de origen en vez de global.
+- **`paired_tokens.json` no tiene UI de administración ni expiración** (emparejamiento persistente
+  por token): la lista solo crece (un token por PIN exitoso) salvo que se revoque a mano
+  (Desvincular desde la tablet correspondiente, o borrar el archivo entero desde el visor). No hay
+  límite de tokens, ni metadata de "última vez usado"/dispositivo asociado, ni expiración por
+  tiempo — para el modelo de amenaza actual (consultorio con pocas tablets) es aceptable; si el
+  número de tablets emparejadas creciera, convendría agregar esa metadata para poder auditar/podar
+  desde la tablet sin tener que borrar TODO el archivo del visor.
+- **`pairing.json`/`paired_tokens.json` no versionan su schema** (mismo patrón de deuda aceptada
+  que `presets.json`, ver `docs/tablet.md`): son datos locales, un cambio de forma a futuro
+  degradaría a "arranca vacío" en vez de migrar.

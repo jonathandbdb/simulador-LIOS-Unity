@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using Newtonsoft.Json.Linq;
 using Simulador.Data;
 using Simulador.Tablet;
@@ -11,11 +12,17 @@ namespace Simulador.Net
 {
     /// <summary>
     /// Orquesta el networking del visor (F6). Levanta el WebSocketServer (:9090), el
-    /// DiscoveryBeacon (:9091) y la captura de streaming. Exige emparejamiento por
-    /// PIN antes de operar el canal: cada cliente debe mandar {"type":"auth","pin":
-    /// "NNNNNN"} como primer mensaje; recien autenticado recibe el "hello" (catalogo
-    /// + estado), puede mandar comandos (apply_lens, override_params,
-    /// set_astigmatism, load_scenario, refresh) y recibe el vision_state/stream.
+    /// DiscoveryBeacon (:9091) y la captura de streaming. Exige emparejamiento antes
+    /// de operar el canal: cada cliente debe mandar {"type":"auth","pin":"NNNNNN"}
+    /// (PIN de 6 digitos, primer enlace) o {"type":"auth","token":"..."} (token
+    /// persistente de un enlace previo, opcion B de emparejamiento -- ver
+    /// docs/networking.md) como primer mensaje; recien autenticado recibe el "hello"
+    /// (catalogo + estado), puede mandar comandos (apply_lens, override_params,
+    /// set_astigmatism, load_scenario, refresh, unpair) y recibe el vision_state/
+    /// stream. Un PIN correcto emite un token nuevo (persistido en
+    /// persistentDataPath/paired_tokens.json) que la tablet reusa en reconexiones
+    /// futuras sin volver a pedir el PIN; el token NO consume el lockout de PIN si
+    /// es invalido (espacio de ~256 bits, un stale token no es fuerza bruta).
     /// Port de la parte de red de main.gd + streaming_server.gd.
     /// </summary>
     public class NetworkController : MonoBehaviour
@@ -50,6 +57,17 @@ namespace Simulador.Net
         private const int LockWindowMs = 60000;
         private int _authFailCount;
         private int _lockUntilTicks;
+
+        // Emparejamiento persistente por token (opcion B, ver docs/networking.md):
+        // lista de tokens validos (multiples tablets posibles) + que token quedo
+        // asociado a cada cliente conectado (para poder revocar el propio en
+        // "unpair" sin que el cliente tenga que reenviarlo). _pairedTokens se
+        // persiste en cada alta/baja; _tokenByClientId es puramente en memoria (no
+        // tiene sentido persistirlo, se reconstruye en cada auth).
+        private const string PairedTokensFileName = "paired_tokens.json";
+        private readonly List<string> _pairedTokens = new();
+        private readonly Dictionary<int, string> _tokenByClientId = new();
+        private string PairedTokensPath => Path.Combine(Application.persistentDataPath, PairedTokensFileName);
 
         private WebSocketServer _server;
         private DiscoveryBeacon _beacon;
@@ -102,11 +120,12 @@ namespace Simulador.Net
         {
             PairingPin = GeneratePin();
             Debug.Log($"Net: PIN de emparejamiento de esta sesion: {PairingPin}");
+            LoadPairedTokens();
 
             _server = new WebSocketServer();
             _server.ClientConnected += OnClientConnected;
             _server.TextReceived += OnTextReceived;
-            _server.ClientDisconnected += id => Debug.Log($"Net: cliente {id} desconectado");
+            _server.ClientDisconnected += OnClientDisconnected;
             _server.Start(9090);
 
             _beacon = new DiscoveryBeacon();
@@ -159,7 +178,17 @@ namespace Simulador.Net
         {
             // Ya NO se manda el hello automatico: el cliente debe autenticarse
             // primero (ver HandleAuthAttempt). Recien ahi se le manda el hello.
-            Debug.Log($"Net: cliente {id} conectado; esperando PIN de emparejamiento.");
+            Debug.Log($"Net: cliente {id} conectado; esperando PIN o token de emparejamiento.");
+        }
+
+        private void OnClientDisconnected(int id)
+        {
+            // _tokenByClientId es puramente informativo mientras la conexion esta
+            // abierta (para poder resolver el token propio en "unpair" sin que el
+            // cliente lo reenvie); no hace falta persistir su remocion, el token
+            // sigue siendo valido en paired_tokens.json hasta un unpair explicito.
+            _tokenByClientId.Remove(id);
+            Debug.Log($"Net: cliente {id} desconectado");
         }
 
         private void OnVisionStateChanged(string eye, EyeState state)
@@ -242,19 +271,53 @@ namespace Simulador.Net
             return name + "-" + nonce;
         }
 
-        // ---------------- Emparejamiento por PIN ----------------
+        // ---------------- Emparejamiento por PIN / token ----------------
         private static string GeneratePin()
         {
             var rng = new System.Random();
             return rng.Next(0, 1_000_000).ToString("D6", CultureInfo.InvariantCulture);
         }
 
+        private void LoadPairedTokens()
+        {
+            if (!File.Exists(PairedTokensPath)) return;
+            string text;
+            try { text = File.ReadAllText(PairedTokensPath); }
+            catch (Exception) { return; } // archivo corrupto/ilegible: se ignora, arranca vacio
+            if (PairingStore.TryParseTokens(text, out var parsed))
+            {
+                _pairedTokens.Clear();
+                _pairedTokens.AddRange(parsed);
+                Debug.Log($"Net: {_pairedTokens.Count} token(s) de emparejamiento cargados.");
+            }
+        }
+
+        private void SavePairedTokens()
+        {
+            try { File.WriteAllText(PairedTokensPath, PairingStore.SerializeTokens(_pairedTokens)); }
+            catch (Exception) { Debug.LogWarning($"Net: no se pudo escribir {PairedTokensPath}"); }
+        }
+
+        private void AddPairedToken(string token)
+        {
+            if (!_pairedTokens.Contains(token)) _pairedTokens.Add(token);
+            SavePairedTokens();
+        }
+
+        private void RemovePairedToken(string token)
+        {
+            if (_pairedTokens.Remove(token)) SavePairedTokens();
+        }
+
         /// <summary>
-        /// Primer mensaje esperado de cada cliente sin autenticar:
-        /// {"type":"auth","pin":"NNNNNN"}. PIN correcto -> autentica y manda el
-        /// hello; incorrecto -> auth_fail y cierra esa conexion (la tablet debe
-        /// reconectar para reintentar). Lockout activo -> auth_locked (con
-        /// retry_in_s) sin evaluar el PIN. Cualquier otro mensaje antes de
+        /// Primer mensaje esperado de cada cliente sin autenticar: bien
+        /// {"type":"auth","pin":"NNNNNN"} (primer enlace), bien
+        /// {"type":"auth","token":"..."} (reconexion con un token de un enlace
+        /// previo, ver HandleTokenAuth -- se evalua ANTES del PIN y nunca toca el
+        /// lockout). PIN correcto -> autentica, EMITE un token nuevo (persistido) y
+        /// manda el hello; incorrecto -> auth_fail y cierra esa conexion (la tablet
+        /// debe reconectar para reintentar). Lockout de PIN activo -> auth_locked
+        /// (con retry_in_s) sin evaluar el PIN. Cualquier otro mensaje antes de
         /// autenticar se ignora y cierra sin responder.
         /// </summary>
         private void HandleAuthAttempt(int id, string text)
@@ -266,6 +329,13 @@ namespace Simulador.Net
             {
                 Debug.LogWarning($"Net: cliente {id} mando un comando sin autenticar; cerrando.");
                 _server.ForceDisconnect(id);
+                return;
+            }
+
+            string token = (string)msg["token"];
+            if (!string.IsNullOrEmpty(token))
+            {
+                HandleTokenAuth(id, token);
                 return;
             }
 
@@ -288,9 +358,12 @@ namespace Simulador.Net
             if (!string.IsNullOrEmpty(PairingPin) && pin == PairingPin)
             {
                 _authFailCount = 0; // reset en auth exitoso
+                string newToken = PairingStore.GenerateToken();
+                AddPairedToken(newToken);
+                _tokenByClientId[id] = newToken;
                 _server.MarkAuthenticated(id);
-                Debug.Log($"Net: cliente {id} autenticado, enviando hello.");
-                _server.SendTextTo(id, new JObject { ["type"] = "auth_ok" }.ToString(Newtonsoft.Json.Formatting.None));
+                Debug.Log($"Net: cliente {id} autenticado por PIN, enviando hello.");
+                _server.SendTextTo(id, new JObject { ["type"] = "auth_ok", ["token"] = newToken }.ToString(Newtonsoft.Json.Formatting.None));
                 _server.SendTextTo(id, BuildHello());
             }
             else
@@ -300,6 +373,33 @@ namespace Simulador.Net
                     _lockUntilTicks = unchecked(Environment.TickCount + LockWindowMs);
                 Debug.LogWarning($"Net: cliente {id} mando un PIN incorrecto ({_authFailCount}/{MaxAuthFailures}); cerrando.");
                 _server.SendTextTo(id, new JObject { ["type"] = "auth_fail" }.ToString(Newtonsoft.Json.Formatting.None));
+                _server.ForceDisconnect(id);
+            }
+        }
+
+        /// <summary>
+        /// Auth por token persistente (emparejamiento opcion B, ver
+        /// docs/networking.md): a diferencia del PIN, NUNCA toca
+        /// _authFailCount/_lockUntilTicks -- un token invalido/revocado (visor
+        /// reseteado, Desvincular previo) no es indicio de fuerza bruta, el espacio
+        /// de ~256 bits (PairingStore.GenerateToken) hace ese ataque irrelevante. Si
+        /// el token es valido NO se emite uno nuevo: el mismo sigue siendo la
+        /// credencial de esa tablet hasta que se revoque explicitamente.
+        /// </summary>
+        private void HandleTokenAuth(int id, string token)
+        {
+            if (_pairedTokens.Contains(token))
+            {
+                _tokenByClientId[id] = token;
+                _server.MarkAuthenticated(id);
+                Debug.Log($"Net: cliente {id} autenticado por token, enviando hello.");
+                _server.SendTextTo(id, new JObject { ["type"] = "auth_ok" }.ToString(Newtonsoft.Json.Formatting.None));
+                _server.SendTextTo(id, BuildHello());
+            }
+            else
+            {
+                Debug.LogWarning($"Net: cliente {id} mando un token de emparejamiento invalido o revocado; cerrando (no cuenta para el lockout de PIN).");
+                _server.SendTextTo(id, new JObject { ["type"] = "auth_fail", ["reason"] = "token" }.ToString(Newtonsoft.Json.Formatting.None));
                 _server.ForceDisconnect(id);
             }
         }
@@ -365,6 +465,20 @@ namespace Simulador.Net
                     // P2.5), asi que no hizo falta un mensaje de respuesta nuevo. Se
                     // responde SOLO al cliente que lo pidio (SendTextTo, no broadcast).
                     _server.SendTextTo(id, BuildHello());
+                    break;
+                case "unpair":
+                    // Boton "Desvincular" de la tablet: revoca el token de ESTE
+                    // cliente (asociado al autenticar, ver HandleAuthAttempt/
+                    // HandleTokenAuth) de la lista persistida. La tablet ya borra su
+                    // token local y cierra la conexion por su cuenta apenas manda
+                    // este comando (ver TabletSession.Unpair) -- no hace falta
+                    // responder nada aca, ver docs/networking.md.
+                    if (_tokenByClientId.TryGetValue(id, out var revoked))
+                    {
+                        RemovePairedToken(revoked);
+                        _tokenByClientId.Remove(id);
+                        Debug.Log($"Net: cliente {id} se desvinculo (token revocado).");
+                    }
                     break;
                 default:
                     Debug.LogWarning("Net: comando desconocido: " + type);
