@@ -64,6 +64,9 @@ Material:
     - _SampleGI: 0
     - _SrcBlend: 1
     - _SrcBlendAlpha: 1
+    - _SunCoreDeg: 0.35
+    - _SunGlowDeg: 0.8
+    - _SunIntensity: 5
     - _Surface: 0
     - _VFovDeg: 67
     - _XRMotionVectorsPass: 1
@@ -72,5 +75,7 @@ Material:
     m_Colors:
     - _BaseColor: {r: 1, g: 1, b: 1, a: 1}
     - _Color: {r: 1, g: 1, b: 1, a: 1}
+    - _SunColor: {r: 1, g: 0.96, b: 0.88, a: 1}
+    - _SunDirWS: {r: -0.4149, g: 0.1908, b: 0.8897, a: 0}
   m_BuildTextureStacks: []
   m_AllowLocking: 1

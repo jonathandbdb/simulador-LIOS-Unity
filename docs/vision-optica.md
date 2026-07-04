@@ -86,6 +86,15 @@ Render por frame (URP RenderGraph):
   glow gaussiano + 3 anillos difractivos concéntricos (a r normalizado 0.45 / 0.68 / 0.90) cuyo
   peso escala ~`v_halo²` (una monofocal casi no muestra anillos). Fade por distancia:
   `v_fade = saturate(src_energy · DIST_REF_M / dist) · facing`.
+  **Gotcha (tamaño angular fijo):** la ESCALA del transform del GameObject (billboards de faros/
+  faroles de `ruta_noche`; los del sol `SunGlare`/`SunGlare2` tienen el `MeshRenderer` OFF desde
+  P-sol-3 y solo alimentan el velo — ver `WindowPortal.shader`/`SunSkyAnchor`)
+  NO afecta el tamaño del halo/starburst. El shader reconstruye el quad en el vertex desde las
+  constantes angulares (`HALO_ANG_RADIUS`, `STAR_ANG_RADIUS`, …) a una distancia fija de cámara, así
+  que el tamaño en pantalla es puramente angular e ignora el `localScale` del GO. Para agrandar/achicar
+  el patrón se tocan esas constantes — en `GlareBillboard.shader` para las fuentes billboard
+  (ruta_noche), y en `WindowPortal.shader` para el SOL del consultorio (copia verbatim desde
+  P-sol-3, ver DEUDA en el bloque del portal) —, no el transform.
 - `Assets/Scripts/Runtime/Vision/GlareSource.cs` — factoría estática: quad compartido + material
   compartido (`Simulador/GlareBillboard`) + `Attach(parent, pos, color, energy, beamDir)`.
 - `Assets/Scripts/Runtime/Vision/GlareBillboardInstance.cs` — componente serializable por fuente:
@@ -144,13 +153,100 @@ Render por frame (URP RenderGraph):
   mipmaps (se samplea LOD 0), override Android ASTC 4x4, wrap Clamp. XR: `GetCameraPositionWS()`
   (por-ojo en single-pass instanced). Skybox de la escena: `ConsultorioSkybox.mat`
   (Skybox/Panoramic, misma textura; en la práctica no se ve — la ventana lo tapa y de noche la
-  cámara va en SolidColor). **Gotcha sol/destellos:** el sol de día (`Consultorio/DayWindow`:
-  `SunCore` disco + `SunGlare`/`SunGlare2` billboards clínicos) debe quedar DELANTE de los
-  vidrios-portal (son opacos; el sol original a 15 m detrás de la pared quedaba tapado). Está en
-  s≈4.20 sobre la línea de vista asiento→ventana, reescalado ×0.31 para conservar tamaño angular.
+  cámara va en SolidColor). **Sol de día anclado al cielo (P-sol):** el DISCO solar se pinta
+  DENTRO de este shader por dirección de vista (mismas matemáticas que el paisaje): dado
+  `_SunDirWS` (dirección del sol en el mundo, unit) se calcula la separación angular
+  `ang = acos(dot(dir, _SunDirWS))` y se suma un núcleo (`_SunCoreDeg`, radio en grados, borde
+  smoothstep) + glow gaussiano (`_SunGlowDeg`), coloreado por `_SunColor`×`_SunIntensity`. Así el
+  sol queda a **distancia infinita** (cero paralaje al mover/trasladar la cabeza, solidario con el
+  paisaje) y lo **ocluyen marco y paredes** igual que al paisaje, porque este quad es OPACO. Se
+  dibuja en los DOS planos que usan `WindowView.mat` (Window glass + BackdropBig) sin doblarse: son
+  opacos y coplanares, el frente tapa al fondo (nearest wins) en la misma dirección de pantalla.
+  Valores actuales en `WindowView.mat`: `_SunDirWS≈(-0.415, 0.191, 0.890)` (yaw ≈ -25°, pitch ≈ +11°:
+  dentro de la abertura de la ventana desde el ojo del paciente, en zona de cielo de la textura,
+  uv≈(0.63, 0.65)), `_SunIntensity=5`, `_SunCoreDeg=0.35`, `_SunGlowDeg=0.8`, `_SunColor=(1,0.96,0.88)`
+  (defaults del shader `WindowPortal.shader` sincronizados con estos valores — un material nuevo no
+  debe nacer con el look viejo).
+  **Dimensionado del disco (P-sol-2):** con esos valores la zona clippeada a blanco mide
+  ~1.7° de diámetro. Regla: la contribución solar `_SunIntensity·(core + 0.6·glow)` clippea a blanco
+  cuando `0.6·exp(-ang²/_SunGlowDeg²)·_SunIntensity ≥ 1` (sin tonemap/bloom en la escena) → radio de
+  clip `= _SunGlowDeg·√(ln(0.6·_SunIntensity)) = 0.8·√(ln 3) ≈ 0.84°` (diámetro ~1.68°). Lo que agranda
+  el sol NO es el núcleo sino el "quemado" blanco del glow saturando, así que el tamaño se controla
+  bajando `_SunGlowDeg` (`_SunCoreDeg` acompaña para que el núcleo no domine el disco más chico). Se
+  eligió ese ~1.7° de diámetro para que el disco sea COMPACTO y quede MUY por debajo del radio del
+  starburst clínico de PanOptix (`starR≈4.41°`, ver `GlareBillboard`): así los rayos del destello
+  SOBRESALEN con claridad del disco en vez de quedar lavados dentro del blanco. Historia del
+  dimensionado (cada tanda a ~la mitad): valores originales `_SunIntensity=8`/`_SunGlowDeg=5.5` →
+  zona blanca ~13.8° (tapaba el starburst); `_SunGlowDeg=2.0`/`_SunCoreDeg=0.6` → ~4.2°;
+  `_SunGlowDeg=1.0`/`_SunCoreDeg=0.45` → ~2.1°; tanda actual `_SunGlowDeg=0.8`/`_SunCoreDeg=0.35`
+  → ~1.7° (~20% más chico que la anterior). `_SunIntensity=5` se mantuvo
+  (baja el disco de forma pareja y conserva un halo suave, no un círculo recortado y duro).
+  Verificado en play (consultorio día): sin lente el disco es compacto y sin starburst
+  (`capturas/sol_sin_lente_v3.png`); con PanOptix, apartando la mirada ~12° del sol, los
+  rayos del starburst sobresalen limpios del disco chico (`capturas/sol_panoptix_starburst_v3.png`).
+  Mirando de FRENTE al sol con PanOptix el núcleo (disco + halo + starburst additivos) satura y lava
+  el centro: para EVIDENCIAR los rayos hay que apartar la mirada. El disco y el patrón de glare son
+  fijos en dirección; el velo no.
+  **Halo + starburst + astig clínicos pintados POR DIRECCIÓN dentro del portal (P-sol-3):** el
+  patrón clínico del sol (halo difractivo, starburst y trazo astigmático) YA NO lo dibujan los
+  billboards `SunGlare`/`SunGlare2`, sino este mismo fragmento opaco — es un **traslado 1:1** del
+  Frag de `GlareBillboard.shader` (constantes angulares `HALO_ANG_RADIUS 0.10` / `STAR_ANG_RADIUS
+  0.22` / `ASTIG_ANG_RADIUS 0.12`, curvas y energías **VERBATIM**, NO rediseñadas). Se reusa la misma
+  dirección de vista `dir` que el paisaje/disco: la separación angular al sol `angRad = acos(dot(dir,
+  sdir))` (en RADIANES, unidades del billboard) hace de `r` normalizado (`rNorm = angRad/angMax`,
+  small-angle) y la proyección de `dir−sdir·⟨dir,sdir⟩` sobre el right/up de cámara
+  (`UNITY_MATRIX_I_V`) hace de `p` (offset en pantalla) para el ángulo de los rayos y el eje del
+  astig. Per-eye con los MISMOS globals `glare_*_l/r` + `_StreamForceEye` que setea `GlareController`
+  (gating clínico intacto: sin lente los globals quedan en 0 → `angMax=0` → cero aporte). `v_fade`
+  del billboard satura a 1.0 para el sol (omnidireccional, `src_energy·DIST_REF_M/dist =
+  1.8·8/4.9 ≥ 1`) → se fija a 1.0. Se suman DOS aportes additivos con los seeds/colores de las dos
+  fuentes que reemplaza (`SunGlare` seed 5, color HDR `(2.2,2.046,1.716)`; `SunGlare2` seed 23,
+  color `(2.2,2.09,1.804)`) — dos billboards coincidentes = starburst más rico; el resultado es
+  idéntico al look billboard, solo cambia DÓNDE se pinta.
+  **DEUDA (drift silencioso, hallazgo de review P-sol-3):** la fórmula clínica del glare vive ahora
+  DUPLICADA en dos shaders (`GlareBillboard.shader` y `WindowPortal.shader`), copiada verbatim, sin
+  include compartido. Si se recalibra el patrón clínico (anillos difractivos, curvas, energías) en
+  uno solo, el sol del consultorio diverge en silencio del resto de fuentes. Follow-up pendiente:
+  extraer el núcleo (`SunGlareTotal`/`hash11` + constantes `*_ANG_RADIUS`/`ASTIG_*`/`PUPIL_GAIN`) a
+  un `.hlsl` compartido incluido por ambos. Mientras tanto: **todo cambio al patrón clínico se aplica
+  en LOS DOS shaders en la misma tarea.** **Beneficios del traslado:** (a) marco y
+  paredes ocluyen halo+starburst JUNTO con el disco (antes los billboards eran quads físicos DENTRO
+  de la sala a 4.9 m: si el marco tapaba el sol, los destellos seguían flotando en el aire — el
+  defecto que reportó el usuario); (b) el patrón queda a **vergencia infinita por ojo** (cada ojo usa
+  su `dir`), lo que **ELIMINA la disparidad binocular de ~0.74°** que tenía el transform a 4.9 m
+  (ver `SunSkyAnchor`). Costo Quest: dos evaluaciones procedurales del patrón (mismo orden que los
+  dos billboards que reemplaza) SOLO en los píxeles del portal ×2 ojos, con early-out `angMax>0.004`
+  (uniforme) y `rNorm<1.05` (recorta el ~99% de los píxeles lejos del sol).
+  **El disco había reemplazado al quad `SunCore`** (eliminado): el diseño original colgaba `SunCore`
+  + los glares a ~4.9 m DELANTE del vidrio-portal, con paralaje de objeto cercano contra el paisaje a
+  infinito ("el sol se veía dentro de la sala"). **Gotcha:** disco y patrón SOLO se ven donde la
+  dirección `_SunDirWS` cruza el quad del portal desde el ojo actual; si se cambia el punto de vista o
+  la dirección del sol, verificar que siga cayendo dentro de la abertura de la ventana (fuera de ella
+  se pintan sobre… nada, no hay quad). `_SunDirWS` (material) y `SunSkyAnchor.sunDirection` DEBEN
+  coincidir (disco, glare y velo a la misma dirección).
   **Gotcha:** `Consultorio` tiene scale 0.37 → `EnlargedWindow` compensa con localScale 1/0.37
   (sus mallas están en metros de mundo); el cuarto del FBX está rotado ~62° (las paredes NO están
   alineadas a los ejes del mundo).
+- `Assets/Scripts/Runtime/Vision/SunSkyAnchor.cs` — ancla las fuentes del sol
+  (`SunGlare`/`SunGlare2`, hijos del GameObject `SunSky` bajo `Consultorio/DayWindow`) a una
+  DIRECCIÓN de cielo fija en el mundo: cada `LateUpdate` reposiciona el objeto a
+  `camPos + sunDirection·distance` (`distance=4.9 m`). `sunDirection` debe coincidir con `_SunDirWS`
+  de `WindowView.mat`.
+  **Rol remanente tras P-sol-3:** el halo/starburst visible se pinta ahora POR DIRECCIÓN en el portal
+  (ver `WindowPortal.shader`), así que los **`MeshRenderer` de `SunGlare`/`SunGlare2` están
+  DESHABILITADOS** (no dibujan quad) — pero sus GameObjects y sus componentes `GlareBillboardInstance`
+  siguen **ACTIVOS y registrados** en `GlareBillboardInstance.Active`. El ÚNICO propósito que le queda
+  a `SunSkyAnchor` es mantener esa `transform.position` sobre la dirección fija del sol para que
+  `DisabilityGlareController` (que lee `transform.position` de cada fuente activa) calcule θ del velo
+  CIE contra una dirección fija = fuente al infinito. El **velo NO se tocó** y funciona idéntico.
+  (`distance=4.9 m` ya no importa para oclusión de un quad — no hay quad — pero se conserva; el velo
+  usa `distanceInvariant=true`, así que la distancia no atenúa.)
+  **Gotcha RESUELTO (disparidad estéreo, antes limitación aceptada):** cuando el halo/starburst era
+  billboard colgado de un transform único a 4.9 m (MISMA posición de mundo para ambos ojos), conservaba
+  una disparidad binocular de `IPD/distance = 0.063/4.9 ≈ 0.74°` frente al disco (que sí estaba a
+  vergencia infinita). Con P-sol-3 el patrón también se pinta por dirección de vista dentro del portal
+  (cada ojo usa su `dir`) → disco Y halo/starburst quedan a la MISMA vergencia infinita, disparidad
+  binocular = 0. Ya no queda desajuste de profundidad entre disco y halo.
 - `Assets/Scripts/Runtime/Vision/BookHolder.cs` — mide distancia libro→cámara (suavizada) y la pasa
   al material como `_BookDistanceM` + máscara en pantalla `_BookScreenUV` / `_BookScreenRadius`
   (radio angular real del libro × 1.45, clamp 0.06..0.45). El shader usa esa distancia dentro de
