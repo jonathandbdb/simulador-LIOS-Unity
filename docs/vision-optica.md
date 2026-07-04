@@ -111,8 +111,24 @@ Render por frame (URP RenderGraph):
   1→0.012 a día (rápido), 0→0.74→~1 a noche (más lento).
 - `Assets/Scripts/Runtime/Vision/NightTraffic.cs` — tráfico bidireccional: instancia prefabs de
   `Assets/Prefabs/Cars` (frente del auto = +Z local) en dos carriles (`laneX=±2.6 m`); carril
-  derecho se aleja (se ven pilotos), izquierdo viene de frente (faros). Wrap entre `startZ=70` y
-  `endZ=-14`, `speed=16 m/s`. Tinta solo el material llamado "Body" vía MaterialPropertyBlock.
+  derecho se aleja (se ven pilotos), izquierdo viene de frente (faros). Tramo entre `startZ=70` y
+  `endZ=-14`, `speed=16 m/s` base. `count=4` (default; ajustable, se reparte alternado entre
+  carriles). Tinta solo el material llamado "Body" vía MaterialPropertyBlock. **Flujo
+  aleatorizado (no determinista):** (a) **distribución inicial** por muestreo estratificado por
+  carril — el tramo se divide en `laneCount` segmentos y cada auto del carril cae en uno DISTINTO
+  en posición random dentro del segmento (z aleatorio sin apelotonar dos autos del mismo carril,
+  reemplaza el viejo reparto uniforme por `Lerp`); (b) **wrap con gap aleatorio EXTRA**
+  (`wrapGapMax=35 m`): al salir del tramo el auto reaparece MÁS ALLÁ del punto de reaparición
+  (el que se aleja detrás de `endZ`, el que viene delante de `startZ`) a distancia random → tarda
+  un tiempo variable en re-entrar, dejando huecos (no siempre están los `count` autos visibles);
+  (c) **jitter de velocidad por auto** (`speedJitter=0.15` → ±15% de `speed`, guardado en
+  `_speeds`) que rompe la periodicidad del paso. **Re-tinte en el wrap:** el pool de GameObjects
+  se recicla (no se destruye/instancia — minimal footprint), así que en cada wrap se re-randomiza
+  el color de carrocería (`ApplyBodyColor` + `PickColor`, evitando repetir el color inmediato
+  anterior del mismo auto vía `_colorIdx`) y se re-sortea la velocidad → cada reentrada parece un
+  auto distinto. Sin esto, con `count=4` los 2 autos por carril reaparecían siempre con su color
+  inicial ("en el carril derecho solo pasan azules"). El color inicial además evita repetir dentro
+  del mismo carril, y el `MaterialPropertyBlock` se cachea en `_mpb` (sin alocar por re-tinte).
 - `Assets/Shaders/WindowPortal.shader` — "portal" de paisaje para la ventana del consultorio
   (`Consultorio/EnlargedWindow`): lo usan los VIDRIOS del marco `WindowFrame` (modelo
   `window/WINDOW.fbx`, PVC 3 paños + alféizar; su helper `CTRL_Hole` va desactivado y su slot

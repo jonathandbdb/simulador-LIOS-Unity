@@ -20,16 +20,31 @@ namespace Simulador.Vision
         [Tooltip("Prefabs de auto (Assets/Prefabs/Cars). Frente del auto = +Z local.")]
         public GameObject[] carPrefabs;
         [Tooltip("Cantidad total de autos (se reparten alternados entre los dos carriles).")]
-        public int count = 6;
+        public int count = 4;
         public float speed = 16f;
         [Tooltip("Distancia |x| de cada carril al centro. Derecho = +laneX, izquierdo = -laneX.")]
         public float laneX = 2.6f;
         public float startZ = 70f;   // lejos, adelante del jugador
         public float endZ = -14f;    // detras del jugador
+        [Tooltip("Gap aleatorio EXTRA (m) mas alla del punto de reaparicion al hacer wrap: el auto " +
+                 "tarda un tiempo variable en volver a entrar al tramo, creando huecos en el flujo " +
+                 "(no estan los 'count' autos visibles a la vez).")]
+        public float wrapGapMax = 35f;
+        [Range(0f, 0.5f)]
+        [Tooltip("Variacion +/- de velocidad por auto (fraccion; 0.15 = +/-15%) para romper la " +
+                 "periodicidad del flujo.")]
+        public float speedJitter = 0.15f;
 
         // Sentido por auto: +1 = se aleja (+Z, luces traseras) ; -1 = viene (-Z, faros).
         private readonly List<Transform> _cars = new();
         private readonly List<int> _dirs = new();
+        // Velocidad real por auto (speed base +/- speedJitter): rompe la cadencia periodica.
+        private readonly List<float> _speeds = new();
+        // Indice del color de carroceria actual por auto: al re-tintar en el wrap evitamos repetir
+        // el color inmediato anterior del MISMO auto (que no se note el reciclado del GameObject).
+        private readonly List<int> _colorIdx = new();
+        // MPB reutilizado (no se serializa): evita alocar uno por cada re-tinte en el wrap.
+        private MaterialPropertyBlock _mpb;
 
         private static readonly int BaseColorID = Shader.PropertyToID("_BaseColor");
         // El material "Body" del prefab viene gris sin textura; aca le damos un color
@@ -50,6 +65,8 @@ namespace Simulador.Vision
         private void Start()
         {
             if (carPrefabs == null || carPrefabs.Length == 0) { Debug.LogWarning("NightTraffic: sin carPrefabs"); return; }
+            // Ultimo color usado por carril: evita que dos autos del MISMO carril arranquen igual.
+            int lastRightColor = -1, lastLeftColor = -1;
             for (int i = 0; i < count; i++)
             {
                 var prefab = carPrefabs[Random.Range(0, carPrefabs.Length)];
@@ -63,45 +80,82 @@ namespace Simulador.Vision
                 var c = Instantiate(prefab, transform);
                 // Frente +Z. Si se aleja (dir +1) queda mirando +Z (no rota); si viene (dir -1) rota 180.
                 c.transform.localRotation = Quaternion.Euler(0f, dir > 0 ? 0f : 180f, 0f);
-                float z = Mathf.Lerp(startZ, endZ, i / (float)Mathf.Max(1, count)) + Random.Range(0f, 6f);
+                // Distribucion inicial ALEATORIA por carril (muestreo estratificado): el tramo se
+                // divide en 'laneCount' segmentos y cada auto del carril cae en uno DISTINTO, en
+                // posicion random dentro del segmento -> z aleatorio pero sin apelotonar dos autos
+                // del mismo carril (reemplaza el reparto uniforme por Lerp).
+                int laneIdx = i / 2;
+                int laneCount = rightLane ? (count + 1) / 2 : count / 2;
+                float segLen = (startZ - endZ) / Mathf.Max(1, laneCount);
+                float z = endZ + (laneIdx + Random.Range(0.15f, 0.85f)) * segLen;
                 c.transform.localPosition = new Vector3(x, 0f, z);
 
-                ApplyBodyColor(c, BodyColors[Random.Range(0, BodyColors.Length)]);
+                int colorIdx = PickColor(rightLane ? lastRightColor : lastLeftColor);
+                if (rightLane) lastRightColor = colorIdx; else lastLeftColor = colorIdx;
+                ApplyBodyColor(c, BodyColors[colorIdx]);
 
                 _cars.Add(c.transform);
                 _dirs.Add(dir);
+                _speeds.Add(speed * (1f + Random.Range(-speedJitter, speedJitter)));
+                _colorIdx.Add(colorIdx);
             }
         }
 
         private void Update()
         {
-            float d = speed * Time.deltaTime;
+            float dt = Time.deltaTime;
             for (int i = 0; i < _cars.Count; i++)
             {
                 var c = _cars[i];
                 var p = c.localPosition;
-                p.z += _dirs[i] * d;
-                // Wrap: el que se aleja reaparece detras; el que viene reaparece adelante.
-                if (_dirs[i] > 0 && p.z > startZ) p.z = endZ;
-                else if (_dirs[i] < 0 && p.z < endZ) p.z = startZ;
+                p.z += _dirs[i] * _speeds[i] * dt;
+                // Wrap con gap aleatorio EXTRA fuera del tramo: el que se aleja reaparece detras
+                // (mas alla de endZ) y el que viene reaparece adelante (mas alla de startZ), a una
+                // distancia random -> el auto tarda un tiempo variable en re-entrar al tramo,
+                // dejando huecos en el flujo (cadencia no periodica, no siempre 'count' visibles).
+                bool wrapped = false;
+                if (_dirs[i] > 0 && p.z > startZ) { p.z = endZ - Random.Range(0f, wrapGapMax); wrapped = true; }
+                else if (_dirs[i] < 0 && p.z < endZ) { p.z = startZ + Random.Range(0f, wrapGapMax); wrapped = true; }
                 c.localPosition = p;
+
+                if (wrapped)
+                {
+                    // Reciclamos el MISMO GameObject, pero re-randomizamos apariencia y velocidad
+                    // para que cada reentrada parezca un auto distinto (evita el "en el carril
+                    // derecho solo pasan azules": con pocos autos los 2 del carril se reusaban
+                    // siempre con su color inicial). Nuevo color != al anterior + nuevo jitter.
+                    int ci = PickColor(_colorIdx[i]);
+                    _colorIdx[i] = ci;
+                    ApplyBodyColor(c.gameObject, BodyColors[ci]);
+                    _speeds[i] = speed * (1f + Random.Range(-speedJitter, speedJitter));
+                }
             }
+        }
+
+        // Sortea un indice de BodyColors distinto de 'exclude' (color inmediato anterior del
+        // mismo auto/carril); exclude = -1 => sin restriccion. Con >=2 colores siempre encuentra.
+        private static int PickColor(int exclude)
+        {
+            if (BodyColors.Length <= 1) return 0;
+            int idx;
+            do { idx = Random.Range(0, BodyColors.Length); } while (idx == exclude);
+            return idx;
         }
 
         // Tinta solo el/los slot(s) cuyo material se llama "Body" (carroceria), dejando
         // intactos vidrios y luces. Usa MaterialPropertyBlock por indice de material.
-        private static void ApplyBodyColor(GameObject car, Color color)
+        private void ApplyBodyColor(GameObject car, Color color)
         {
-            var mpb = new MaterialPropertyBlock();
+            _mpb ??= new MaterialPropertyBlock(); // reutilizado entre autos y re-tintes (sin alocar)
             foreach (var r in car.GetComponentsInChildren<MeshRenderer>(true))
             {
                 var mats = r.sharedMaterials;
                 for (int s = 0; s < mats.Length; s++)
                 {
                     if (mats[s] == null || mats[s].name != "Body") continue;
-                    r.GetPropertyBlock(mpb, s);
-                    mpb.SetColor(BaseColorID, color);
-                    r.SetPropertyBlock(mpb, s);
+                    r.GetPropertyBlock(_mpb, s);
+                    _mpb.SetColor(BaseColorID, color);
+                    r.SetPropertyBlock(_mpb, s);
                 }
             }
         }
