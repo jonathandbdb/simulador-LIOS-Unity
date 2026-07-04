@@ -135,6 +135,63 @@ En producción: VPS con Docker, DNS apuntando al dominio, `.env` con `DOMAIN=api
   correcto igual, con o sin ese guardado.
 - **`Builds/` vs `builds/` vs `build/`.** El script escribe en `Builds/Android/`; en el repo local existen además `build/` y `builds/` (salidas manuales previas, gitignoradas). En Windows el filesystem es case-insensitive, así que `Builds` y `builds` son la MISMA carpeta: el APK de la tablet puede aparecer junto a salidas viejas del visor. No confundir `builds/Simulador_VR.apk` (visor) con `Builds/Android/Simulador.apk` (tablet).
 - **El visor build normal solo incluye `Main.unity`**: si se agregan escenas nuevas del visor hay que sumarlas a EditorBuildSettings; la tablet en cambio se controla desde la constante `ScenePath` del script.
+- **Manifest custom incompleto rompe el merge del launcher (visor Y tablet, mismo manifest) —
+  INCIDENTE REAL, corregido.** `Assets/Plugins/Android/AndroidManifest.xml` (compartido por ambos
+  builds, ver `docs/tablet.md`) tuvo una versión que declaraba SOLO 2 `<uses-permission>` sin
+  ningún bloque `<application>`/`<activity>`, asumiendo que Unity fusionaba sin pisar nada. En la
+  práctica, cuando el manifest custom agrega `<application>` pero NO declara la Activity de Unity
+  (`UnityPlayerGameActivity`) con su `intent-filter`/`theme`/`meta-data`, el merge no hereda ese
+  bloque completo desde el motor: el APK resultante queda con
+  `<activity android:name="com.unity3d.player.UnityPlayerGameActivity" />` pelado — sin
+  `exported`, sin `theme`, sin intent-filter MAIN/LAUNCHER. Síntomas: la app no aparece en el
+  launcher del dispositivo, y `adb shell monkey -p <package> 1` falla con `SecurityException:
+  Permission Denial: starting Intent ... not exported` o `No activities found to run`. Señal
+  temprana en el log de build: el warning de Unity `"Unable to find Unity activity in manifest.
+  Some attributes may not be set properly"` (también queda registrado en
+  `Library/Bee/artifacts/Android/Manifest/IntermediateLauncherManifestDiag.txt`); confirmable post
+  build con `aapt dump xmltree <apk> AndroidManifest.xml` mirando el nodo `activity`. Diagnóstico
+  confirmado inspeccionando la cadena de merge en
+  `Library/Bee/Android/Prj/IL2CPP/Gradle/unityLibrary/xrmanifest.androidlib/`: sin un bloque de
+  Activity completo en el manifest custom, Unity emite ahí un stub de rescate mínimo (solo
+  `android:name`, nada más) en vez de copiar el bloque real de su plantilla interna
+  (`<UnityEditorInstall>/Editor/Data/PlaybackEngines/AndroidPlayer/Apk/UnityManifest.xml`). **Fix:**
+  el manifest custom debe declarar la Activity COMPLETA — copiar tal cual el bloque "Used when
+  Application Entry is set to GameActivity" de esa plantilla (`UnityPlayerGameActivity`,
+  `android:theme="@style/BaseUnityGameActivityTheme"`, intent-filter MAIN/LAUNCHER, meta-data
+  `unityplayer.UnityActivity` + `android.app.lib_name=game`), agregando `android:exported="true"`
+  explícito (Android exige declararlo en toda Activity con intent-filter desde targetSdkVersion
+  31+; este proyecto targetea 36). **Regla para cualquier manifest custom futuro en este
+  proyecto:** un manifest "solo permisos" (que no toca `<application>` en absoluto) es seguro; uno
+  que agrega `<application>` sin declarar la Activity completa junto con ella NO lo es.
+- **Comentario XML con `--` en `AndroidManifest.xml` rompe la generación del manifest —
+  INCIDENTE REAL, ABIERTO (2026-07-04).** Al corregir el gotcha anterior, el comentario de
+  cabecera agregado a `Assets/Plugins/Android/AndroidManifest.xml` usa `--` (doble guión) como
+  separador de frase en dos puntos ("...de esa Activity -- rompe el launcher..." y "...GameActivity"
+  -- UnityPlayerGameActivity,..."). La spec de XML prohíbe la secuencia `--` dentro de un
+  comentario (`<!-- ... -->`), fuera de los delimitadores de apertura/cierre. Con eso presente,
+  `TabletBuild.BuildTablet()` (y el build normal del visor, mismo manifest compartido) falla al
+  generar `Library/Bee/artifacts/Android/Manifest/IntermediateLauncherManifestDiag.txt` con
+  `System.Xml.XmlException: An XML comment cannot contain '--', and '-' cannot be the last
+  character` — no es error de compilación C# (`unity_get_compilation_errors` sale limpio), es un
+  fallo del `BuildReport` (`summary.result == Failed`, visible en `unity_console_log`). El loader
+  OpenXR y el `applicationIdentifier`/`productName` SÍ se restauran igual (el `finally` de
+  `TabletBuild` corre aunque `BuildPlayer` falle). **Fix:** sacar las dos ocurrencias de `--` del
+  comentario (reemplazar por `-` simple, `—` em dash, o reformular la frase). **Regla:** ningún
+  comentario XML en este manifest puede contener `--`.
+- **Un intento de build Android (aunque falle) puede ensuciar el working tree fuera del alcance
+  del try/finally de `TabletBuild`.** Detectado en vivo durante el incidente de arriba: tras un
+  `BuildTablet()` fallido, además del loader/identifier (que sí se restauran), aparecieron dos
+  efectos colaterales no gestionados por el script: (1) `PlayerSettings.preloadedAssets` gana una
+  entrada nueva apuntando a `Assets/XR/Settings/OpenXR Package Settings.asset` (Unity la inyecta
+  al preprocesar XR para el target Android, independientemente de si el build termina en éxito);
+  y (2) se generan `Assets/Resources/PerformanceTestRunInfo.json` y
+  `PerformanceTestRunSettings.json` (con sus `.meta`) — artefactos del test framework de
+  performance que Unity escribe al iniciar cualquier build Android. Ninguno de los dos lo maneja
+  `TabletBuild.cs`. Verificar `git status` después de un build (exitoso o no) y, si aparecen,
+  limpiarlos: el preload con `PlayerSettings.SetPreloadedAssets(...)` quitando esa entrada +
+  `AssetDatabase.SaveAssets()`, y los JSON con `unity_asset_delete` (o borrarlos y dejar que el
+  Editor limpie el `.meta` huérfano). No se automatizó la limpieza en `TabletBuild.cs` todavía —
+  quedaría a criterio de `@unity-dev` si vale la pena extender el `finally`.
 
 ## Cómo probar
 

@@ -15,7 +15,7 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
 | `Assets/Scripts/Runtime/Net/WebSocketClient.cs` | Cliente WebSocket espejo (lado tablet). Handshake cliente, lectura de frames texto/binario, envío de texto **enmascarado** (obligatorio cliente→servidor por RFC 6455). |
 | `Assets/Scripts/Runtime/Net/StreamingCapture.cs` | Captura la vista del paciente (cámara propia que sigue la XR camera) y la broadcastea como JPG con header de 1 byte por ojo. |
 | `Assets/Scripts/Runtime/Net/DiscoveryBeacon.cs` | Beacon UDP del visor: broadcast a `255.255.255.255:9091` cada 2 s. |
-| `Assets/Scripts/Runtime/Net/DiscoveryListener.cs` | Lado tablet: escucha :9091 en un thread y encola las IPs de visores detectados. |
+| `Assets/Scripts/Runtime/Net/DiscoveryListener.cs` | Lado tablet: escucha :9091 en un thread y encola `(IP, device_label)` de los visores detectados — parsea el `device_label` con `Newtonsoft.Json.Linq.JObject` en el propio thread (dato puro, no toca API de Unity) para que la tablet pueda mostrar un nombre amigable en vez de la IP (ver `docs/tablet.md`). |
 | `Assets/Scripts/Runtime/Net/PairingStore.cs` | Logica PURA (sin Unity, sin IO) del emparejamiento persistente por token: genera el token (`GenerateToken`) y serializa/deserializa las dos formas que persiste el protocolo (lista de tokens del visor, mapa host→token de la tablet). La usan tanto `NetworkController` como `TabletSession`. Cubierta por `Assets/Tests/EditMode/PairingStoreTests.cs`. |
 | `Assets/Scripts/Runtime/Tablet/TabletSession.cs` (P6.2) | Consumidor de red del lado tablet: usa `DiscoveryListener` + `WebSocketClient`, parsea `hello`/`vision_state`, separa el header de los JPG del stream y expone eventos hacia `TabletController` (UI). Antes de P6.2 esto vivía en `TabletController.cs`; detalle completo del split en `docs/tablet.md`. Tambien posee el emparejamiento persistente por token (mapa host→token en `persistentDataPath/pairing.json`). |
 | `Assets/Scripts/Runtime/Net/TabletController.cs` | Capa de UI de la tablet (namespace `Simulador.Tablet` desde P6.2): consume los eventos de `TabletSession` y decodifica los JPG en `RawImage` por ojo (detalle en `docs/tablet.md`). |
@@ -42,8 +42,10 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
 - **UDP broadcast para descubrimiento (puerto 9091)** → la tablet encuentra al visor sin tipear IP.
   El beacon manda `{"app":"simulador-vr","device_label":"<nombre>-<nonce>","ws_port":9090,"ts"}`
   cada 2 s; el listener filtra por el tag `simulador-vr` y usa la IP de ORIGEN del paquete (no la
-  del payload) para identificar al visor — `device_label` es puramente informativo, ningún código
-  lo parsea (ver Gotchas).
+  del payload) para IDENTIFICAR al visor — eso no cambió. `device_label` sí se parsea desde la
+  tarea "SSID + lista sin IP" (ver `docs/tablet.md`) para uso puramente presentacional: la tablet
+  lo usa como nombre amigable en la lista de visores descubiertos, nunca como clave de
+  `_seenHosts`/`_tokenByHost` (ver Gotchas).
 - **`device_label` no es un identificador de hardware (P1.5)** → hasta esta tarea el beacon mandaba
   `SystemInfo.deviceUniqueIdentifier` en el payload, broadcasteado sin auth ni cifrado a toda la
   subred: cualquiera escuchando en :9091 podía recolectar el ID de hardware estable del visor sin
@@ -261,13 +263,17 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   Internet Access: Require). `DiscoveryListener` omite adrede el `MulticastLock` de Android — el
   comentario del archivo dice que en la mayoría de redes el broadcast llega; en redes que lo filtran
   la tablet no descubre nada y hay que usar la conexión manual por IP (que existe en la UI).
-- **`device_label` del beacon es decorativo, no una clave:** `DiscoveryListener.Loop` solo chequea
-  que el payload contenga `"app"` + el tag `simulador-vr` y encola la IP de ORIGEN del paquete
-  (`ep.Address`); nunca deserializa el JSON ni lee `device_label`. `TabletSession._seenHosts`
-  (P6.2 — antes en `TabletController`) y `_pinByHost` están keyeados por esa IP, no por el label.
-  Si algún día se necesita distinguir dos
-  visores en la misma IP (improbable en LAN doméstica/consultorio) o mostrar el nombre en la UI de
-  descubrimiento, ahí sí habría que parsear el JSON del lado tablet — hoy no lo hace.
+- **`device_label` del beacon es decorativo, sigue sin ser una clave:** `DiscoveryListener.Loop`
+  chequea que el payload contenga `"app"` + el tag `simulador-vr`, y ADEMÁS parsea `device_label`
+  con `JObject.Parse(text)` (try/catch propio — un payload malformado no tira abajo el thread, solo
+  encola `label = null`), pero sigue encolando la IP de ORIGEN del paquete (`ep.Address`) como
+  identidad. `TabletSession._seenHosts`/`_tokenByHost`/`_pendingAuthToken` siguen keyeados por esa
+  IP, no por el label — `_hostLabels` (nuevo, paralelo a `_seenHosts`) solo guarda el label crudo
+  para que `TabletController.FriendlyVisorName` arme un nombre de UI (recorta el nonce de sesión;
+  sin label cae a "Visor Quest" + sufijo `(2)`/`(3)`... si hay más de un host con el mismo nombre
+  base). Si dos visores reales emiten el mismo `device_label` (mismo `SystemInfo.deviceName`), la
+  tablet los distingue igual porque la clave sigue siendo la IP — el label nunca decide identidad,
+  solo el texto del botón.
 - **Solo el label de escenario sigue a mano en Net (P2.3, cerrado):** agregar un escenario nuevo
   en `ScenarioManager.Order` (Vision/) ya aparece solo en `hello.scenarios` (vía `ScenarioOrder`);
   si no se le agrega también una entrada en `NetworkController.ScenarioLabels`, el label cae al

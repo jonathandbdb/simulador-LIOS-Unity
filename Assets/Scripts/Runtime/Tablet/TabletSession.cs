@@ -36,6 +36,11 @@ namespace Simulador.Tablet
         private bool _connecting, _sessionActive, _manualDisconnect;
         private string _currentHost = "";
         private readonly Dictionary<string, float> _seenHosts = new();
+        // device_label crudo del beacon por host (puede ser null si no vino/no
+        // parseo) -- la UI lo usa para armar un nombre amigable, ver
+        // TabletController.RefreshDiscovered/FriendlyVisorName. Nunca se manda
+        // nada por la red a partir de esto, es solo lectura.
+        private readonly Dictionary<string, string> _hostLabels = new();
 
         // --- Emparejamiento persistente por token (opcion B, ver docs/networking.md) ---
         // Reemplaza el cache de PIN en memoria: el token que devuelve el visor tras
@@ -82,6 +87,8 @@ namespace Simulador.Tablet
         public string CurrentHost => _currentHost;
         /// <summary>Hosts vistos por el beacon UDP en los ultimos <c>HostTimeout</c> segundos.</summary>
         public IEnumerable<string> DiscoveredHosts => _seenHosts.Keys;
+        /// <summary>device_label crudo del beacon por host (ver <see cref="_hostLabels"/>); puede faltar la entrada o ser null.</summary>
+        public IReadOnlyDictionary<string, string> HostLabels => _hostLabels;
         public IReadOnlyDictionary<string, JObject> LensesById => _lensesById;
         /// <summary>
         /// Estado de vision_state (left/right/blend_active) TAL COMO lo manda el
@@ -134,7 +141,11 @@ namespace Simulador.Tablet
             _ws.BinaryReceived += OnBinary;
 
             _disc = new DiscoveryListener();
-            _disc.VisorDiscovered += host => _seenHosts[host] = Time.time;
+            _disc.VisorDiscovered += (host, label) =>
+            {
+                _seenHosts[host] = Time.time;
+                _hostLabels[host] = label;
+            };
             _disc.Start();
         }
 
@@ -172,7 +183,7 @@ namespace Simulador.Tablet
             // cambia qué ve el usuario, solo lo mantiene más al día).
             var stale = new List<string>();
             foreach (var kv in _seenHosts) if (Time.time - kv.Value > HostTimeout) stale.Add(kv.Key);
-            foreach (var h in stale) _seenHosts.Remove(h);
+            foreach (var h in stale) { _seenHosts.Remove(h); _hostLabels.Remove(h); }
 
             // P2.5: cuenta atras del backoff. No tickear mientras hay un intento de
             // conexion en vuelo (_connecting) -- el propio Connect/Disconnected decide

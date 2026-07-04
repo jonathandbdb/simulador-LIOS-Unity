@@ -3,6 +3,7 @@ using System.Globalization;
 using Newtonsoft.Json.Linq;
 using TMPro;
 using UnityEngine;
+using UnityEngine.Android;
 using UnityEngine.UI;
 
 namespace Simulador.Tablet
@@ -35,6 +36,10 @@ namespace Simulador.Tablet
         // toda la lista cada segundo (RefreshDiscovered). La lista de hosts en si vive
         // en TabletSession (DiscoveredHosts).
         private readonly Dictionary<string, TabletButton> _discoveredButtons = new();
+        // Nombre amigable ya asignado a cada boton (para desambiguar duplicados sin
+        // recrear los existentes, ver RefreshDiscovered/FriendlyVisorName). La IP
+        // NUNCA aparece en la UI, solo en Debug.Log.
+        private readonly Dictionary<string, string> _discoveredNames = new();
 
         // --- Emparejamiento por PIN (estado de pantalla, no de protocolo) ---
         private string _pinPendingHost = "";
@@ -46,9 +51,9 @@ namespace Simulador.Tablet
 
         // --- Pantallas ---
         private GameObject _connectScreen, _mainScreen, _pinScreen, _reconnectScreen;
-        private RectTransform _discoveredList, _advancedBox;
+        private RectTransform _discoveredList;
         private TMP_Text _connectStatus;
-        private TMP_InputField _hostEdit;
+        private TMP_Text _networkInfoLabel;
         private TMP_InputField _pinEdit;
         private TMP_Text _pinHostLabel, _pinStatus;
         private TMP_Text _reconnectHostLabel, _reconnectStatus;
@@ -87,12 +92,15 @@ namespace Simulador.Tablet
         private Slider _magSlider, _angleSlider;
         private TMP_Text _magValue, _angleValue;
 
-        // --- Comparacion A/B (P5.1) ---
-        // Reusa apply_lens (sin protocolo nuevo): A/B solo recuerdan 2 ids de lente
-        // localmente, y el toggle aplica el que NO este activo en el ojo seleccionado.
-        private string _abLensA = "", _abLensB = "";
-        private TMP_Text _abLabelA, _abLabelB;
-        private TabletButton _abToggleBtn;
+        // --- Stream a pantalla completa ---
+        // Overlay que reusa las MISMAS Texture2D del stream normal (_texLeft/
+        // _texRight, ver OnSessionFrame): RawImage nuevo por ojo apuntando a la
+        // misma textura, sin decodificar el JPG una segunda vez. El modo (1 imagen
+        // o 2 lado a lado) sigue a blend_active, igual que el panel normal -- ver
+        // RefreshFullscreenUI.
+        private GameObject _fullscreenStream, _fsRightPane;
+        private RawImage _fsStreamLeft, _fsStreamRight;
+        private TMP_Text _fsLeftLabel, _fsRightLabel;
 
         // --- Presets de sesion (P5.2) ---
         // Persistencia local (nunca al visor): snapshot de vision_state (lens_id +
@@ -109,6 +117,10 @@ namespace Simulador.Tablet
         private int _framesReceived, _framesLastTick;
         private long _bytesReceived;
         private float _footerTimer, _discoveryTimer;
+
+        // Permiso de ubicacion (SSID Wi-Fi, ver RequestLocationPermissionOnce): se
+        // pide una sola vez por sesion de la app, no en cada vuelta al ConnectScreen.
+        private bool _locationPermissionRequested;
 
         // ============================================================
         private void Start()
@@ -200,20 +212,36 @@ namespace Simulador.Tablet
 
         private void OnSessionFrame(char eye, byte[] jpg)
         {
+            // El overlay de pantalla completa (_fsStreamLeft/_fsStreamRight) reusa
+            // estas MISMAS Texture2D: no hay una segunda decodificacion de JPG, solo
+            // se refleja el mismo LoadImage en el RawImage del overlay.
             if (eye == 'R')
             {
-                if (ImageConversion.LoadImage(_texRight, jpg)) { _streamRight.texture = _texRight; _streamRight.color = Color.white; }
+                if (ImageConversion.LoadImage(_texRight, jpg))
+                {
+                    _streamRight.texture = _texRight; _streamRight.color = Color.white;
+                    _fsStreamRight.texture = _texRight; _fsStreamRight.color = Color.white;
+                }
             }
             else if (eye == 'L')
             {
-                if (ImageConversion.LoadImage(_texLeft, jpg)) { _streamLeft.texture = _texLeft; _streamLeft.color = Color.white; }
+                if (ImageConversion.LoadImage(_texLeft, jpg))
+                {
+                    _streamLeft.texture = _texLeft; _streamLeft.color = Color.white;
+                    _fsStreamLeft.texture = _texLeft; _fsStreamLeft.color = Color.white;
+                }
             }
             else // 'B' o desconocido -> mismo frame en ambos paneles
             {
                 if (ImageConversion.LoadImage(_texLeft, jpg))
                 {
                     _streamLeft.texture = _texLeft; _streamLeft.color = Color.white;
-                    if (ImageConversion.LoadImage(_texRight, jpg)) { _streamRight.texture = _texRight; _streamRight.color = Color.white; }
+                    _fsStreamLeft.texture = _texLeft; _fsStreamLeft.color = Color.white;
+                    if (ImageConversion.LoadImage(_texRight, jpg))
+                    {
+                        _streamRight.texture = _texRight; _streamRight.color = Color.white;
+                        _fsStreamRight.texture = _texRight; _fsStreamRight.color = Color.white;
+                    }
                 }
             }
             _framesReceived++;
@@ -262,11 +290,14 @@ namespace Simulador.Tablet
         // ============================================================
         private void ShowConnectScreen(string message, bool isError = false)
         {
+            CloseFullscreenStream(); // sesion interrumpida: no dejar el overlay de stream congelado
             _connectScreen.SetActive(true);
             _pinScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
             _mainScreen.SetActive(false);
             SetConnectStatus(message, isError);
+            RefreshNetworkInfo();
+            RequestLocationPermissionOnce();
         }
 
         private void ShowMainScreen()
@@ -283,6 +314,7 @@ namespace Simulador.Tablet
         // reintento tras auth_fail/auth_locked, ver OnSessionPinScreenRequested).
         private void ShowPinScreen(string host, string message = "")
         {
+            CloseFullscreenStream();
             _pinPendingHost = host;
             _connectScreen.SetActive(false);
             _mainScreen.SetActive(false);
@@ -299,6 +331,7 @@ namespace Simulador.Tablet
         // loop y vuelve al discovery normal.
         private void ShowReconnectScreen(string host, string message)
         {
+            CloseFullscreenStream();
             _connectScreen.SetActive(false);
             _pinScreen.SetActive(false);
             _mainScreen.SetActive(false);
@@ -353,12 +386,18 @@ namespace Simulador.Tablet
             {
                 if (_discoveredButtons[host] != null) Destroy(_discoveredButtons[host].gameObject);
                 _discoveredButtons.Remove(host);
+                _discoveredNames.Remove(host);
             }
             foreach (var host in current)
             {
                 if (_discoveredButtons.ContainsKey(host)) continue;
                 string h = host;
-                var btn = _kit.Button(_discoveredList, "Visor Quest  ·  " + h, BtnStyle.Segment, false, 64, 16);
+                _session.HostLabels.TryGetValue(host, out var rawLabel);
+                string display = NextFriendlyVisorName(FriendlyVisorName(rawLabel));
+                _discoveredNames[h] = display;
+                // La IP solo va al log (troubleshooting de red); en la UI nunca.
+                Debug.Log($"[Tablet] Visor detectado: {display} ({h})");
+                var btn = _kit.Button(_discoveredList, display, BtnStyle.Segment, false, 64, 16);
                 btn.OnClick = () => StartConnectFlow(h);
                 _discoveredButtons[host] = btn;
             }
@@ -371,14 +410,27 @@ namespace Simulador.Tablet
             if (!_session.IsConnecting) SetConnectStatus("Tocá un visor para conectarte.");
         }
 
-        private void OnConnectPressed()
+        // Deriva un nombre amigable a partir del device_label del beacon (formato
+        // "<nombre>-<nonce8>", ver NetworkController.GenerateBeaconLabel): recorta
+        // el nonce de sesion (no aporta nada al clinico). Sin label (payload viejo
+        // o sin parsear) cae a un generico -- la IP NUNCA se muestra en la lista.
+        private static string FriendlyVisorName(string rawLabel)
         {
-            string host = _hostEdit.text.Trim();
-            if (string.IsNullOrEmpty(host))
-            {
-                foreach (var h in _session.DiscoveredHosts) { host = h; break; }
-            }
-            StartConnectFlow(host);
+            if (string.IsNullOrWhiteSpace(rawLabel)) return "Visor Quest";
+            int dash = rawLabel.LastIndexOf('-');
+            bool hasNonce = dash > 0 && rawLabel.Length - dash - 1 == 8;
+            string name = hasNonce ? rawLabel.Substring(0, dash) : rawLabel;
+            return string.IsNullOrWhiteSpace(name) ? "Visor Quest" : name;
+        }
+
+        // Si ya hay un boton con ese mismo nombre base en la lista, agrega un
+        // sufijo neutro "(2)", "(3)"... para desambiguar sin usar la IP.
+        private string NextFriendlyVisorName(string baseName)
+        {
+            int count = 1;
+            foreach (var used in _discoveredNames.Values)
+                if (used == baseName || used.StartsWith(baseName + " (")) count++;
+            return count > 1 ? $"{baseName} ({count})" : baseName;
         }
 
         // Antes de abrir el WebSocket hace falta autenticarse contra el visor: si hay
@@ -513,42 +565,38 @@ namespace Simulador.Tablet
                 _leftEyeLabel.text = string.IsNullOrEmpty(leftId)
                     ? "Ambos ojos" : "Ambos ojos · " + LensDisplayName(leftId);
             }
-            RefreshAbUI(); // P5.1: mantiene el indicador de "activa" al dia con cualquier cambio de vision_state
+            RefreshFullscreenUI(isBlend, leftId, rightId); // mantiene el overlay al dia con cualquier cambio de vision_state
         }
 
         // ============================================================
-        // Comparacion A/B (P5.1)
+        // Stream a pantalla completa
         // ============================================================
-        // Lente actualmente activa en el ojo seleccionado (si "both", se mira el
-        // ojo izquierdo -- alcanza para decidir cual de A/B esta activa hoy).
-        private string CurrentEyeLensId()
+        // Mismo criterio que el panel normal de arriba (isBlend/leftId/rightId ya
+        // calculados en RefreshVisionUI): 1 imagen si ambos ojos comparten lente
+        // (incluye el caso sin lente en ningun ojo), 2 lado a lado si difieren.
+        // Se llama SIEMPRE desde RefreshVisionUI (este o no abierto el overlay), asi
+        // el modo ya esta al dia apenas se abre y reacciona a un cambio de lente
+        // mientras esta abierto.
+        private void RefreshFullscreenUI(bool isBlend, string leftId, string rightId)
         {
-            string eye = _selectedEye == "both" ? "left" : _selectedEye;
-            return (string)(_session.VisionState[eye]?["lens_id"]) ?? "";
+            if (_fsLeftLabel == null) return; // BuildFullscreenStream todavia no corrio (p.ej. durante BuildUI)
+            if (isBlend)
+            {
+                _fsRightPane.SetActive(true);
+                _fsLeftLabel.text = "OI — " + LensDisplayName(leftId);
+                _fsRightLabel.text = "OD — " + LensDisplayName(rightId);
+            }
+            else
+            {
+                _fsRightPane.SetActive(false);
+                _fsLeftLabel.text = string.IsNullOrEmpty(leftId)
+                    ? "Ambos ojos" : "Ambos ojos — " + LensDisplayName(leftId);
+            }
         }
 
-        private void SetAbSlotA() { _abLensA = CurrentEyeLensId(); RefreshAbUI(); }
-        private void SetAbSlotB() { _abLensB = CurrentEyeLensId(); RefreshAbUI(); }
+        private void OpenFullscreenStream() => _fullscreenStream.SetActive(true);
 
-        private void RefreshAbUI()
-        {
-            if (_abLabelA == null) return; // BuildAbCard todavia no corrio (p.ej. durante BuildUI)
-            string current = CurrentEyeLensId();
-            _abLabelA.text = "A: " + (string.IsNullOrEmpty(_abLensA) ? "—"
-                : LensDisplayName(_abLensA) + (!string.IsNullOrEmpty(current) && current == _abLensA ? " (activa)" : ""));
-            _abLabelB.text = "B: " + (string.IsNullOrEmpty(_abLensB) ? "—"
-                : LensDisplayName(_abLensB) + (!string.IsNullOrEmpty(current) && current == _abLensB ? " (activa)" : ""));
-            _abToggleBtn.interactable = !string.IsNullOrEmpty(_abLensA) && !string.IsNullOrEmpty(_abLensB) && _abLensA != _abLensB;
-        }
-
-        // Alterna al slot que NO esta activo -- reusa OnLensSelected (apply_lens +
-        // actualizacion optimista + editor de "Ajuste fino"), sin protocolo nuevo.
-        private void OnAbTogglePressed()
-        {
-            if (string.IsNullOrEmpty(_abLensA) || string.IsNullOrEmpty(_abLensB)) return;
-            string next = CurrentEyeLensId() == _abLensA ? _abLensB : _abLensA;
-            OnLensSelected(next);
-        }
+        private void CloseFullscreenStream() => _fullscreenStream?.SetActive(false);
 
         // ============================================================
         // Ajuste fino de parametros
@@ -899,6 +947,7 @@ namespace Simulador.Tablet
             BuildPinScreen(canvasGo.transform);
             BuildReconnectScreen(canvasGo.transform);
             BuildMainScreen(canvasGo.transform);
+            BuildFullscreenStream(canvasGo.transform);
         }
 
         private void BuildConnectScreen(Transform parent)
@@ -927,19 +976,104 @@ namespace Simulador.Tablet
             _kit.Label(wrap.transform, "Visores detectados", LabelKind.Section, TextAlignmentOptions.Left);
             _discoveredList = _kit.Box(wrap.transform, "DiscoveredList", true, 8, null, expandW: true);
             _connectStatus = _kit.Label(wrap.transform, "Buscando visores en la red...", LabelKind.Hint, TextAlignmentOptions.Center);
-            _kit.Spacer(wrap.transform, 8, false);
+            _networkInfoLabel = _kit.Label(wrap.transform, "", LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Label(wrap.transform,
+                "El visor Quest y la tablet deben estar conectados a la misma red Wi-Fi.",
+                LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Spacer(wrap.transform, 12, false);
 
-            var advToggle = _kit.Button(wrap.transform, "Conexión manual", BtnStyle.Ghost, true, 48, 16);
-            _advancedBox = _kit.Box(wrap.transform, "AdvancedBox", false, 8, null, expandW: true);
-            _advancedBox.GetComponent<HorizontalLayoutGroup>().childForceExpandWidth = false;
-            _hostEdit = _kit.LineEdit(_advancedBox, "IP del visor (misma red Wi-Fi)");
-            var connectBtn = _kit.Button(_advancedBox, "Conectar", BtnStyle.Accent, false, 48, 16);
-            _kit.Size(connectBtn.GetComponent<RectTransform>(), minW: 140, prefW: 140, flexW: 0);
-            connectBtn.OnClick = OnConnectPressed;
-            _advancedBox.gameObject.SetActive(false);
-            advToggle.OnToggled += on => _advancedBox.gameObject.SetActive(on);
-            _hostEdit.onSubmit.AddListener(_ => OnConnectPressed());
+            var exitBtn = _kit.Button(wrap.transform, "Salir", BtnStyle.Ghost, false, 48, 16);
+            exitBtn.OnClick = () => Application.Quit();
         }
+
+        // Info de red Wi-Fi de la ConnectScreen (SSID si hay permiso de ubicacion,
+        // si no cae a la IP local -- ver RequestLocationPermissionOnce). Se llama
+        // cada vez que se muestra la pantalla (ShowConnectScreen) para reflejar un
+        // posible cambio de red o de permiso recien concedido.
+        private void RefreshNetworkInfo()
+        {
+            if (_networkInfoLabel == null) return;
+            string info = TryGetWifiSsid();
+            if (string.IsNullOrEmpty(info)) info = TryGetLocalIPv4();
+            _networkInfoLabel.text = string.IsNullOrEmpty(info) ? "Red: no disponible" : "Red: " + info;
+        }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        // Gotcha Android: WifiManager.getConnectionInfo().getSSID() devuelve
+        // "<unknown ssid>" sin el permiso de ubicacion en runtime (Android 9+) Y
+        // sin ACCESS_WIFI_STATE en el manifest (Assets/Plugins/Android/
+        // AndroidManifest.xml) -- sin ninguno de los dos tira SecurityException
+        // (capturada abajo). RequestLocationPermissionOnce pide el permiso runtime
+        // una vez por sesion; si el clinico lo niega, esto sigue fallando y cae a
+        // la IP local (TryGetLocalIPv4), sin insistir.
+        private static string TryGetWifiSsid()
+        {
+            try
+            {
+                using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+                using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+                using var wifiManager = activity.Call<AndroidJavaObject>("getSystemService", "wifi");
+                using var wifiInfo = wifiManager.Call<AndroidJavaObject>("getConnectionInfo");
+                string ssid = wifiInfo.Call<string>("getSSID");
+                if (string.IsNullOrEmpty(ssid) || ssid.Contains("unknown ssid")) return null;
+                return ssid.Trim('"');
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning("[Tablet] No se pudo leer el SSID Wi-Fi: " + e.Message);
+                return null;
+            }
+        }
+#else
+        // SIM: atajo deliberado — fuera de Android (Editor) no hay WifiManager; cae
+        // directo a la IP local via TryGetLocalIPv4.
+        private static string TryGetWifiSsid() => null;
+#endif
+
+        // Fallback cuando el SSID no resuelve: IP local via System.Net (el truco del
+        // "connect" UDP no manda paquetes, solo hace que el SO resuelva la interfaz/
+        // ruta de salida -- funciona sin depender de reflection ni de permisos).
+        private static string TryGetLocalIPv4()
+        {
+            try
+            {
+                using var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.InterNetwork,
+                    System.Net.Sockets.SocketType.Dgram,
+                    System.Net.Sockets.ProtocolType.Udp);
+                socket.Connect("8.8.8.8", 65530);
+                return (socket.LocalEndPoint as System.Net.IPEndPoint)?.Address.ToString();
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning("[Tablet] No se pudo resolver la IP local: " + e.Message);
+                return null;
+            }
+        }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        // Pide el permiso de ubicacion (requisito de Android 9+ para leer el SSID
+        // real, ver TryGetWifiSsid) UNA vez por sesion de la app, al mostrar la
+        // ConnectScreen -- no en cada vuelta a esta pantalla (desconectar/
+        // reconectar/cancelar PIN todos pasan por ShowConnectScreen). Si el
+        // clinico lo concede, refresca el label al toque; si lo niega, la tablet
+        // sigue funcionando con el fallback de IP local sin volver a insistir.
+        private void RequestLocationPermissionOnce()
+        {
+            if (_locationPermissionRequested) return;
+            _locationPermissionRequested = true;
+            if (Permission.HasUserAuthorizedPermission(Permission.FineLocation)) return;
+            var callbacks = new PermissionCallbacks();
+            callbacks.PermissionGranted += _ => RefreshNetworkInfo();
+            // Denegado / "no preguntar de nuevo": sin accion -- RefreshNetworkInfo
+            // ya muestra el fallback de IP, no hay nada mas que hacer aca.
+            Permission.RequestUserPermission(Permission.FineLocation, callbacks);
+        }
+#else
+        // SIM: atajo deliberado — fuera de Android (Editor) no hay permisos runtime
+        // que pedir; RefreshNetworkInfo ya cae a TryGetLocalIPv4 sin esto.
+        private void RequestLocationPermissionOnce() { }
+#endif
 
         // Pantalla de PIN: se intercala entre ConnectScreen y MainScreen (ver
         // StartConnectFlow/BeginConnect/OnSessionPinScreenRequested). Campo numerico
@@ -1089,13 +1223,19 @@ namespace Simulador.Tablet
             _streamRight = MakeStreamView(_rightEyePane.transform);
             _rightEyePane.SetActive(false);
 
+            // Boton "Pantalla completa": overlay ignoreLayout anclado a la esquina
+            // superior derecha del StreamPanel (no participa del HorizontalLayoutGroup
+            // del panel, ver PinTopRight).
+            var fullscreenBtn = _kit.Button(stream, "Pantalla completa", BtnStyle.Ghost, false, 36, 13);
+            PinTopRight(fullscreenBtn.GetComponent<RectTransform>(), fullscreenBtn.GetComponent<LayoutElement>(), 8, 8);
+            fullscreenBtn.OnClick = OpenFullscreenStream;
+
             // --- Scroll de controles (derecha) ---
             var scroll = _kit.ScrollColumn(body, out var content);
             _kit.Size(scroll.GetComponent<RectTransform>(), minW: 360, flexW: 1, flexH: 1);
 
             BuildEyeCard(content);
             BuildLensesCard(content);
-            BuildAbCard(content);
             BuildParamsCard(content);
             BuildAstigCard(content);
             BuildPresetsCard(content);
@@ -1130,36 +1270,6 @@ namespace Simulador.Tablet
             var card = _kit.Card(parent, "LensesCard");
             _kit.Label(card, "Lentes intraoculares", LabelKind.Section, TextAlignmentOptions.Left);
             _lensList = _kit.Box(card, "LensList", true, 8, null, expandW: true);
-        }
-
-        // P5.1: comparacion A/B minimal -- 2 slots (recuerdan un lens_id cada uno,
-        // tomado de la lente activa en el ojo seleccionado) + 1 boton grande que
-        // alterna cual esta aplicada. Sin protocolo nuevo (reusa apply_lens via
-        // OnLensSelected).
-        private void BuildAbCard(Transform parent)
-        {
-            var card = _kit.Card(parent, "AbCard");
-            _kit.Label(card, "Comparar A / B", LabelKind.Section, TextAlignmentOptions.Left);
-            _kit.Label(card, "Marcá la lente activa como A o B y alterná entre ambas en el ojo seleccionado.",
-                LabelKind.Hint, TextAlignmentOptions.Left);
-
-            var rowA = _kit.Box(card, "AbRowA", false, 8, null, expandW: true);
-            rowA.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-            _abLabelA = _kit.Label(rowA, "A: —", LabelKind.Body, TextAlignmentOptions.Left);
-            _kit.Size(_abLabelA.rectTransform, flexW: 1);
-            var setABtn = _kit.Button(rowA, "Usar actual", BtnStyle.Ghost, false, 36, 13);
-            setABtn.OnClick = SetAbSlotA;
-
-            var rowB = _kit.Box(card, "AbRowB", false, 8, null, expandW: true);
-            rowB.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-            _abLabelB = _kit.Label(rowB, "B: —", LabelKind.Body, TextAlignmentOptions.Left);
-            _kit.Size(_abLabelB.rectTransform, flexW: 1);
-            var setBBtn = _kit.Button(rowB, "Usar actual", BtnStyle.Ghost, false, 36, 13);
-            setBBtn.OnClick = SetAbSlotB;
-
-            _abToggleBtn = _kit.Button(card, "A ↔ B", BtnStyle.Accent, false, 48, 16);
-            _abToggleBtn.OnClick = OnAbTogglePressed;
-            _abToggleBtn.interactable = false;
         }
 
         private void BuildParamsCard(Transform parent)
@@ -1252,6 +1362,55 @@ namespace Simulador.Tablet
             _kit.Size(_footer.rectTransform, flexW: 1);
         }
 
+        // Overlay de pantalla completa del stream: 1 imagen (misma lente en ambos
+        // ojos, incluido sin lente en ninguno) o 2 lado a lado (blend, lentes
+        // distintas por ojo) -- ver RefreshFullscreenUI, que se llama desde
+        // RefreshVisionUI cada vez que cambia el vision_state. Las RawImage reusan
+        // las MISMAS Texture2D del panel normal (_texLeft/_texRight, ver
+        // OnSessionFrame): no hay una segunda decodificacion de JPG.
+        private void BuildFullscreenStream(Transform parent)
+        {
+            _fullscreenStream = new GameObject("FullscreenStream", typeof(RectTransform));
+            _fullscreenStream.transform.SetParent(parent, false);
+            Stretch(_fullscreenStream.GetComponent<RectTransform>());
+            _fullscreenStream.SetActive(false);
+
+            // Fondo solido (deliberadamente NO tematizado: un visor de stream a
+            // pantalla completa se comporta como un "lightbox", independiente del
+            // tema claro/oscuro de la app) que ademas cierra el overlay al tocarlo.
+            // UnityEngine.UI.Button liso (no TabletButton): esto es una capa de tap
+            // invisible de borde a borde, no un control visible con fill/borde/texto.
+            var bg = new GameObject("FullscreenBg", typeof(RectTransform), typeof(Image), typeof(Button));
+            bg.transform.SetParent(_fullscreenStream.transform, false);
+            Stretch(bg.GetComponent<RectTransform>());
+            bg.GetComponent<Image>().color = Color.black;
+            var bgBtn = bg.GetComponent<Button>();
+            bgBtn.transition = Selectable.Transition.None;
+            bgBtn.onClick.AddListener(CloseFullscreenStream);
+
+            var row = _kit.Box(_fullscreenStream.transform, "FullscreenRow", false, 16,
+                new RectOffset(28, 28, 28, 28), expandW: true, expandH: true);
+
+            var leftPane = _kit.Box(row, "FsLeftPane", true, 6, null, expandW: true, expandH: true);
+            _kit.Size(leftPane, flexW: 1);
+            _fsLeftLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _kit.Size(_fsLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
+            _fsStreamLeft = MakeStreamView(leftPane);
+            _fsStreamLeft.raycastTarget = false; // deja pasar el tap al fondo (tambien cierra)
+
+            _fsRightPane = _kit.Box(row, "FsRightPane", true, 6, null, expandW: true, expandH: true).gameObject;
+            _kit.Size(_fsRightPane.GetComponent<RectTransform>(), flexW: 1);
+            _fsRightLabel = _kit.Label(_fsRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _kit.Size(_fsRightLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
+            _fsStreamRight = MakeStreamView(_fsRightPane.transform);
+            _fsStreamRight.raycastTarget = false;
+            _fsRightPane.SetActive(false);
+
+            var closeBtn = _kit.Button(_fullscreenStream.transform, "Cerrar", BtnStyle.Ghost, false, 40, 14);
+            PinTopRight(closeBtn.GetComponent<RectTransform>(), closeBtn.GetComponent<LayoutElement>(), 16, 16);
+            closeBtn.OnClick = CloseFullscreenStream;
+        }
+
         // Vista de stream por ojo: contenedor flexible (lo dimensiona la columna) con
         // un RawImage que se ajusta dentro preservando el aspecto 4:3 del visor (sin
         // distorsion / sin estirar). El placeholder oscuro = "sin señal".
@@ -1301,6 +1460,20 @@ namespace Simulador.Tablet
         {
             rt.anchorMin = Vector2.zero; rt.anchorMax = Vector2.one;
             rt.offsetMin = Vector2.zero; rt.offsetMax = Vector2.zero;
+        }
+
+        // Ancla un widget ya dimensionado por _kit.Button (Size() le puso min/pref
+        // en el LayoutElement) a la esquina superior derecha de su padre, sacandolo
+        // del layout group (ignoreLayout) para que no participe del flujo normal de
+        // hijos -- lo usan el boton "Pantalla completa" (StreamPanel) y "Cerrar"
+        // (overlay de pantalla completa).
+        private static void PinTopRight(RectTransform rt, LayoutElement le, float marginX, float marginY)
+        {
+            le.ignoreLayout = true;
+            rt.sizeDelta = new Vector2(le.preferredWidth, le.preferredHeight);
+            rt.anchorMin = rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(1f, 1f);
+            rt.anchoredPosition = new Vector2(-marginX, -marginY);
         }
     }
 }

@@ -4,9 +4,10 @@
 App Android plana (sin VR) que corre en la tablet del oftalmólogo: descubre el visor Quest en la
 red, se conecta por WebSocket, muestra en vivo lo que ve el paciente (stream por ojo) y permite
 aplicar lentes intraoculares, ajustar parámetros clínicos, simular astigmatismo, cambiar de
-escenario, comparar dos lentes A/B, guardar/cargar presets de sesión y refrescar el catálogo en
-caliente (P5). Es la réplica fiel de `features/tablet/streaming_client.gd` del proyecto Godot
-original, con extensiones de flujo clínico propias del simulador.
+escenario, ver el stream a pantalla completa, guardar/cargar presets de sesión y refrescar el
+catálogo en caliente (P5). Es la réplica fiel de `features/tablet/streaming_client.gd` del
+proyecto Godot original, con extensiones de flujo clínico propias del simulador. La comparación
+A/B (P5.1) se agregó y luego se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica.
 
 ## Arquitectura actual
 
@@ -65,8 +66,14 @@ TabletController.Start()
 ```
 
 ## Pantallas y secciones (todas en `TabletController`, capa de UI)
-- **ConnectScreen:** glifo de ojo + título, lista de visores descubiertos (botones `Visor Quest · IP`),
-  estado de búsqueda, y "Conexión manual" colapsable con `LineEdit` de IP + botón Conectar.
+- **ConnectScreen:** glifo de ojo + título, lista de visores descubiertos (botones con un nombre
+  amigable — `Visor Quest` o el `device_label` del beacon sin el nonce, desambiguado con `(2)`,
+  `(3)`... si hay más de uno; **la IP nunca aparece en la UI**, ver Decisiones "Lista de visores
+  sin IP"), único camino de conexión — **sin conexión manual**, ver Decisiones "Solo
+  descubrimiento automático"), estado de búsqueda, label de red Wi-Fi actual (`RefreshNetworkInfo`
+  + permiso de ubicación pedido una vez por sesión — ver Decisiones "Info de red Wi-Fi"), mensaje
+  de ayuda fijo ("El visor Quest y la tablet deben estar conectados a la misma red Wi-Fi.") y
+  botón **Salir** (`Application.Quit()`).
 - **PinScreen:** se intercala entre ConnectScreen y MainScreen cuando hace falta el PIN de
   emparejamiento (host SIN un token persistente válido en `pairing.json` -- primer enlace,
   Desvincular previo, o el token quedó revocado/inválido; o reintento tras `auth_fail`/
@@ -90,16 +97,27 @@ TabletController.Start()
   4:3 (768/576). El split lo decide `blend_active` del `vision_state` (P2.1 — fuente única de
   verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente
   (`OI · <lente>` / `OD · <lente>`); si no, un solo pane "Ambos ojos" (incluye el caso de un solo
-  ojo con lente aplicada: antes mostraba 2 panes con uno de etiqueta vacía).
+  ojo con lente aplicada: antes mostraba 2 panes con uno de etiqueta vacía). Botón **"Pantalla
+  completa"** (P6.8, esquina superior derecha del panel) abre el overlay de stream a pantalla
+  completa — ver "Stream a pantalla completa" más abajo y Decisiones.
 - **Columna scrolleable (derecha):** cards "Ojo a tratar" (Ambos / OD / OI), "Lentes intraoculares"
-  (LensCardViews del catálogo), **"Comparar A / B"** (P5.1: 2 slots que recuerdan una lente cada
-  uno + botón grande "A ↔ B" que alterna cuál está aplicada en el ojo seleccionado — ver
-  Decisiones), "Ajuste fino" (colapsable, ParamRowViews de la lente en edición + Restaurar
-  valores — desde P4.4 incluye `astig_magnitude`/`astig_axis_deg`, persistentes por lente),
-  "Astigmatismo" (colapsable: hint de precedencia + switch + sliders LIVE de magnitud 0–50 px y
-  eje 0–180°, no persistente — ver Decisiones "Dos controles de astigmatismo") y **"Presets"**
-  (P5.2, colapsable: lista de presets guardados con Aplicar/Borrar + `LineEdit` de nombre y botón
-  Guardar — ver Decisiones).
+  (LensCardViews del catálogo), "Ajuste fino" (colapsable, ParamRowViews de la lente en edición +
+  Restaurar valores — desde P4.4 incluye `astig_magnitude`/`astig_axis_deg`, persistentes por
+  lente), "Astigmatismo" (colapsable: hint de precedencia + switch + sliders LIVE de magnitud
+  0–50 px y eje 0–180°, no persistente — ver Decisiones "Dos controles de astigmatismo") y
+  **"Presets"** (P5.2, colapsable: lista de presets guardados con Aplicar/Borrar + `LineEdit` de
+  nombre y botón Guardar — ver Decisiones). La card "Comparar A / B" (P5.1) se retiró en P6.8 —
+  ver Decisiones "Stream a pantalla completa, retiro de Comparar A/B".
+- **Stream a pantalla completa (P6.8, overlay `FullscreenStream`):** se abre con el botón
+  "Pantalla completa" del panel de stream o se cierra con el botón "Cerrar" (esquina superior
+  derecha del overlay) o tocando en cualquier punto del fondo. Reusa las mismas `Texture2D`
+  del panel normal (`_texLeft`/`_texRight`, ver `OnSessionFrame`) — no hay una segunda
+  decodificación de JPG. Sigue el mismo criterio que el panel normal
+  (`blend_active`/`RefreshVisionUI`): si ambos ojos comparten lente (incluido el caso sin lente
+  en ninguno) muestra 1 imagen; si `blend_active` es `true` (lentes distintas por ojo) muestra 2
+  paneles lado a lado con etiquetas "OI — \<lente\>" / "OD — \<lente\>". Reacciona a un cambio de
+  lente mientras está abierto porque `RefreshFullscreenUI` se llama siempre desde
+  `RefreshVisionUI` (no solo al abrir el overlay).
 - **Footer:** `N fps · X.X MB recibidos`, actualizado cada segundo. En blend (P5.5), el fps
   mostrado se divide entre 2 (ver Decisiones): representa la tasa REAL por pane, no la suma L+R.
 
@@ -231,15 +249,33 @@ TabletController.Start()
   `RefreshDiscovered()` ahora solo crea los hosts nuevos y destruye los que expiraron, dejando el
   resto de los botones intactos (antes: `Destroy` de TODOS los hijos + recrear TODOS cada segundo,
   parpadeo visible aunque la lista no cambiara).
-- **Comparación A/B minimal, sin protocolo nuevo (P5.1)** → el flujo clínico real es "¿ve mejor
-  con 1 o con 2?"; en vez de un comparador complejo, 2 slots (`_abLensA`/`_abLensB`, solo un
-  `lens_id` cada uno) que se cargan con "Usar actual" (toma `CurrentEyeLensId()`, la lente activa
-  hoy en el ojo seleccionado) y un botón grande "A ↔ B" que llama `OnLensSelected(next)` con el
-  slot que NO está activo — reusa el `apply_lens` + actualización optimista + editor de "Ajuste
-  fino" que ya existían para tocar una lente de la lista, cero mensajes nuevos. El label de cada
-  slot muestra "(activa)" junto al que coincide con `CurrentEyeLensId()`; `RefreshAbUI()` se
-  llama desde `RefreshVisionUI()` así el indicador se mantiene al día con cualquier `vision_state`
-  entrante (confirmación del visor, refresh, etc.), no solo con el click local.
+- **Stream a pantalla completa, retiro de Comparar A/B (P6.8)** → pedido explícito: la card
+  "Comparar A / B" (P5.1) nunca se usó en la práctica clínica, se retiró entera (campos
+  `_abLensA`/`_abLensB`/`_abLabelA`/`_abLabelB`/`_abToggleBtn`, métodos `SetAbSlotA/B`,
+  `RefreshAbUI`, `OnAbTogglePressed`, `CurrentEyeLensId`, `BuildAbCard` y su invocación en
+  `BuildBody`) — código muerto exclusivo de esa card, no compartido con nada más del protocolo
+  (`apply_lens` que reusaba sigue intacto, lo sigue usando `OnLensSelected` desde la lista de
+  lentes). En su lugar se agregó un overlay de stream a pantalla completa (`FullscreenStream`,
+  `BuildFullscreenStream`): entrada con el botón "Pantalla completa" (esquina superior derecha
+  del `StreamPanel`, posicionado con `PinTopRight`/`LayoutElement.ignoreLayout` para salir del
+  `HorizontalLayoutGroup` del panel sin tocar su estructura existente), salida con el botón
+  "Cerrar" (misma técnica, overlay del `FullscreenStream`) o tocando el fondo (`UnityEngine.UI.
+  Button` liso sobre una `Image` negra de borde a borde — no un `TabletButton`: es una capa de
+  tap invisible, no un control visible con fill/borde/texto). El modo (1 imagen o 2 lado a lado)
+  reusa el mismo criterio que el panel normal (`isBlend`/`leftId`/`rightId`, ya calculados en
+  `RefreshVisionUI`): `RefreshFullscreenUI(isBlend, leftId, rightId)` se llama SIEMPRE desde
+  `RefreshVisionUI` (esté o no abierto el overlay en ese momento), así el modo ya está al día
+  apenas se abre y reacciona a un cambio de lente mientras está abierto, sin un evento/suscripción
+  nueva. **Reuso de textura, sin decodificación duplicada:** `_fsStreamLeft`/`_fsStreamRight` son
+  `RawImage` NUEVOS pero apuntan a las MISMAS `Texture2D` `_texLeft`/`_texRight` que ya actualiza
+  `OnSessionFrame` con `ImageConversion.LoadImage` — ese método solo agrega 2 líneas por rama
+  (`_fsStreamLeft.texture = _texLeft; _fsStreamLeft.color = Color.white;` y su par derecho) que
+  reflejan la misma asignación que ya hacía para `_streamLeft`/`_streamRight`; no hay un segundo
+  `LoadImage` del mismo JPG. El overlay se cierra solo si la sesión se interrumpe
+  (`ShowConnectScreen`/`ShowPinScreen`/`ShowReconnectScreen` llaman `CloseFullscreenStream()` al
+  entrar) para no dejar al clínico viendo un frame congelado sobre una pantalla de reconexión —
+  `ShowMainScreen` (incluye el branch de `refresh`, P5.4) NO lo cierra a propósito, para no
+  interrumpir una vista en curso.
 - **Presets de sesión: snapshot del `vision_state`, aplicar = comandos existentes (P5.2)** →
   guardar un preset clona (`JObject.DeepClone`) el `left`/`right` TAL COMO llegan del visor
   (`lens_id` + todos los params aplanados, incluidos overrides ya aplicados) más `_currentScenario`
@@ -289,9 +325,120 @@ TabletController.Start()
   `Screen.orientation = ScreenOrientation.AutoRotation` ANTES de `BuildUI()` — es runtime-only
   (no toca `ProjectSettings.asset`, compartido con el visor; `TabletController` solo corre en
   `Tablet.unity`), y permite landscape en ambos sentidos (el layout de dos columnas de
-  `BuildMainScreen` no distingue landscape-left de landscape-right).
+  `BuildMainScreen` no distingue landscape-left de landscape-right). **Reforzado a nivel manifest
+  (P6.8)** → el lock runtime deja un flash breve en portrait al arrancar (la Activity nativa
+  arranca en la orientación que decida el sistema ANTES de que `TabletController.Start()` corra
+  y fije los flags de `Screen`). `Assets/Plugins/Android/AndroidManifest.xml` agrega
+  `android:screenOrientation="sensorLandscape"` a la Activity `UnityPlayerGameActivity`
+  (compartida con el visor, ver la tabla de arquitectura arriba y el gotcha del manifest en
+  `docs/builds-deploy.md`) — Android fija la orientación ANTES de que la Activity termine de
+  crearse, eliminando el flash. Inocuo para el visor: en VR el compositor de OpenXR/el runtime
+  del Quest maneja la orientación por su cuenta y no lee `screenOrientation` del manifest (no
+  hay Activity 2D visible que rotar). El runtime-only NO se retiró: sigue siendo necesario para
+  permitir landscape-left Y landscape-right (el manifest con `sensorLandscape` ya cubre ambos
+  sentidos, pero los flags de `Screen.autorotateTo*` siguen fijando explícitamente qué
+  orientaciones acepta la app después de que arrancó, y no dependen de reconstruir el APK para
+  cambiar).
+- **Solo descubrimiento automático, sin conexión manual (decisión de producto)** → la
+  `ConnectScreen` tenía un toggle "Conexión manual" colapsable con un `LineEdit` de IP + botón
+  "Conectar" (`OnConnectPressed`) que también servía de fallback si el discovery UDP no
+  encontraba al visor. Se decidió que nunca se va a usar en la práctica clínica: se eliminó el
+  toggle, el `LineEdit`, el botón y `OnConnectPressed` (código muerto exclusivo de ese camino).
+  `StartConnectFlow(host)` — el método que arranca el flujo de PIN/token una vez que hay un host
+  — **no se tocó**: sigue siendo el punto de entrada único, ahora solo alcanzable tocando un
+  botón de la lista de visores descubiertos (`RefreshDiscovered`). Si el discovery UDP falla en
+  una red real (AP isolation, firewall), ya no hay forma de conectar tipeando la IP a mano — ver
+  Gotchas.
+- **Info de red Wi-Fi de la ConnectScreen: SSID real vía permiso runtime, degrada a IP local** →
+  `RefreshNetworkInfo()` (llamado desde `ShowConnectScreen`, así se refresca cada vez que se
+  vuelve a esa pantalla) intenta `TryGetWifiSsid()` primero y, si no resuelve, cae a
+  `TryGetLocalIPv4()`.
+  `WifiManager.getConnectionInfo().getSSID()` vía `AndroidJavaClass`/`AndroidJavaObject` (JNI, no
+  reflection de .NET — no lo toca el stripping de IL2CPP) exige `ACCESS_WIFI_STATE` (manifest) +
+  permiso de ubicación en runtime desde Android 9 — sin alguno de los dos tira `SecurityException`
+  (capturada en el propio `try/catch` de `TryGetWifiSsid`) o devuelve `"<unknown ssid>"`.
+  **`Assets/Plugins/Android/AndroidManifest.xml`** agrega `ACCESS_WIFI_STATE` +
+  `ACCESS_FINE_LOCATION`. Es **compartido con el visor** (mismo target Android, un solo manifest
+  custom para todo el proyecto): inocuo para el visor, que nunca llama `RequestUserPermission` ni
+  `TryGetWifiSsid` (ese código vive en `TabletController`, namespace/clase que no corre en
+  `Main.unity`). El manifest declara la Activity de Unity COMPLETA (`UnityPlayerGameActivity` +
+  `exported`/`theme`/intent-filter/meta-data, calcada de la plantilla oficial de Unity 6000.5) —
+  NO es un manifest de solo permisos: un manifest custom que agrega `<application>` sin declarar
+  esa Activity completa rompe el merge en AMBOS builds (incidente real, ver el gotcha "Manifest
+  custom incompleto rompe el merge del launcher" más abajo y el postmortem completo en
+  `docs/builds-deploy.md`). El permiso de ubicación en runtime lo pide
+  `TabletController.RequestLocationPermissionOnce()` (`UnityEngine.Android.Permission`/
+  `PermissionCallbacks`, sin reflection — IL2CPP-safe) desde `ShowConnectScreen`, UNA sola vez por
+  sesión de la app (`_locationPermissionRequested`, no se vuelve a pedir aunque se pase por
+  `ShowConnectScreen` de nuevo tras desconectar/cancelar PIN/etc.): si ya estaba concedido no hace
+  nada; si lo concede en el momento, el callback `PermissionGranted` llama `RefreshNetworkInfo()`
+  para que el SSID aparezca sin que el clínico tenga que volver a tocar nada; si lo niega (o
+  "no preguntar de nuevo"), no hay reintento — la tablet sigue con el fallback de IP local para
+  el resto de la sesión (ver Gotchas). `TryGetWifiSsid()` ya recortaba las comillas que devuelve
+  Android (`ssid.Trim('"')`) y trataba `<unknown ssid>`/vacío como null — eso no cambió, solo ahora
+  puede efectivamente resolver en vez de fallar siempre. `TryGetLocalIPv4()` no depende de la SSID
+  ni de este permiso: abre un socket UDP y hace `Connect("8.8.8.8", 65530)` — el truco estándar de
+  "no manda paquetes, solo hace que el SO resuelva la interfaz/ruta de salida" — y lee
+  `Socket.LocalEndPoint`; funciona sin Internet real y sin permisos extra. Si ninguno de los dos
+  resuelve (sin red), el label muestra "Red: no disponible". Ambos helpers de SSID/permiso son
+  `#if UNITY_ANDROID && !UNITY_EDITOR` / fallback Editor (en Editor `TryGetWifiSsid()` devuelve
+  `null` directo y `RequestLocationPermissionOnce()` es un no-op, así que el label en Editor
+  siempre muestra la IP de loopback/LAN de la máquina de desarrollo, nunca un SSID).
+- **Lista de visores sin IP, nombre amigable desde el `device_label` del beacon** →
+  el pedido de producto fue explícito: ni el label de red ni la lista de visores detectados deben
+  mostrar una IP (antes el botón decía `"Visor Quest  ·  " + IP`). `DiscoveryListener` (Net/, ver
+  `docs/networking.md`) ahora también parsea `device_label` del payload UDP (con
+  `Newtonsoft.Json.Linq.JObject`, ya usado en el resto de `Net/`/`Tablet/` — no es una dependencia
+  nueva) y lo pasa junto con la IP; la IP SIGUE siendo la clave de identidad
+  (`TabletSession._seenHosts`/`_tokenByHost`), el label es puramente decorativo
+  (`TabletSession._hostLabels`, paralelo a `_seenHosts`, mismo ciclo de vida/poda a los 6 s).
+  `TabletController.FriendlyVisorName(rawLabel)` recorta el nonce de sesión de 8 hex que
+  `NetworkController.GenerateBeaconLabel()` le agrega al nombre (formato `"<nombre>-<nonce8>"`) —
+  sin eso el botón mostraría algo como "Quest-a1b2c3d4", ruidoso para un clínico. Sin label
+  (payload viejo, JSON que no parseó) cae al genérico "Visor Quest". `NextFriendlyVisorName`
+  desambigua si aparece más de un host con el mismo nombre base agregando `(2)`, `(3)`... —
+  best-effort, no determinístico si los hosts entran y salen de la lista entre refrescos (ver
+  Gotchas), pero cubre el caso real (1–2 visores en la LAN de un consultorio). La IP sigue
+  disponible en `Debug.Log` (`RefreshDiscovered`: `"[Tablet] Visor detectado: <nombre> (<IP>)"`)
+  para troubleshooting de red, nunca en un widget visible.
 
 ## Gotchas
+- **El permiso de ubicación se pide UNA sola vez por sesión de la app, no por visita a la
+  ConnectScreen:** `RequestLocationPermissionOnce()` usa `_locationPermissionRequested` (campo de
+  instancia, se resetea al reiniciar la app) — si el clínico lo niega la primera vez, la tablet NO
+  vuelve a mostrar el prompt del sistema en toda esa sesión, aunque se recorra
+  Desconectar→ConnectScreen→PIN→MainScreen varias veces. Si a futuro se necesita reintentar
+  (p.ej. un botón "Reintentar permiso" en Ajustes), hay que resetear ese flag explícitamente, no
+  alcanza con volver a llamar `ShowConnectScreen`.
+- **`AndroidManifest.xml` custom es compartido con el visor (un solo target Android), y DEBE
+  declarar la Activity de Unity completa — CORREGIDO tras un incidente real** (postmortem completo
+  en `docs/builds-deploy.md`, gotcha "Manifest custom incompleto rompe el merge del launcher"):
+  una versión anterior de este manifest era MÍNIMA a propósito (solo `<uses-permission>`, sin
+  `<application>`/`<activity>`), asumiendo que Unity fusionaba sin pisar nada. En la práctica, un
+  manifest custom que agrega `<application>` sin declarar la Activity de Unity con su
+  `intent-filter`/`theme`/`meta-data` rompe el merge: el APK resultante (visor Y tablet, mismo
+  manifest) quedó con `UnityPlayerGameActivity` sin `exported`/`theme`/intent-filter — la app no
+  aparecía en el launcher ni arrancaba por `adb shell monkey`. Fix: el manifest ahora declara la
+  Activity COMPLETA (calcada de la plantilla oficial de Unity 6000.5) con `android:exported="true"`
+  explícito (obligatorio desde targetSdkVersion 31+ para toda Activity con intent-filter). No
+  requiere tocar `TabletBuild.cs` (no hay lógica de manifest ahí, solo el toggle del loader OpenXR).
+  `ACCESS_WIFI_STATE`/`ACCESS_FINE_LOCATION` quedan declarados en el visor también, pero son
+  inofensivos ahí: el visor nunca llama `Permission.RequestUserPermission` ni `TryGetWifiSsid` (ese
+  código vive en `TabletController`, que no corre en `Main.unity`) — un permiso
+  declarado-pero-nunca-solicitado no dispara ningún prompt.
+- **La desambiguación de nombres duplicados (`NextFriendlyVisorName`) no es estable entre
+  refrescos:** el sufijo `(2)`/`(3)` se asigna en el momento en que el botón NUEVO se crea, mirando
+  qué nombres ya están en uso — si el host que tenía "Visor Quest" (sin sufijo) expira y vuelve a
+  aparecer más tarde, puede recibir un sufijo distinto la segunda vez si en el medio se descubrió
+  otro host con el mismo nombre base. Aceptable: es solo el texto de un botón de una lista
+  transitoria (nunca se persiste ni se usa como clave), y el caso real (1–2 visores en la LAN de
+  un consultorio) casi nunca dispara la rama de desambiguación.
+- **Sin conexión manual: si el discovery UDP no encuentra al visor, no hay forma de conectar
+  desde la tablet.** (ver Decisiones "Solo descubrimiento automático" para el porqué). La primera
+  causa de "no se descubren" sigue siendo AP isolation/firewall en la red del consultorio (ver
+  `docs/networking.md`/`il2cpp-networking-gotchas`) — sin el fallback de IP a mano, ese escenario
+  ahora bloquea por completo a la tablet hasta resolver la red (no hay ticket de UX pendiente para
+  esto, es la decisión explícita del pedido que quitó la conexión manual).
 - **No hay prefabs de UI: sin Play no hay nada.** La escena `Tablet.unity` solo tiene `TabletApp`;
   jerarquía, EventSystem (con `InputSystemUIInputModule`) y Canvas (1280×800, ScaleWithScreenSize)
   se crean en `BuildUI()`. Cualquier cambio visual se hace en `TabletUiKit`/`TabletController`, no
@@ -381,16 +528,6 @@ TabletController.Start()
   ya no sirve), Cancelar, y `hello` (éxito). Si se agrega un cuarto camino de salida del loop,
   acordarse de apagar el flag ahí también o el timer de `TabletSession.Update()` sigue vivo
   compitiendo con la pantalla nueva.
-- **`CurrentEyeLensId()` (P5.1) mira el ojo IZQUIERDO cuando el selector está en "Ambos":** si el
-  operador arma A/B con "Ambos" seleccionado y las lentes activas de cada ojo son distintas
-  (modo blend), el slot capturado y el marcador "(activa)" reflejan solo `left`. Es una
-  simplificación deliberada (el comparador A/B asume que se compara sobre UN ojo o sobre ambos
-  con la MISMA lente) — no está pensado para blend.
-- **Los slots A/B no se limpian si la lente deja de existir (P5.1):** un `refresh` (P5.4) que
-  traiga un catálogo sin esa lente no vacía `_abLensA`/`_abLensB`; `LensDisplayName` cae al id
-  crudo (degradación grácil, mismo patrón que en el resto de la tablet) pero el botón "A ↔ B"
-  seguiría intentando aplicar un id que el visor ya no reconoce (`DataManager.ApplyLens` solo
-  loguea warning y no cambia nada, ver `docs/catalogo-lentes.md`).
 - **Los presets NO revalidan contra el catálogo actual (P5.2):** si se borra una lente del
   catálogo (edición manual de `lentes.json`/backend) y se aplica un preset viejo que la
   referenciaba, `apply_lens` del visor solo loguea warning y no cambia el estado de ese ojo — el
@@ -402,12 +539,18 @@ TabletController.Start()
   scrollear a mitad de camino) — comportamiento esperado de cualquier gesto de drag, no un bug.
   Tampoco toca `OnPointerDown` (el tap-to-jump del `Slider` base al tocar el track sigue
   intacto): el fix es solo sobre el DRAG, no sobre el toque inicial.
-- **El lock a landscape es runtime-only, no hardware:** `Screen.orientation =
-  ScreenOrientation.AutoRotation` + las 4 flags `autorotateTo*` en `TabletController.Start()`
-  dependen de que el sensor de orientación del device esté habilitado; si el usuario tiene la
-  rotación del SISTEMA Android bloqueada en portrait, la app puede arrancar en portrait hasta
-  que el sistema permita rotar. `ProjectSettings.asset` (compartido con el visor) sigue con las
-  4 orientaciones habilitadas a propósito — no se tocó, es contrato compartido.
+- **El lock a landscape ya no depende solo del runtime (P6.8, CERRADO el flash de arranque)** →
+  antes de esta tarea, `Screen.orientation = ScreenOrientation.AutoRotation` + las 4 flags
+  `autorotateTo*` en `TabletController.Start()` eran la ÚNICA barrera, y dejaban un flash breve
+  en portrait al arrancar (la Activity nativa arranca en la orientación que decida el sistema
+  ANTES de que `Start()` corra). `android:screenOrientation="sensorLandscape"` en
+  `AndroidManifest.xml` (ver Decisiones) cierra ese hueco a nivel Android — la Activity nunca se
+  presenta en portrait, ni siquiera por un frame. Lo que SIGUE dependiendo del runtime: la
+  rotación del SISTEMA Android bloqueada en portrait puede demorar cuánto tarda la app en
+  rotar entre landscape-left y landscape-right (el sensor debe estar habilitado), pero ya no
+  puede hacer que arranque en portrait. `ProjectSettings.asset` (compartido con el visor) sigue
+  con las 4 orientaciones habilitadas a propósito — no se tocó, es contrato compartido; el nuevo
+  lock vive en el manifest custom, no en Player Settings.
 - **`presets.json` no tiene versión/migración:** a diferencia de `lentes.json` (`version` +
   `MergeMissingParams`), el archivo de presets es un snapshot crudo del `vision_state` de cuando
   se guardó. Si el shape de `vision_state` cambia a futuro (nuevo campo obligatorio, etc.) un
@@ -425,8 +568,24 @@ TabletController.Start()
    `TabletController` no rompió la referencia de la escena.
 1. Con el visor corriendo (Play en `Assets/Scenes/Main.unity` o build Quest), abrir
    `Assets/Scenes/Tablet.unity` y dar Play: debe aparecer la pantalla de conexión con el visor
-   detectado en pocos segundos (mismo host en Editor: fallback manual `127.0.0.1`).
-2. Tocar el visor detectado (o "Conectar" en manual): debe aparecer el `PinScreen` pidiendo el PIN
+   detectado en pocos segundos (mismo host en Editor, vía loopback UDP), con un nombre amigable
+   en el botón (p.ej. "Visor Quest" o el `SystemInfo.deviceName` del visor, SIN la IP — ver
+   Decisiones "Lista de visores sin IP"). La `ConnectScreen` ya no tiene conexión manual — si el
+   visor no aparece en la lista, no hay forma de conectar (ver Gotchas "Sin conexión manual").
+   En Editor esto no prueba SSID/permisos (ver 1b) ni la desambiguación de nombres (ver 9).
+1b. **ConnectScreen: info de red + botón Salir.** Debajo del estado de búsqueda debe verse un
+    label "Red: ...". En Editor siempre es la IP LAN/loopback de la máquina (SSID no aplica fuera
+    de Android). **En un device Android real (nuevo, requiere build):** al primer Play/apertura de
+    la app debe aparecer el prompt nativo de permiso de ubicación UNA sola vez (ver Decisiones
+    "Info de red Wi-Fi" y Gotchas) — conceder el permiso: el label debe pasar a mostrar el SSID
+    real de la red (sin comillas) apenas se concede, sin tocar nada más; negarlo: el label debe
+    mostrar la IP local igual que antes, y el prompt NO debe volver a aparecer al desconectar/
+    reconectar/volver a esta pantalla en la misma sesión de la app (solo reaparece si se mata y
+    reabre la app). El texto fijo "El visor Quest y la tablet deben estar conectados a la misma
+    red Wi-Fi." debe seguir apareciendo igual. Tocar "Salir" → la app debe cerrarse
+    (`Application.Quit()`; en el Editor esto NO sale de Play Mode, es el comportamiento estándar
+    de Unity — probar el cierre real en un build de device).
+2. Tocar el visor detectado: debe aparecer el `PinScreen` pidiendo el PIN
    de 6 dígitos (lo loguea la consola del visor: `Net: PIN de emparejamiento de esta sesion: ...`;
    en el visor real lo muestra el HUD). Ingresarlo mal a propósito una vez → "PIN incorrecto. Volvé
    a intentarlo." y vuelve a pedirlo; ingresarlo bien → debe llegar el `auth_ok` con un token nuevo
@@ -484,6 +643,13 @@ TabletController.Start()
    `ConnectScreen` durante varios segundos — el botón no debe destruirse/recrearse visualmente
    (sin parpadeo). Apagar el visor y esperar >6 s → el botón debe desaparecer; volver a encenderlo
    → debe reaparecer.
+9b. **Nombre amigable sin IP, con desambiguación (nuevo).** Revisar la consola: cada host nuevo
+   debe loguear `[Tablet] Visor detectado: <nombre> (<IP>)` (la IP solo ahí, nunca en el botón).
+   Con un único visor en la red, el botón debe decir el nombre base (p.ej. "Visor Quest") sin
+   sufijo. Si se puede tener 2 visores/instancias de Editor emitiendo el mismo
+   `SystemInfo.deviceName` en la misma red simultáneamente, el segundo botón debe aparecer como
+   "<nombre> (2)" — confirmar que apretar CADA botón conecta al visor correcto (la IP sigue
+   siendo la clave interna, solo el texto cambia).
 10. **Astigmatismo residual persistente (P4.4):** aplicar cualquier lente → "Ajuste fino" debe
     mostrar las filas "Astigmatismo residual" (0–1) y "Eje del astigmatismo" (0–180°) junto a
     "Desenfoque máximo" (antes de los halos), ambas en 0 por default. Subir "Astigmatismo
@@ -493,13 +659,23 @@ TabletController.Start()
     para persistir usá Ajuste fino"); activar el switch LIVE y verificar que el efecto en el
     stream se ve igual sin importar cuál de los dos controles lo generó (mismo pipeline
     `glare_astig_l/r`) — no deben aparecer sincronizados entre sí (es esperado, ver Decisiones).
-11. **Comparar A/B (P5.1):** con "OD · Derecho" seleccionado, aplicar monofocal, abrir "Comparar
-    A / B" y tocar "Usar actual" en la fila A (debe mostrar "A: Monofocal Estandar (activa)").
-    Aplicar panoptix al mismo ojo y tocar "Usar actual" en B ("B: PanOptix Pro (activa)"; el botón
-    "A ↔ B" pasa a interactuable). Tocar "A ↔ B" repetidamente → el stream del OD debe alternar
-    entre ambas lentes y el marcador "(activa)" debe saltar de A a B en cada toque. Cambiar el
-    selector a "OI · Izquierdo" sin tocar A/B → el marcador debe desaparecer de ambos (ninguna de
-    las dos está activa en OI, salvo coincidencia).
+11. **Stream a pantalla completa, modo simple (P6.8):** con la misma lente en ambos ojos (o sin
+    lente en ninguno), tocar "Pantalla completa" (esquina superior derecha del panel de stream)
+    → debe verse el overlay con UNA imagen ocupando la pantalla, etiqueta "Ambos ojos — \<lente\>"
+    (o "Ambos ojos" sin lente), sin el resto de la UI visible. Tocar "Cerrar" → vuelve al
+    `MainScreen` normal. Repetir abriendo y tocando esta vez en cualquier punto del fondo (no el
+    botón) → también debe cerrar.
+11b. **Stream a pantalla completa, modo blend:** aplicar lentes distintas por ojo (blend activo,
+    el panel normal ya muestra 2 panes) y abrir "Pantalla completa" → debe verse 2 paneles lado a
+    lado (no apilados) con etiquetas "OI — \<lente\>" / "OD — \<lente\>". Con el overlay ABIERTO,
+    aplicar una lente distinta a un ojo desde la lista (sin cerrar el overlay) → las etiquetas y
+    el contenido del pane correspondiente deben actualizarse solos (reacciona a `vision_state`
+    sin necesidad de reabrir el overlay). Aplicar la MISMA lente a ambos ojos con el overlay
+    abierto → debe pasar de 2 paneles a 1 imagen en el momento.
+11c. **Sesión interrumpida con el overlay abierto:** con el stream a pantalla completa abierto,
+    tocar "Desconectar" (o forzar una caída del visor) → el overlay debe cerrarse solo y mostrar
+    el `ConnectScreen`/`ReconnectScreen` correspondiente (no debe quedar un frame congelado tapando
+    la pantalla).
 12. **Presets de sesión (P5.2):** armar un estado (lente + algún override + escenario), abrir
     "Presets", escribir un nombre y "Guardar" → debe aparecer en la lista. Cambiar todo (otra
     lente, otro escenario) y tocar "Aplicar" en el preset guardado → debe volver exactamente al
@@ -522,6 +698,13 @@ TabletController.Start()
     device 180° en landscape (de landscape-left a landscape-right) → la UI debe re-rotar sola;
     intentar poner el device en portrait → la UI NO debe rotar a portrait (queda en el último
     landscape válido).
+15. **Sin flash en portrait al arrancar (P6.8, requiere build — el Editor no reproduce el
+    arranque nativo de la Activity):** con el device en mano en cualquier orientación, instalar y
+    abrir la app (o `adb shell monkey -p com.simulador.tablet 1` recién instalada) → la pantalla
+    debe aparecer directamente en landscape, sin un frame/flash visible en portrait antes de
+    estabilizarse (antes de esta tarea, el lock era runtime-only y el flash era perceptible en
+    algunos devices). Confirmar también que el visor sigue arrancando normal en VR (el
+    `screenOrientation` del manifest es inocuo ahí, ver Decisiones "Landscape lock").
 
 ## Pendientes / deuda
 - El lockout es global del lado del visor (no por tablet/IP): si otro cliente en la LAN agotó el
@@ -535,10 +718,9 @@ TabletController.Start()
   comparten UI — se agregó solo un hint de precedencia en la card live (ver Decisiones). Evaluar
   en una tarea futura si conviene fusionarlos o si la separación live/persistente es intencional
   a largo plazo (p.ej. la card live podría ser para "probar rápido" sin comprometerse a guardarlo).
-- **A/B (P5.1) no cubre blend ni revalida contra el catálogo, y presets (P5.2) no revalidan ids
-  ni versionan el archivo** — ver el detalle de cada caso en Gotchas. Ninguno rompe nada hoy
-  (degradan a warning/estado parcial), pero son los bordes a endurecer si el flujo A/B-en-blend o
-  los presets compartidos entre clínicos se vuelven un caso de uso real.
+- **Presets (P5.2) no revalidan ids ni versionan el archivo** — ver el detalle en Gotchas. No
+  rompe nada hoy (degrada a warning/estado parcial), pero es un borde a endurecer si los presets
+  compartidos entre clínicos se vuelven un caso de uso real.
 - **`refresh` (P5.4) no tiene indicador visual de "en curso" ni feedback de error**: `OnRefreshPressed`
   solo valida que el WS esté abierto (badge "Sin conexión" si no) pero no muestra nada mientras
   espera la respuesta ni si el visor tardara en contestar; como reusa el flujo de `"hello"`, el

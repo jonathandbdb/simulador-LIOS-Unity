@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Manifest custom del target Android, compartido por visor y tablet (mismo target,
+  ver docs/tablet.md/docs/builds-deploy.md). Unity FUSIONA este manifest con el que
+  genera para el player, pero si declara <application> sin declarar la Activity de
+  Unity, el merge NO hereda desde el motor el bloque completo (exported/intent-filter/
+  theme/meta-data) de esa Activity y rompe el launcher en AMBOS builds (ver el gotcha
+  "Manifest custom incompleto rompe el merge del launcher" en docs/builds-deploy.md y
+  docs/tablet.md). Por eso este manifest declara la Activity COMPLETA, calcada de la
+  plantilla oficial de Unity 6000.5 para GameActivity
+  (<Editor>/Data/PlaybackEngines/AndroidPlayer/Apk/UnityManifest.xml, bloque
+  "Used when Application Entry is set to GameActivity": UnityPlayerGameActivity,
+  no UnityPlayerActivity). android:exported="true" es obligatorio y explícito porque
+  targetSdkVersion 36 (>=31) exige declararlo en toda Activity con intent-filter.
+
+  Permisos:
+  - ACCESS_WIFI_STATE: WifiManager.getConnectionInfo() para leer el SSID real en
+    la ConnectScreen de la tablet (ver TabletController.TryGetWifiSsid).
+  - ACCESS_FINE_LOCATION: requisito de Android 9+ para que getSSID() devuelva el
+    nombre real en vez de "<unknown ssid>" (se pide en runtime UNA vez por
+    sesion, ver TabletController.RequestLocationPermissionOnce).
+  Ambos permisos son inocuos para el visor, que nunca los solicita en runtime.
+
+  Orientacion: el atributo android:screenOrientation de abajo es solo declarativo —
+  Unity SIEMPRE lo pisa en el manifest final con el valor derivado de PlayerSettings
+  (defaultInterfaceOrientation + allowedAutorotateTo*). El lock real a landscape
+  viene de PlayerSettings (autorotate solo landscapeLeft/Right, portrait OFF), que
+  Unity hornea como "userLandscape" (bloquea portrait), mas el refuerzo runtime de
+  TabletController.Start(). Inocuo para el visor: en VR el compositor del Quest
+  maneja la orientacion e ignora el screenOrientation del manifest.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <application>
+        <activity android:name="com.unity3d.player.UnityPlayerGameActivity"
+                  android:exported="true"
+                  android:theme="@style/BaseUnityGameActivityTheme"
+                  android:screenOrientation="sensorLandscape">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
+            <meta-data android:name="android.app.lib_name" android:value="game" />
+        </activity>
+    </application>
+</manifest>
