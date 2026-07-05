@@ -279,6 +279,23 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   si no se le agrega también una entrada en `NetworkController.ScenarioLabels`, el label cae al
   fallback (capitaliza el id) — funciona pero menos prolijo que un label a mano. No rompe nada:
   ya no hay riesgo de que la LISTA de ids diverja entre Vision/ y Net.
+- **`DataManager.ApplyLens` debe llamar `UpdateBlend()` ANTES de disparar `VisionStateChanged`
+  — bug real, corregido:** `NetworkController.OnVisionStateChanged` reacciona a CADA
+  `VisionStateChanged.Invoke(eye, state)` armando y broadcasteando `BuildVisionState()` de forma
+  SÍNCRONA, en el mismo call stack del Invoke (a diferencia del resto de la capa de red, que
+  encola en threads y drena recién en `PumpEvents()` — acá no hay thread de por medio, así que no
+  hay nada que lo demore). `BuildVisionState()` lee `DataManager.BlendModeEnabled` en ESE instante.
+  `ApplyLens` llamaba antes `UpdateBlend()` DESPUÉS de disparar los Invoke de `"left"`/`"right"`:
+  el primer broadcast (o el único, si `eye` era `"left"`/`"right"` en vez de `"both"`) salía con el
+  `BlendModeEnabled` VIEJO — la tablet podía recibir un `blend_active` desactualizado y mostrar 2
+  panes con la misma lente en ambos ojos (caso típico: estando en blend real, aplicar una lente a
+  "Ambos"). Fix: `UpdateBlend()` corre después de asignar `Left`/`Right` pero ANTES de los dos
+  `Invoke`, así CUALQUIER broadcast que dispare sale con `BlendModeEnabled` ya recalculado.
+  `LensEngine.ComputeBlend` en sí siempre fue correcto — era un bug de orden, no de fórmula.
+  `StreamingCapture` no tenía este bug (lee `dm.BlendModeEnabled` en vivo en cada tick, no depende
+  del orden de eventos de `ApplyLens`). Si se agrega un evento nuevo que dispare un broadcast
+  síncrono leyendo estado derivado de `DataManager`, recalcular ese estado ANTES del Invoke, no
+  después.
 - **Descubrimiento de refs de escena acotado (P3.4):** `NetworkController.Update()` buscaba
   `ScenarioManager`/`GlareController` con `FindFirstObjectByType` en CADA frame hasta encontrarlos
   — costo indefinido si la escena nunca los tiene. `DiscoverSceneRefs()` reintenta a 1 Hz, máximo

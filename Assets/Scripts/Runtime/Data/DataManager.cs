@@ -253,17 +253,16 @@ namespace Simulador.Data
             _lensOverrides.TryGetValue(lensId, out var saved);
             var built = LensEngine.BuildEyeState(lens, saved);
 
-            if (eye == "left" || eye == "both")
-            {
-                Left = built.Clone();
-                VisionStateChanged?.Invoke("left", Left);
-            }
-            if (eye == "right" || eye == "both")
-            {
-                Right = built.Clone();
-                VisionStateChanged?.Invoke("right", Right);
-            }
+            if (eye == "left" || eye == "both") Left = built.Clone();
+            if (eye == "right" || eye == "both") Right = built.Clone();
+            // UpdateBlend() ANTES de los Invoke: los suscriptores (NetworkController.
+            // OnVisionStateChanged) broadcastean el vision_state de forma SINCRONA dentro
+            // del propio Invoke, leyendo BlendModeEnabled en ese instante -- si se llamaba
+            // DESPUES, el primer (o unico) broadcast salia con el valor VIEJO. Ver
+            // docs/networking.md.
             UpdateBlend();
+            if (eye == "left" || eye == "both") VisionStateChanged?.Invoke("left", Left);
+            if (eye == "right" || eye == "both") VisionStateChanged?.Invoke("right", Right);
         }
 
         /// <summary>Override de params en tiempo real (tablet). Persiste por lente.</summary>
