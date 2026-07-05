@@ -275,7 +275,45 @@ TabletController.Start()
   (`ShowConnectScreen`/`ShowPinScreen`/`ShowReconnectScreen` llaman `CloseFullscreenStream()` al
   entrar) para no dejar al clínico viendo un frame congelado sobre una pantalla de reconexión —
   `ShowMainScreen` (incluye el branch de `refresh`, P5.4) NO lo cierra a propósito, para no
-  interrumpir una vista en curso.
+  interrumpir una vista en curso. **Bug corregido: el overlay se veía todo negro** →
+  `FullscreenRow` (el `_kit.Box` que contiene los panes) se creaba sin `Stretch()` ni tamaño
+  explícito, y su padre `_fullscreenStream` no cuelga de ningún `LayoutGroup` que lo dimensione
+  — gotcha real de `TabletUiKit.Box()`: el `LayoutGroup` que agrega controla a sus HIJOS, nunca
+  dimensiona el propio `RectTransform` del Box. Resultado: `FullscreenRow` quedaba con el rect
+  default de Unity (anchors (0,0), sizeDelta 100×100, esquina inferior-izquierda), así que solo
+  se veía el fondo negro `FullscreenBg` (que sí tenía `Stretch()`). Fix: `Stretch(row)` explícito
+  después del `_kit.Box(...)`, igual que ya se hacía para `FullscreenBg`. Cualquier `_kit.Box`
+  usado como contenedor de pantalla completa (o cualquier rect que no cuelgue de un ancestro con
+  `LayoutGroup`/`ContentSizeFitter`) necesita este mismo tratamiento explícito.
+- **Bug corregido: panes chicos en el overlay fullscreen (`expandH` en `FsLeftPane`/
+  `FsRightPane`)** → `BuildFullscreenStream` creaba esos dos `_kit.Box` con `expandH: true`. Con
+  `childForceExpandHeight = true`, el `VerticalLayoutGroup` fuerza `flexible = max(flexible, 1)`
+  en TODOS los hijos, ignorando el `flexH: 0` que ya tenía el label (pide 26 px fijos, ver
+  `_kit.Size(_fsLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0)`): el alto terminaba
+  repartido ~50/50 entre label y `StreamWrap`, y el `AspectRatioFitter` 4:3 achicaba la imagen del
+  stream a un tamaño chico e innecesario. El panel lateral normal (`LeftEyePane`/`RightEyePane`,
+  `BuildBody`) ya usaba `expandH: false` y nunca tuvo este bug — mismo patrón aplicado acá. Fix:
+  `expandH: false` en los dos `_kit.Box`. Verificado numéricamente en Play Mode (reflection sobre
+  `TabletController`, forzando `blend_active: true` vía `_session.VisionState` + `ShowMainScreen`/
+  `RefreshVisionUI`/`OpenFullscreenStream` + `LayoutRebuilder.ForceRebuildLayoutImmediate`): con
+  un pane de 744 px de alto, el label queda en 26 px y el `StreamWrap` en 712 px (~96 % del pane),
+  contra un ~50/50 antes del fix. Cualquier pane nuevo de este overlay que combine un label de
+  alto fijo con un contenido flexible debe seguir usando `expandH: false` en el `_kit.Box`
+  contenedor (el `flexH: 0`/`flexH: 1` de los HIJOS solo se respeta así).
+- **`BtnStyle.Overlay` (`TabletUiKit.cs`) para botones dibujados ENCIMA del stream en vivo** →
+  "Pantalla completa" (panel de stream) y "Cerrar" (overlay fullscreen) usaban `BtnStyle.Ghost`
+  (fill transparente, `NormalFill = Clear`), pensado para botones sobre el fondo sólido de la app
+  — sobre un frame de video en vivo, el botón podía lavarse por completo según el contenido del
+  frame (bug reportado: invisible en ciertos frames). `BtnStyle.Overlay` es un estilo nuevo,
+  DELIBERADAMENTE NO tematizado (fill/borde/texto fijos, ignora la paleta `p` del `Register`):
+  mismo criterio que `LabelKind.StreamChip` (label de los panes de stream, también con color fijo
+  `#F2F6FB` por la misma razón) y que `FullscreenBg` — un control sobre video se comporta como
+  parte del "lightbox", no de la chrome de la app, así que no tiene sentido que cambie con el tema
+  claro/oscuro. Fill negro semi-opaco (72–90 % alfa según estado) + borde blanco de baja opacidad +
+  texto igual al de `StreamChip`: garantiza contraste legible sobre CUALQUIER frame, oscuro o
+  claro. Sigue registrado vía `Register(p => StyleButton(...))` como cualquier botón (se re-pinta
+  en cada `ApplyTheme`), solo que el resultado es idéntico en Dark y Light — no rompe el contrato
+  de repaint, solo lo vuelve un no-op visual a propósito.
 - **Presets de sesión: snapshot del `vision_state`, aplicar = comandos existentes (P5.2)** →
   guardar un preset clona (`JObject.DeepClone`) el `left`/`right` TAL COMO llegan del visor
   (`lens_id` + todos los params aplanados, incluidos overrides ya aplicados) más `_currentScenario`

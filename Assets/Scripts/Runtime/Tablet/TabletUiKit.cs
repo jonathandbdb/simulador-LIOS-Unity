@@ -7,7 +7,7 @@ using TMPro;
 namespace Simulador.Tablet
 {
     public enum LabelKind { Title, Subtitle, Section, Hint, Value, Body, ChipOD, ChipOI, StreamChip }
-    public enum BtnStyle { Accent, Segment, Card, CardActive, Ghost, Neutral }
+    public enum BtnStyle { Accent, Segment, Card, CardActive, Ghost, Neutral, Overlay }
 
     /// <summary>
     /// Fabrica de widgets uGUI temables que replican los StyleBox del tema de la
@@ -261,6 +261,21 @@ namespace Simulador.Tablet
                     b.NormalFill = Clear; b.HoverFill = p.SurfaceRaised; b.PressedFill = p.SurfaceRaised;
                     b.NormalBorder = p.Border; b.HoverBorder = p.Border; b.PressedBorder = p.Accent;
                     b.NormalText = p.TextSecondary; b.HoverText = p.TextPrimary; b.PressedText = p.TextPrimary; break;
+                case BtnStyle.Overlay:
+                    // Botones dibujados ENCIMA del stream en vivo (Pantalla completa / Cerrar):
+                    // fill/texto fijos, deliberadamente NO tematizados (igual criterio que
+                    // LabelKind.StreamChip, mas abajo, y que FullscreenBg -- un overlay sobre
+                    // video se comporta como "lightbox", independiente del tema claro/oscuro).
+                    // Con Ghost (fill transparente) el boton se lavaba segun el contenido del
+                    // frame; un fill oscuro semi-opaco garantiza contraste con CUALQUIER frame.
+                    b.NormalFill = new Color(0f, 0f, 0f, 0.72f);
+                    b.HoverFill = new Color(0f, 0f, 0f, 0.82f);
+                    b.PressedFill = new Color(0f, 0f, 0f, 0.9f);
+                    b.NormalBorder = new Color(1f, 1f, 1f, 0.18f);
+                    b.HoverBorder = new Color(1f, 1f, 1f, 0.35f);
+                    b.PressedBorder = new Color(1f, 1f, 1f, 0.5f);
+                    b.NormalText = b.HoverText = b.PressedText = LabelColor(LabelKind.StreamChip, p);
+                    break;
                 default:
                     b.NormalFill = p.SurfaceRaised; b.HoverFill = p.SurfaceHover; b.PressedFill = p.SurfaceHover;
                     b.NormalBorder = p.Border; b.HoverBorder = p.Border; b.PressedBorder = p.Accent;

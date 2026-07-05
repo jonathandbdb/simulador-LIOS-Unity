@@ -1226,7 +1226,7 @@ namespace Simulador.Tablet
             // Boton "Pantalla completa": overlay ignoreLayout anclado a la esquina
             // superior derecha del StreamPanel (no participa del HorizontalLayoutGroup
             // del panel, ver PinTopRight).
-            var fullscreenBtn = _kit.Button(stream, "Pantalla completa", BtnStyle.Ghost, false, 36, 13);
+            var fullscreenBtn = _kit.Button(stream, "Pantalla completa", BtnStyle.Overlay, false, 36, 13);
             PinTopRight(fullscreenBtn.GetComponent<RectTransform>(), fullscreenBtn.GetComponent<LayoutElement>(), 8, 8);
             fullscreenBtn.OnClick = OpenFullscreenStream;
 
@@ -1390,15 +1390,21 @@ namespace Simulador.Tablet
 
             var row = _kit.Box(_fullscreenStream.transform, "FullscreenRow", false, 16,
                 new RectOffset(28, 28, 28, 28), expandW: true, expandH: true);
+            // _kit.Box solo agrega un LayoutGroup que controla a sus HIJOS: no
+            // dimensiona su propio RectTransform. FullscreenRow no cuelga de ningun
+            // ancestro con LayoutGroup, asi que sin este Stretch() explicito queda
+            // con el rect default de Unity (100x100 en la esquina) -- el mismo
+            // tratamiento que ya tiene FullscreenBg mas arriba.
+            Stretch(row);
 
-            var leftPane = _kit.Box(row, "FsLeftPane", true, 6, null, expandW: true, expandH: true);
+            var leftPane = _kit.Box(row, "FsLeftPane", true, 6, null, expandW: true, expandH: false);
             _kit.Size(leftPane, flexW: 1);
             _fsLeftLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_fsLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
             _fsStreamLeft = MakeStreamView(leftPane);
             _fsStreamLeft.raycastTarget = false; // deja pasar el tap al fondo (tambien cierra)
 
-            _fsRightPane = _kit.Box(row, "FsRightPane", true, 6, null, expandW: true, expandH: true).gameObject;
+            _fsRightPane = _kit.Box(row, "FsRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_fsRightPane.GetComponent<RectTransform>(), flexW: 1);
             _fsRightLabel = _kit.Label(_fsRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_fsRightLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
@@ -1406,7 +1412,7 @@ namespace Simulador.Tablet
             _fsStreamRight.raycastTarget = false;
             _fsRightPane.SetActive(false);
 
-            var closeBtn = _kit.Button(_fullscreenStream.transform, "Cerrar", BtnStyle.Ghost, false, 40, 14);
+            var closeBtn = _kit.Button(_fullscreenStream.transform, "Cerrar", BtnStyle.Overlay, false, 40, 14);
             PinTopRight(closeBtn.GetComponent<RectTransform>(), closeBtn.GetComponent<LayoutElement>(), 16, 16);
             closeBtn.OnClick = CloseFullscreenStream;
         }
