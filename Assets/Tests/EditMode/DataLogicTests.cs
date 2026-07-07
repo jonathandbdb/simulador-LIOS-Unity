@@ -202,13 +202,37 @@ namespace Simulador.Tests
             Assert.IsTrue(File.Exists(path), $"Falta {path}");
             var cat = CatalogParser.Parse(File.ReadAllText(path));
             Assert.IsNotNull(cat);
-            Assert.AreEqual("0.5.0-clinical", cat.Version);
+            Assert.AreEqual("0.5.1-clinical", cat.Version);
             Assert.AreEqual(3, cat.Catalogo.Count);
 
             var pan = cat.Catalogo.Find(l => l.Id == "panoptix");
             Assert.IsNotNull(pan);
             Assert.AreEqual(0.6f, pan.Params["halo_intensity"].Default, 1e-4f);
             Assert.AreEqual(9.0f, pan.Params["destello_rayos"].Default, 1e-4f);
+
+            // P6.9: ventana clinica de los 3 focos (antes 0-20 sin discriminar). El
+            // rango de cada foco ahora acota la ventana real donde ese foco tiene sentido
+            // clinico; ver docs/catalogo-lentes.md "Rangos clinicos de los focos (P6.9)".
+            foreach (var l in cat.Catalogo)
+            {
+                Assert.AreEqual(3.0f, l.Params["foco_lejos_m"].Min, 1e-4f, $"{l.Id}.foco_lejos_m min");
+                Assert.AreEqual(9.0f, l.Params["foco_lejos_m"].Max, 1e-4f, $"{l.Id}.foco_lejos_m max");
+                Assert.AreEqual(1.0f, l.Params["foco_intermedio_m"].Min, 1e-4f, $"{l.Id}.foco_intermedio_m min");
+                Assert.AreEqual(3.0f, l.Params["foco_intermedio_m"].Max, 1e-4f, $"{l.Id}.foco_intermedio_m max");
+                Assert.AreEqual(0.15f, l.Params["foco_cerca_m"].Min, 1e-4f, $"{l.Id}.foco_cerca_m min");
+                Assert.AreEqual(1.0f, l.Params["foco_cerca_m"].Max, 1e-4f, $"{l.Id}.foco_cerca_m max");
+            }
+            // Defaults "off" (0) fuera del nuevo rango se conservan intactos (semantica
+            // 0 = foco desactivado, ver ParamMeta.FormatValue) -- BuildEyeState nunca
+            // clampea los defaults del catalogo, solo los overrides (LensEngine.cs).
+            Assert.AreEqual(0f, cat.Catalogo.Find(l => l.Id == "monofocal").Params["foco_intermedio_m"].Default, 1e-4f);
+            Assert.AreEqual(0f, cat.Catalogo.Find(l => l.Id == "monofocal").Params["foco_cerca_m"].Default, 1e-4f);
+            Assert.AreEqual(0f, cat.Catalogo.Find(l => l.Id == "vivity").Params["foco_cerca_m"].Default, 1e-4f);
+            // Defaults activos que quedaban por debajo del nuevo minimo (0.6/0.67 < 1.0)
+            // se llevaron al borde mas cercano -- ver "Riesgos" en el envelope de la tarea:
+            // el texto descriptivo de panoptix/vivity sigue mencionando 60cm/67cm.
+            Assert.AreEqual(1.0f, pan.Params["foco_intermedio_m"].Default, 1e-4f);
+            Assert.AreEqual(1.0f, cat.Catalogo.Find(l => l.Id == "vivity").Params["foco_intermedio_m"].Default, 1e-4f);
             // Las 3 lentes deben tener los 13 params clinicos (P4.4 agrego astig_magnitude
             // y astig_axis_deg a los 11 anteriores, incluyendo straylight).
             foreach (var l in cat.Catalogo)

@@ -83,20 +83,27 @@ TabletController.Start()
   intentarlo.") de token inválido ("El emparejamiento con este visor ya no es válido. Ingresá el
   PIN nuevamente.") de lockout del visor ("Demasiados intentos. Esperá Ns y volvé a intentarlo.",
   con el `retry_in_s` que manda el visor). Detalle del protocolo y el modelo de amenaza en
-  `docs/networking.md`.
+  `docs/networking.md`. **Anclado arriba-centro, no centrado** (el popup `PinWrap` usa
+  `anchorMin/anchorMax/pivot = (0.5, 1)` + `anchoredPosition = (0, -40)` en vez de `(0.5, 0.5)`,
+  ver Decisiones "Popup del PIN en el tercio superior") para que el teclado nativo de Android
+  (cubre la mitad inferior de la pantalla) no tape el `LineEdit` al escribir el PIN.
+  ConnectScreen/ReconnectScreen (sin teclado) siguen centrados, sin cambios.
 - **ReconnectScreen (P2.5):** se muestra ante una caída NO manual de una sesión activa. Glifo +
   título "Reconectando", host destino, estado (cuenta atrás del backoff o "Reconectando… (intento
   N)") y botón Cancelar (corta el loop y vuelve al `ConnectScreen`). Ver StartReconnectLoop/
   DoReconnectAttempt/OnWsDisconnected y Decisiones abajo.
 - **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), toggle de tema
-  claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), badge de estado
-  (punto de color + texto), botón Desconectar y botón **Desvincular** (emparejamiento persistente
-  por token: revoca el token de esta tablet en el visor y olvida el emparejamiento local con el
-  host actual -- ver Decisiones "Emparejamiento persistente por token").
+  claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), botón **"Ocultar
+  HUD"/"Mostrar HUD"** (toggle del HUD de diagnóstico del visor vía comando `set_hud`, ver
+  Decisiones "Toggle del HUD del visor"), badge de estado (punto de color + texto), botón
+  Desconectar y botón **Desvincular** (emparejamiento persistente por token: revoca el token de
+  esta tablet en el visor y olvida el emparejamiento local con el host actual -- ver Decisiones
+  "Emparejamiento persistente por token").
 - **Panel de stream (izquierda):** uno o dos panes con `RawImage` dentro de un `AspectRatioFitter`
   4:3 (768/576). El split lo decide `blend_active` del `vision_state` (P2.1 — fuente única de
-  verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente
-  (`OI · <lente>` / `OD · <lente>`); si no, un solo pane "Ambos ojos" (incluye el caso de un solo
+  verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente, **OD arriba /
+  OI abajo** (convención clínica OD-primero, ver Decisiones) con etiquetas
+  (`OD · <lente>` / `OI · <lente>`); si no, un solo pane "Ambos ojos" (incluye el caso de un solo
   ojo con lente aplicada: antes mostraba 2 panes con uno de etiqueta vacía). Botón **"Pantalla
   completa"** (P6.8, esquina superior derecha del panel) abre el overlay de stream a pantalla
   completa — ver "Stream a pantalla completa" más abajo y Decisiones.
@@ -115,13 +122,24 @@ TabletController.Start()
   decodificación de JPG. Sigue el mismo criterio que el panel normal
   (`blend_active`/`RefreshVisionUI`): si ambos ojos comparten lente (incluido el caso sin lente
   en ninguno) muestra 1 imagen; si `blend_active` es `true` (lentes distintas por ojo) muestra 2
-  paneles lado a lado con etiquetas "OI — \<lente\>" / "OD — \<lente\>". Reacciona a un cambio de
-  lente mientras está abierto porque `RefreshFullscreenUI` se llama siempre desde
+  paneles lado a lado, **OD a la izquierda / OI a la derecha** (misma convención OD-primero que el
+  panel normal, ver Decisiones) con etiquetas "OD — \<lente\>" / "OI — \<lente\>". Reacciona a un
+  cambio de lente mientras está abierto porque `RefreshFullscreenUI` se llama siempre desde
   `RefreshVisionUI` (no solo al abrir el overlay).
 - **Footer:** `N fps · X.X MB recibidos`, actualizado cada segundo. En blend (P5.5), el fps
   mostrado se divide entre 2 (ver Decisiones): representa la tasa REAL por pane, no la suma L+R.
 
 ## Decisiones y porqués
+- **Convención OD-primero en toda la UI (orden de presentación, no de protocolo)** → el ojo
+  derecho (OD) se muestra siempre antes/arriba/a la izquierda que el izquierdo (OI), siguiendo la
+  convención clínica habitual. Esto es puramente visual: los ids de protocolo (`"left"`/`"right"`
+  en `vision_state`, comandos, presets) y el mapeo de los botones del visor (A cicla OI, B cicla
+  OD — ver `docs/vision-optica.md`) NO cambian. Afecta: panel de stream normal (`BuildBody`, OD
+  arriba / OI abajo — el pane derecho se crea antes que el izquierdo en `EyesContainer` para
+  quedar primero en el stack vertical), overlay a pantalla completa (`BuildFullscreenStream`, OD a
+  la izquierda / OI a la derecha — mismo truco de orden de creación en `FullscreenRow`). El
+  selector "Ojo a tratar" (`BuildEyeCard`) y los chips OD/OI de `LensCardView` YA tenían OD antes
+  que OI y no se tocaron.
 - **Split sesión/UI: `TabletSession` (plain C#) + `TabletController` (MonoBehaviour) (P6.2)** →
   `TabletController` había crecido a un god-object (>1400 líneas: red + protocolo + estado +
   construcción de UI) a medida que se agregaron PIN/reconexión/A-B/presets/refresh. Refactor
@@ -439,8 +457,35 @@ TabletController.Start()
   Gotchas), pero cubre el caso real (1–2 visores en la LAN de un consultorio). La IP sigue
   disponible en `Debug.Log` (`RefreshDiscovered`: `"[Tablet] Visor detectado: <nombre> (<IP>)"`)
   para troubleshooting de red, nunca en un widget visible.
+- **Popup del PIN en el tercio superior, no centrado** → el teclado nativo de Android al enfocar el
+  `LineEdit` numérico de `PinScreen` cubría el popup centrado (`TouchScreenKeyboard.area` no es
+  confiable en Android para medir su alto real y evitarlo dinámicamente — no se intentó). Fix
+  pragmático: `BuildPinScreen` ancla `PinWrap` arriba-centro (`anchorMin/anchorMax/pivot = (0.5,
+  1)`, antes `(0.5, 0.5)`) con `anchoredPosition = (0, -40)` en vez de depender del centro de la
+  pantalla — el popup queda hacia el tercio superior (glifo + título + host + hint + `LineEdit` +
+  estado + botones, con `ContentSizeFitter` fijando el alto real) y el teclado, que ocupa la mitad
+  inferior, ya no lo tapa. `ConnectScreen`/`ReconnectScreen` no llevan `LineEdit` (sin teclado) y
+  quedaron centrados sin cambios — es un ajuste puntual del wrap de `PinScreen`, no un cambio al
+  contenedor común (`Stretch()` del `_pinScreen` raíz sigue ocupando toda la pantalla).
+- **Toggle del HUD del visor (`set_hud`)** → botón "Ocultar HUD"/"Mostrar HUD" en el header
+  (`TabletController.OnHudTogglePressed`), manda `{"cmd":"set_hud","visible":bool}` (ver
+  `docs/networking.md`) para mostrar/ocultar el HUD de diagnóstico del visor
+  (`Vision/HudController.cs`, sin tocarlo — el visor resuelve la referencia desde `Net/`).
+  Fire-and-forget, como `set_astigmatism`/`load_scenario`: no hay ack ni campo en `vision_state`
+  que confirme el resultado, así que `_hudVisible` es el estado optimista de ESTA tablet nomás.
+  Arranca en `true` ("Ocultar HUD" visible) y se resetea a `true` en `OnSessionConnected` (nueva
+  conexión, inicial o P2.5) para no arrastrar el toggle de una sesión anterior — ver Gotchas
+  abajo para el mismatch conocido si otra tablet ocultó el HUD antes.
 
 ## Gotchas
+- **El botón "Ocultar/Mostrar HUD" no refleja el estado real del HUD, solo el de ESTA tablet en
+  ESTA sesión de red:** `_hudVisible` se resetea a `true` en cada conexión nueva
+  (`OnSessionConnected`) sin preguntarle al visor su estado real (no hay campo `hud_visible` en
+  `vision_state`/`hello`, ver `docs/networking.md` Pendientes). Si una tablet oculta el HUD y se
+  desconecta, la próxima tablet que conecte (o la misma, tras reconectar) va a mostrar "Ocultar
+  HUD" aunque el HUD siga oculto de la vez anterior — hay que tocar el botón para que el estado
+  mostrado y el real vuelvan a coincidir. Aceptado (HUD de diagnóstico, no clínico); la vía natural
+  para cerrarlo es agregar `hud_visible` al `vision_state` (mismo patrón que `blend_active`, P2.1).
 - **El permiso de ubicación se pide UNA sola vez por sesión de la app, no por visita a la
   ConnectScreen:** `RequestLocationPermissionOnce()` usa `_locationPermissionRequested` (campo de
   instancia, se resetea al reiniciar la app) — si el clínico lo niega la primera vez, la tablet NO
@@ -506,6 +551,15 @@ TabletController.Start()
   defaults del catálogo. Ventana corta, pero visible si el visor tarda en confirmar. Nota P2.1: esa
   actualización optimista tampoco toca `blend_active` — queda con el valor previo hasta el
   `vision_state` real (misma ventana corta).
+- **(P6.9) Los sliders de "Ajuste fino" de los 3 focos ya no pueden llegar a "off" (0) una vez
+  movidos** — `foco_cerca_m`/`foco_intermedio_m`/`foco_lejos_m` pasaron a rangos clínicos con
+  `min > 0` (antes `min: 0`, ver `docs/catalogo-lentes.md` "Rangos clínicos de los 3 focos"). Una
+  lente con un foco en 0 (p. ej. `monofocal.foco_cerca_m`) sigue mostrándose como "off" al abrir la
+  card (`ParamRowView.Create` fija `minValue`/`maxValue` ANTES de conectar `onValueChanged`, así que
+  el clamp inicial no manda ningún `override_params`), pero si el clínico arrastra ese slider ya no
+  hay forma de volver a 0 desde la tablet — solo reaplicando la lente o "Restaurar valores". Detalle
+  completo (por qué no manda comandos espurios, qué lentes quedaron con defaults ajustados) en
+  `docs/catalogo-lentes.md`.
 - **Los `Texture2D` del stream se recrean por `LoadImage`** sobre las mismas instancias `_texLeft`/
   `_texRight` (RGB24 2×2 inicial que se redimensiona solo). No cachear referencias a su tamaño.
 - **`auth_fail`/`auth_locked` implican desconexión inminente:** el visor manda el mensaje y CIERRA
@@ -640,8 +694,8 @@ TabletController.Start()
 3. Tocar una lente con "Ambos" seleccionado → chips OD y OI encendidos en la card y editor de
    "Ajuste fino" con las filas de `ParamMeta` en orden clínico; mover un slider debe verse reflejado
    en el stream. "Restaurar valores" vuelve a defaults y manda un solo `override_params`.
-4. Elegir "OD · Derecho", aplicar otra lente → el stream debe partirse en dos panes apilados
-   (`OI ·`/`OD ·`) y cada card mostrar su chip.
+4. Elegir "OD · Derecho", aplicar otra lente → el stream debe partirse en dos panes apilados, **OD
+   arriba / OI abajo** (`OD ·`/`OI ·`) y cada card mostrar su chip.
 5. Togglear tema claro/oscuro (debe repintar todo en caliente y persistir tras reiniciar) y cambiar
    de escenario desde el header.
 6. Probar desconexión manual: botón Desconectar → "Sesión finalizada." (vuelve al `ConnectScreen`
@@ -705,7 +759,8 @@ TabletController.Start()
     botón) → también debe cerrar.
 11b. **Stream a pantalla completa, modo blend:** aplicar lentes distintas por ojo (blend activo,
     el panel normal ya muestra 2 panes) y abrir "Pantalla completa" → debe verse 2 paneles lado a
-    lado (no apilados) con etiquetas "OI — \<lente\>" / "OD — \<lente\>". Con el overlay ABIERTO,
+    lado (no apilados), **OD a la izquierda / OI a la derecha**, con etiquetas "OD — \<lente\>" /
+    "OI — \<lente\>". Con el overlay ABIERTO,
     aplicar una lente distinta a un ojo desde la lista (sin cerrar el overlay) → las etiquetas y
     el contenido del pane correspondiente deben actualizarse solos (reacciona a `vision_state`
     sin necesidad de reabrir el overlay). Aplicar la MISMA lente a ambos ojos con el overlay
@@ -743,6 +798,18 @@ TabletController.Start()
     estabilizarse (antes de esta tarea, el lock era runtime-only y el flash era perceptible en
     algunos devices). Confirmar también que el visor sigue arrancando normal en VR (el
     `screenOrientation` del manifest es inocuo ahí, ver Decisiones "Landscape lock").
+16. **PinScreen no tapado por el teclado (device Android real, el Editor no despliega teclado
+    nativo):** en el `ConnectScreen`, tocar un visor detectado para abrir el `PinScreen` y tocar el
+    `LineEdit` del PIN → el teclado numérico debe desplegarse ocupando la mitad inferior de la
+    pantalla y el popup completo (glifo, título, host, hint, `LineEdit`, estado, botones
+    Cancelar/Conectar) debe quedar visible en el tercio superior, sin que el teclado tape ninguna
+    parte. Escribir el PIN completo y tocar "Conectar" (o Enter) sin tener que cerrar el teclado a
+    mano para ver qué se tipeó.
+17. **Toggle de HUD del visor (2 dispositivos, `set_hud`):** ver el paso 12 de
+    `docs/networking.md` — con la tablet conectada, tocar "Ocultar HUD"/"Mostrar HUD" en el header
+    y confirmar en el visor (HMD o Editor) que el HUD de diagnóstico aparece/desaparece al
+    instante, y que el texto del botón sigue el estado local. Desconectar y reconectar con el HUD
+    oculto → el botón debe resetear a "Ocultar HUD" (aunque el HUD real siga oculto, ver Gotchas).
 
 ## Pendientes / deuda
 - El lockout es global del lado del visor (no por tablet/IP): si otro cliente en la LAN agotó el

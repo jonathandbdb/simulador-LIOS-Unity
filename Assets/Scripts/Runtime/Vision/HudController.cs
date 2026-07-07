@@ -41,7 +41,9 @@ namespace Simulador.Vision
             string r = dm != null ? Safe(dm.Right.LensId) : "?";
             string sc = scenarios != null ? Safe(scenarios.Current) : "?";
             string ha = glare != null ? (glare.halosEnabled ? "ON" : "off") : "?";
-            text.text = $"FPS {_fps:0}\nEscena: {sc}\nOI (A): {l}\nOD (B): {r}\nHalos (X): {ha}\nY: cambiar escena{PairingLine()}";
+            // Convencion clinica: OD primero, OI despues (solo orden de presentacion;
+            // el mapeo de botones no cambia: A cicla ojo izquierdo, B ojo derecho).
+            text.text = $"FPS {_fps:0}\nEscena: {sc}\nOD (B): {r}\nOI (A): {l}\nHalos (X): {ha}\nY: cambiar escena{PairingLine()}";
         }
 
         /// <summary>

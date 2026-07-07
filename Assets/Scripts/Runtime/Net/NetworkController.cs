@@ -18,8 +18,8 @@ namespace Simulador.Net
     /// persistente de un enlace previo, opcion B de emparejamiento -- ver
     /// docs/networking.md) como primer mensaje; recien autenticado recibe el "hello"
     /// (catalogo + estado), puede mandar comandos (apply_lens, override_params,
-    /// set_astigmatism, load_scenario, refresh, unpair) y recibe el vision_state/
-    /// stream. Un PIN correcto emite un token nuevo (persistido en
+    /// set_astigmatism, load_scenario, refresh, unpair, set_hud) y recibe el
+    /// vision_state/stream. Un PIN correcto emite un token nuevo (persistido en
     /// persistentDataPath/paired_tokens.json) que la tablet reusa en reconexiones
     /// futuras sin volver a pedir el PIN; el token NO consume el lockout de PIN si
     /// es invalido (espacio de ~256 bits, un stale token no es fuerza bruta).
@@ -75,6 +75,15 @@ namespace Simulador.Net
         private ScenarioManager _scenarios;
         private GlareController _glare;
         private DataManager _dm;
+
+        // Referencia al HUD del visor (Vision/, frontera: no se edita
+        // HudController.cs desde Net/) para el comando "set_hud" (ver
+        // docs/networking.md). Cacheada la PRIMERA vez que se resuelve (no en
+        // DiscoverSceneRefs: alcanza con resolverla on-demand) con
+        // FindObjectsInactive.Include -- una vez oculta (SetActive(false)) un
+        // FindFirstObjectByType comun (activos solamente) ya no la encontraria para
+        // poder volver a mostrarla.
+        private HudController _hud;
 
         // Descubrimiento acotado de refs que pueden aparecer tras cargar escena
         // (P3.4): antes se hacia FindFirstObjectByType SIN limite en cada Update()
@@ -171,6 +180,14 @@ namespace Simulador.Net
         {
             _server?.Stop();
             _beacon?.Stop();
+        }
+
+        // Ver comentario del campo _hud: resuelta lazy, cacheada, con
+        // FindObjectsInactive.Include para poder re-mostrar el HUD tras ocultarlo.
+        private HudController ResolveHud()
+        {
+            if (_hud == null) _hud = FindFirstObjectByType<HudController>(FindObjectsInactive.Include);
+            return _hud;
         }
 
         // ---------------- Mensajes salientes ----------------
@@ -479,6 +496,16 @@ namespace Simulador.Net
                         _tokenByClientId.Remove(id);
                         Debug.Log($"Net: cliente {id} se desvinculo (token revocado).");
                     }
+                    break;
+                case "set_hud":
+                    // Toggle del HUD de diagnostico (Vision/) desde la tablet, ver
+                    // docs/networking.md. Fire-and-forget como set_astigmatism/
+                    // load_scenario: sin ack ni campo en vision_state que confirme
+                    // el estado real del HUD.
+                    bool setHudVisible = (bool?)cmd["visible"] ?? true;
+                    var targetHud = ResolveHud();
+                    if (targetHud != null) targetHud.gameObject.SetActive(setHudVisible);
+                    else Debug.LogWarning("Net: set_hud recibido pero no se encontro HudController en la escena.");
                     break;
                 default:
                     Debug.LogWarning("Net: comando desconocido: " + type);

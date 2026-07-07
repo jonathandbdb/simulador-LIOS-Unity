@@ -24,7 +24,7 @@ Stack: FastAPI 0.115 + uvicorn (Python 3.12), SQLModel, Postgres 16, MinIO, Cadd
 | `backend/api/app/seed.py` | Seed idempotente en startup: admin user, catálogo desde `/seed/lentes.json`, `Version` dummy, device de test `DEV_TEST_001`. Logging (`logging`, no `print()`). |
 | `backend/api/app/admin/` | Panel admin: `router.py` (login, dashboard, CRUD devices/lenses/versions, logs con filtros/CSV), `auth.py` (JWT en cookie httpOnly), `templating.py` + `i18n.py` (Jinja2, es/en), `storage.py` (boto3 → MinIO), `files.py` (proxy público `/files/<key>`). |
 | `backend/api/app/templates/` | `base/login/dashboard/devices/lenses/versions/logs.html` (Jinja2 + HTMX). |
-| `defaults/lentes.json` | Semilla del catálogo (v`0.5.0-clinical`, 3 lentes: monofocal, panoptix, vivity; 13 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg`). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/MD5 en cada actualización). |
+| `defaults/lentes.json` | Semilla del catálogo (v`0.5.1-clinical`, P6.9: rangos clínicos por foco — `foco_cerca_m` 0.15–1m, `foco_intermedio_m` 1–3m, `foco_lejos_m` 3–9m, antes 0–20 los tres —, 3 lentes: monofocal, panoptix, vivity; 13 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg`). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/MD5 en cada actualización). Detalle clínico de P6.9 (incluida la discrepancia deliberada con el texto descriptivo de panoptix/vivity) en `docs/catalogo-lentes.md`. |
 | `backend/.env.example` | Plantilla de `.env`: DOMAIN/SCHEME/PORT, PUBLIC_BASE_URL, POSTGRES_*, MINIO_*, S3_BUCKET, JWT_SECRET, ADMIN_DEFAULT_*, CORS_ORIGINS, LOG_LEVEL. |
 | `backend/api/requirements-dev.txt` | Deps de test (`pytest`, `httpx`) además de `requirements.txt`. No se instala en la imagen de producción. |
 | `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit), `test_admin_smoke.py` (login admin), `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. |
@@ -59,6 +59,13 @@ La URL que usa Unity está hardcodeada en `Assets/Scripts/Runtime/Data/DataManag
 ### Seed del catálogo
 
 `_seed_lens_catalog` lee `/seed/lentes.json` (volumen desde `defaults/lentes.json`; fallback inline mínimo si no está montado). Lógica de promoción: si el catálogo activo en BD tiene una versión listada en `_KNOWN_SEED_VERSIONS` (`0.0.1-seed`, `0.1.0-fallback`, `0.2.0-noche`, `0.3.0-clinical`, `0.4.0-clinical`, `0.4.0-fallback`, `0.5.0-clinical`) se considera seed no editado y se reemplaza por la versión nueva del JSON; si NO está en esa lista, se asume edición manual del admin y **no se pisa**. El fallback inline (1 lente, sin `straylight` ni `astig_*`) usa su propia versión `0.4.0-fallback` — nunca la versión clínica real (`0.5.0-clinical`) — precisamente para que, si el volumen aparece más tarde con el catálogo completo, la promoción se dispare (versiones distintas) en vez de hacer short-circuit por igualdad de versión con contenido mentido. **Cada versión nueva de `defaults/lentes.json` debe agregarse a `_KNOWN_SEED_VERSIONS`** (`backend/api/app/seed.py`) o no se auto-promueve (verificado en vivo al pasar de `0.4.0-clinical` a `0.5.0-clinical`: `docker compose logs api` mostró el reemplazo del catálogo y `GET /api/lenses` devolvió la versión nueva con `astig_magnitude`/`astig_axis_deg`).
+**(P6.9, pendiente) `defaults/lentes.json` ya se bumpeó a `0.5.1-clinical` (rangos de foco, ver
+tabla arriba) pero `_KNOWN_SEED_VERSIONS` todavía NO incluye esa versión** — la promoción de ESTE
+cambio en un backend que ya corrió (activo `0.5.0-clinical`) funciona igual, porque el chequeo usa
+la versión VIEJA activa (que sí está en la lista); pero un bump FUTURO se va a frenar si
+`0.5.1-clinical` no se agrega al set antes. Falta agregar `"0.5.1-clinical"` a
+`_KNOWN_SEED_VERSIONS` (1 línea en `seed.py`) — fuera del alcance de la tarea que solo tocó datos
+(@unity-dev no edita `backend/api/`).
 
 ## Decisiones y porqués
 
@@ -124,3 +131,6 @@ python -m pytest -v
 - Endpoint `/api/admin/versions` con API key para CI/CD (Sprint 11) — no existe todavía; el `API_KEY_CI` que quedaba sin consumidor se quitó de `config.py`/compose/`.env.example` (si se implementa, agregar el setting de nuevo).
 - UI de cambio de contraseña del admin (hoy solo vía `.env` + reseed).
 - Uploads del panel acumulan el archivo completo en memoria; multipart si los binarios crecen.
+- **(P6.9) Agregar `"0.5.1-clinical"` a `_KNOWN_SEED_VERSIONS` (`backend/api/app/seed.py`)** — 1
+  línea, para que la cadena de auto-promoción del seed no se corte en el próximo bump de
+  `defaults/lentes.json`. Ver §Seed del catálogo arriba.

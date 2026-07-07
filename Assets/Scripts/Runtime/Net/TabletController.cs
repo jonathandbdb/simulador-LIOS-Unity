@@ -64,6 +64,15 @@ namespace Simulador.Tablet
         private Image _statusDot;
         private TMP_Text _statusText;
 
+        // --- Toggle de HUD del visor (comando "set_hud", ver docs/networking.md) ---
+        // Estado puramente local/optimista: no hay campo en vision_state que
+        // confirme el estado real del HUD (fire-and-forget, igual que
+        // set_astigmatism). Arranca en "visible" y se resetea ahi en cada conexion
+        // nueva (ver OnSessionConnected) para no arrastrar el toggle de una sesion
+        // anterior.
+        private TabletButton _hudToggleBtn;
+        private bool _hudVisible = true;
+
         // --- Stream ---
         private RawImage _streamLeft, _streamRight;
         private TMP_Text _leftEyeLabel, _rightEyeLabel;
@@ -182,6 +191,11 @@ namespace Simulador.Tablet
         // ============================================================
         private void OnSessionConnected()
         {
+            // Nueva conexion (inicial o reconexion automatica, P2.5): resetear el
+            // toggle local del HUD a "visible" -- ver comentario del campo
+            // _hudVisible, no hay estado de HUD que sincronizar desde el visor.
+            _hudVisible = true;
+            UpdateHudToggleLabel();
             if (_session.IsReconnecting) SetReconnectStatus("Conectado. Autenticando...");
             else SetConnectStatus("Conectado. Autenticando...");
         }
@@ -492,6 +506,26 @@ namespace Simulador.Tablet
         {
             if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
             _session.SendCommand(new JObject { ["cmd"] = "refresh" });
+        }
+
+        // Boton "Ocultar HUD" / "Mostrar HUD" (header): comando "set_hud" (ver
+        // docs/networking.md), togglea el HUD de diagnostico del visor (FPS/lentes/
+        // halos/PIN). Fire-and-forget como set_astigmatism/load_scenario -- no hay
+        // ack ni campo en vision_state que confirme el estado real del HUD, asi que
+        // _hudVisible es puramente el estado optimista de ESTA tablet (se resetea a
+        // "visible" en cada conexion nueva, ver OnSessionConnected).
+        private void OnHudTogglePressed()
+        {
+            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            _hudVisible = !_hudVisible;
+            UpdateHudToggleLabel();
+            _session.SendCommand(new JObject { ["cmd"] = "set_hud", ["visible"] = _hudVisible });
+        }
+
+        private void UpdateHudToggleLabel()
+        {
+            if (_hudToggleBtn?.Label != null)
+                _hudToggleBtn.Label.text = _hudVisible ? "Ocultar HUD" : "Mostrar HUD";
         }
 
         private void OnReconnectCancelPressed()
@@ -1088,9 +1122,16 @@ namespace Simulador.Tablet
             var wrap = new GameObject("PinWrap", typeof(RectTransform));
             wrap.transform.SetParent(_pinScreen.transform, false);
             var wrt = wrap.GetComponent<RectTransform>();
-            wrt.anchorMin = wrt.anchorMax = new Vector2(0.5f, 0.5f);
-            wrt.pivot = new Vector2(0.5f, 0.5f);
+            // Anclado arriba-centro (NO centrado vertical, a diferencia de
+            // Connect/ReconnectScreen que no llevan teclado): el teclado nativo de
+            // Android cubre la mitad inferior de la pantalla y
+            // TouchScreenKeyboard.area no es confiable para medir su alto real y
+            // evitarlo dinamicamente, asi que el popup se fija en el tercio superior
+            // con un margen fijo -- solucion pragmatica, no una medicion del teclado.
+            wrt.anchorMin = wrt.anchorMax = new Vector2(0.5f, 1f);
+            wrt.pivot = new Vector2(0.5f, 1f);
             wrt.sizeDelta = new Vector2(420, 0);
+            wrt.anchoredPosition = new Vector2(0f, -40f);
             var wvb = wrap.AddComponent<VerticalLayoutGroup>();
             wvb.spacing = 12; wvb.childControlWidth = true; wvb.childControlHeight = true;
             wvb.childForceExpandWidth = true; wvb.childForceExpandHeight = false;
@@ -1187,6 +1228,8 @@ namespace Simulador.Tablet
             _themeToggle.OnClick = () => ApplyTheme(!_isDark);
             var refreshBtn = _kit.Button(header, "Actualizar", BtnStyle.Ghost, false, 44, 14);
             refreshBtn.OnClick = OnRefreshPressed;
+            _hudToggleBtn = _kit.Button(header, "Ocultar HUD", BtnStyle.Ghost, false, 44, 14);
+            _hudToggleBtn.OnClick = OnHudTogglePressed;
             _kit.StatusBadge(header, out _statusDot, out _statusText);
             var disconnect = _kit.Button(header, "Desconectar", BtnStyle.Ghost, false, 44, 14);
             disconnect.OnClick = OnDisconnectPressed;
@@ -1210,18 +1253,23 @@ namespace Simulador.Tablet
             // => imagen mas grande que lado a lado). En no-blend, el panel unico llena todo.
             var eyes = _kit.Box(stream, "EyesContainer", true, 8, null, expandW: true, expandH: true);
 
-            var leftPane = _kit.Box(eyes, "LeftEyePane", true, 6, null, expandW: true, expandH: false);
-            _kit.Size(leftPane, flexW: 1);
-            _leftEyeLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
-            _kit.Size(_leftEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
-            _streamLeft = MakeStreamView(leftPane);
-
+            // Orden clinico OD-primero (convencion OD/OI, ver docs/tablet.md): el pane
+            // derecho se crea ANTES que el izquierdo para quedar arriba en el stack
+            // vertical de "eyes" (EyesContainer). "LeftEyePane" sigue siendo el pane
+            // siempre-activo que ademas cubre la vista compartida "Ambos ojos" en
+            // no-blend -- su posicion ahi es irrelevante porque es el unico hijo activo.
             _rightEyePane = _kit.Box(eyes, "RightEyePane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_rightEyePane.GetComponent<RectTransform>(), flexW: 1);
             _rightEyeLabel = _kit.Label(_rightEyePane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_rightEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
             _streamRight = MakeStreamView(_rightEyePane.transform);
             _rightEyePane.SetActive(false);
+
+            var leftPane = _kit.Box(eyes, "LeftEyePane", true, 6, null, expandW: true, expandH: false);
+            _kit.Size(leftPane, flexW: 1);
+            _leftEyeLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _kit.Size(_leftEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
+            _streamLeft = MakeStreamView(leftPane);
 
             // Boton "Pantalla completa": overlay ignoreLayout anclado a la esquina
             // superior derecha del StreamPanel (no participa del HorizontalLayoutGroup
@@ -1397,13 +1445,11 @@ namespace Simulador.Tablet
             // tratamiento que ya tiene FullscreenBg mas arriba.
             Stretch(row);
 
-            var leftPane = _kit.Box(row, "FsLeftPane", true, 6, null, expandW: true, expandH: false);
-            _kit.Size(leftPane, flexW: 1);
-            _fsLeftLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
-            _kit.Size(_fsLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
-            _fsStreamLeft = MakeStreamView(leftPane);
-            _fsStreamLeft.raycastTarget = false; // deja pasar el tap al fondo (tambien cierra)
-
+            // Orden clinico OD-primero (convencion OD/OI, ver docs/tablet.md): el pane
+            // derecho se crea ANTES que el izquierdo para quedar a la IZQUIERDA de la
+            // pantalla en el FullscreenRow horizontal. "FsLeftPane" sigue siendo el pane
+            // siempre-activo que ademas cubre la vista compartida "Ambos ojos" en
+            // no-blend -- su posicion ahi es irrelevante porque es el unico hijo activo.
             _fsRightPane = _kit.Box(row, "FsRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_fsRightPane.GetComponent<RectTransform>(), flexW: 1);
             _fsRightLabel = _kit.Label(_fsRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
@@ -1411,6 +1457,13 @@ namespace Simulador.Tablet
             _fsStreamRight = MakeStreamView(_fsRightPane.transform);
             _fsStreamRight.raycastTarget = false;
             _fsRightPane.SetActive(false);
+
+            var leftPane = _kit.Box(row, "FsLeftPane", true, 6, null, expandW: true, expandH: false);
+            _kit.Size(leftPane, flexW: 1);
+            _fsLeftLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _kit.Size(_fsLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
+            _fsStreamLeft = MakeStreamView(leftPane);
+            _fsStreamLeft.raycastTarget = false; // deja pasar el tap al fondo (tambien cierra)
 
             var closeBtn = _kit.Button(_fullscreenStream.transform, "Cerrar", BtnStyle.Overlay, false, 40, 14);
             PinTopRight(closeBtn.GetComponent<RectTransform>(), closeBtn.GetComponent<LayoutElement>(), 16, 16);

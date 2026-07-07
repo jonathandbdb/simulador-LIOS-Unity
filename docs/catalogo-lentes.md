@@ -96,9 +96,9 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 
 | Clave | Unidad / rango | Significado |
 |---|---|---|
-| `foco_lejos_m` | m, 0–20 (0 ⇒ foco no usado) | distancia del foco lejano |
-| `foco_intermedio_m` | m, 0–20 | foco intermedio (0.6 panoptix, 0.67 vivity) |
-| `foco_cerca_m` | m, 0–20 | foco cercano (0.4 panoptix) |
+| `foco_lejos_m` | m, 3–9 (0 ⇒ foco no usado, ver P6.9 abajo) | distancia del foco lejano |
+| `foco_intermedio_m` | m, 1–3 (0 ⇒ sin foco intermedio) | foco intermedio (1.0 panoptix/vivity, ver P6.9) |
+| `foco_cerca_m` | m, 0.15–1 (0 ⇒ sin foco cercano) | foco cercano (0.4 panoptix) |
 | `profundidad_foco_m` | m, 0.1–5 | ancho de zona nítida (el shader la mapea ×0.5 a D) |
 | `desenfoque_max` | 0–1 | blur máximo fuera de foco |
 | `halo_intensity` | 0–1 | glow + anillos difractivos |
@@ -115,6 +115,44 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 > que el clínico dializa con sliders. Alimenta el pipeline per-eye ya existente vía `GlareController`
 > (grados→radianes → globals `glare_astig_l/r`, `glare_astig_angle_l/r`). Detalle óptico y
 > precedencia catálogo vs comando live `set_astigmatism` en `docs/vision-optica.md`.
+
+> **Rangos clínicos de los 3 focos (P6.9, v0.5.1):** antes los tres focos compartían el mismo
+> rango ancho `min:0.0, max:20.0` (no discriminaba ventana clínica, dificultaba el ajuste fino
+> desde la tablet — el slider de 20 m de rango apenas resolvía diferencias de centímetros). Ahora
+> cada foco tiene su propia ventana: `foco_cerca_m` **0.15–1.0** m, `foco_intermedio_m`
+> **1.0–3.0** m, `foco_lejos_m` **3.0–9.0** m. **Semántica "0 = foco desactivado" intacta**: el
+> `default` de un foco apagado (p. ej. `foco_intermedio_m`/`foco_cerca_m` en `monofocal`,
+> `foco_cerca_m` en `vivity`) se dejó en **0 aunque quede fuera del nuevo `min`** — no rompe nada
+> porque `LensEngine.BuildEyeState` (`state.Params[kv.Key] = kv.Value.Default`) **nunca clampea el
+> default del catálogo**, solo clampea `savedOverrides`/overrides en vivo vía `ClampToSpec`.
+> Verificado además que `ParamRowView.Create` (tablet) fija `minValue`/`maxValue` del `Slider`
+> ANTES de registrar el listener `onValueChanged.AddListener(...)` — el clamp interno de Unity al
+> asignar `minValue`/`maxValue` (que puede disparar `Set()` con `sendCallback:true` si el valor
+> previo del slider queda fuera del rango nuevo) ocurre sin listener conectado todavía, y el valor
+> inicial se fija después con `SetValueWithoutNotify`: abrir "Ajuste fino" en una lente con un foco
+> en 0 **nunca manda un `override_params` espurio** que lo active. Efecto secundario cosmético
+> aceptado: el handle del slider se dibuja en el extremo izquierdo (posición del `min`, p. ej.
+> 0.15) mientras el label sigue mostrando "off" (`ParamMeta.FormatValue` formatea el valor crudo,
+> no el clampeado del widget) — no hay ambigüedad real porque el texto es la fuente de verdad.
+> **Gotcha nuevo, irreversible desde la tablet:** con `min > 0`, una vez que el clínico mueve el
+> slider de un foco que estaba en "off", **ya no hay forma de volver a 0 desde la tablet** (el
+> slider no baja de su `min`). Para volver a "off" hay que reaplicar la lente (`apply_lens`,
+> restaura los defaults del catálogo) o el botón "Restaurar valores" de la card.
+> **Defaults activos que quedaron por debajo del nuevo `min` se llevaron al borde más cercano**
+> (no son "off", son valores clínicos reales que el nuevo rango dejó afuera):
+> `panoptix.foco_intermedio_m` 0.6→**1.0** y `vivity.foco_intermedio_m` 0.67→**1.0**. Discrepancia
+> deliberada, no un bug: las descripciones de esas lentes (`descripcion` en `lentes.json`) siguen
+> mencionando "intermedio 60cm" (panoptix) y "~67 cm" (vivity) — el texto NO se tocó en esta tarea
+> (fuera de alcance de un cambio de rangos) y ahora no coincide con el `default` numérico real.
+> Iteración experimental explícita del usuario ("luego veremos si con estas modificaciones logro
+> regular cada foco") — revisar en una tarea futura si conviene bajar `foco_intermedio_m.min` a
+> ~0.5 para no perder esos valores reales, o actualizar el texto descriptivo.
+> **Versión bumpeada `0.5.0-clinical` → `0.5.1-clinical`** en AMBOS archivos
+> (`Assets/StreamingAssets/lentes.json` y `defaults/lentes.json` — este último vive en la RAÍZ del
+> repo, no en `backend/defaults/`, ver `docs/backend.md`), mismo mecanismo que cada cambio clínico
+> anterior: solo un bump de versión dispara la re-promoción del seed en un backend que ya corrió
+> (ver `docs/backend.md` §Seed del catálogo) — cambiar solo los valores sin tocar la versión habría
+> dejado un backend ya seedeado silenciosamente con los rangos viejos.
 
 ### Orden de carga (`InitializeAsync`)
 
@@ -238,10 +276,21 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 
 ## Pendientes / deuda
 
-- Contrato compartido: los nuevos params `astig_magnitude`/`astig_axis_deg` (v0.5.0) están en
-  `Assets/StreamingAssets/lentes.json` pero **aún no en `backend/defaults/lentes.json`**; el merge
-  con defaults embebidos (`MergeMissingParams`) los rellena si el backend sirve un catálogo viejo,
-  pero conviene sincronizar el backend en una tarea futura (@backend-dev).
+- ~~Contrato compartido: `astig_magnitude`/`astig_axis_deg` aún no en `defaults/lentes.json`~~ —
+  **resuelto**: ambos archivos ya traen esos 2 params (verificado al tocar P6.9). `MergeMissingParams`
+  sigue siendo la red de seguridad si algún catálogo viejo (cache/backend sin migrar) no los trae.
+- **(P6.9) `_KNOWN_SEED_VERSIONS` (`backend/api/app/seed.py`) sigue listando hasta `0.5.0-clinical`,
+  no `0.5.1-clinical`** — la re-promoción de ESTE cambio (rangos de foco) funciona igual en un
+  backend que ya corrió, porque el chequeo mira la versión VIEJA activa en BD (`0.5.0-clinical`,
+  que sí está en la lista) para decidir si puede pisarla. Pero si se agrega `0.5.1-clinical` al
+  set, cualquier bump FUTURO (`0.5.2-...`) va a chequear que `0.5.1-clinical` esté en la lista para
+  auto-promoverse — si no se agrega ahora, ese futuro bump se va a frenar creyendo que el admin
+  editó el catálogo a mano. Pendiente para @backend-dev: agregar `"0.5.1-clinical"` al set (1 línea,
+  fuera del alcance de @unity-dev/`Simulador.Runtime`).
+- **(P6.9) Descripción clínica de panoptix/vivity desactualizada tras clamear sus defaults de
+  `foco_intermedio_m`** (0.6→1.0 y 0.67→1.0, ver nota arriba): el texto sigue diciendo "60cm"/"~67
+  cm". Evaluar si conviene bajar `foco_intermedio_m.min` en una iteración futura (el usuario ya
+  anticipó que esto es experimental) o actualizar el texto para que coincida con el nuevo default.
 - **(P6.5) `DataManager` en sí sigue sin tests unitarios** (ver "Límite de cobertura" en
   Decisiones): la cadena defaults→cache→backend, el debounce de guardado y los eventos solo se
   validan por play mode. Aceptado como límite deliberado, no como deuda a resolver — solo

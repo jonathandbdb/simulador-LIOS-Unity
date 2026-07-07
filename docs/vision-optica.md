@@ -268,11 +268,16 @@ Render por frame (URP RenderGraph):
 - `Assets/Scripts/Runtime/Vision/SimuladorInput.cs` — mandos Quest (acciones creadas en código):
   A = cicla lente ojo izquierdo, B = ojo derecho, X = toggle halos, Y = cambia de escenario.
 - `Assets/Scripts/Runtime/Vision/HudController.cs` — HUD world-space anclado a la cámara: FPS,
-  escenario, lente por ojo, estado de halos (UI legacy, sin TMP). Última línea de emparejamiento:
+  escenario, lente por ojo (**convención clínica: `OD (B)` primero, `OI (A)` después** — solo orden
+  de presentación; el mapeo de botones no cambia: A cicla OI, B cicla OD), estado de halos (UI
+  legacy, sin TMP). Última línea de emparejamiento:
   sin tablet autenticada muestra `PIN tablet: NNNNNN` (de `NetworkController.Instance.PairingPin`)
   para que el clínico lo tipee en la tablet; con al menos una autenticada
   (`NetworkController.AuthenticatedClientCount > 0`) pasa a `Tablet conectada` y deja de exponer el
   PIN. Sin `NetworkController.Instance` (escenas/momentos sin red) no dibuja la línea.
+  Mostrar/ocultar el HUD completo desde la tablet (comando `set_hud`, ver `docs/networking.md`) se
+  resuelve desde `Net/NetworkController` con `gameObject.SetActive` sobre este componente —
+  `HudController.cs` en sí no cambió, no sabe que existe ese comando.
 - `Assets/Scripts/Runtime/Vision/GlareTestRig.cs` — rig de verificación: baja la luz y spawnea 3
   lámparas emisivas con billboards de glare al frente, a altura de ojos.
 
