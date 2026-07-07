@@ -30,6 +30,10 @@ namespace Simulador.Vision
                  "tarda un tiempo variable en volver a entrar al tramo, creando huecos en el flujo " +
                  "(no estan los 'count' autos visibles a la vez).")]
         public float wrapGapMax = 35f;
+        [Tooltip("Separacion minima (m) entre autos del MISMO carril: piso del gap al reaparecer " +
+                 "en el wrap y umbral del clamp de velocidad de seguimiento (un auto no alcanza al " +
+                 "de adelante por debajo de esta distancia). ~1.1 s a la velocidad base de 16 m/s.")]
+        public float minGap = 18f;
         [Range(0f, 0.5f)]
         [Tooltip("Variacion +/- de velocidad por auto (fraccion; 0.15 = +/-15%) para romper la " +
                  "periodicidad del flujo.")]
@@ -108,14 +112,22 @@ namespace Simulador.Vision
             {
                 var c = _cars[i];
                 var p = c.localPosition;
-                p.z += _dirs[i] * _speeds[i] * dt;
-                // Wrap con gap aleatorio EXTRA fuera del tramo: el que se aleja reaparece detras
-                // (mas alla de endZ) y el que viene reaparece adelante (mas alla de startZ), a una
-                // distancia random -> el auto tarda un tiempo variable en re-entrar al tramo,
-                // dejando huecos en el flujo (cadencia no periodica, no siempre 'count' visibles).
+                int dir = _dirs[i];
+                // Clamp de seguimiento: si el auto de adelante del MISMO carril esta a menos de
+                // minGap, igualamos la velocidad a la suya (tope suave, sin fisica y sin re-sortear
+                // _speeds[i]) para que no lo siga alcanzando; al reabrirse el hueco recupera su
+                // velocidad propia. Evita que el rapido pegue al lento a lo largo del tramo.
+                float effSpeed = _speeds[i];
+                int lead = NearestAhead(i);
+                if (lead >= 0) effSpeed = Mathf.Min(effSpeed, _speeds[lead]);
+                p.z += dir * effSpeed * dt;
+                // Wrap con gap aleatorio EXTRA fuera del tramo (ver WrapZ): el que se aleja reaparece
+                // detras (mas alla de endZ) y el que viene adelante (mas alla de startZ), a distancia
+                // random en [minGap, wrapGapMax] respetando minGap respecto del companero de carril
+                // -> huecos en el flujo (cadencia no periodica) y sin reaparecer pegados.
                 bool wrapped = false;
-                if (_dirs[i] > 0 && p.z > startZ) { p.z = endZ - Random.Range(0f, wrapGapMax); wrapped = true; }
-                else if (_dirs[i] < 0 && p.z < endZ) { p.z = startZ + Random.Range(0f, wrapGapMax); wrapped = true; }
+                if (dir > 0 && p.z > startZ) { p.z = WrapZ(i, dir); wrapped = true; }
+                else if (dir < 0 && p.z < endZ) { p.z = WrapZ(i, dir); wrapped = true; }
                 c.localPosition = p;
 
                 if (wrapped)
@@ -140,6 +152,48 @@ namespace Simulador.Vision
             int idx;
             do { idx = Random.Range(0, BodyColors.Length); } while (idx == exclude);
             return idx;
+        }
+
+        // Indice del auto mas cercano ADELANTE (en el sentido de marcha) del MISMO carril si esta
+        // a menos de minGap; -1 si ninguno esta tan cerca. "Mismo carril" = misma paridad de indice
+        // (par = derecho, impar = izquierdo, igual que el spawn); iteramos por paridad para NO
+        // hardcodear 2 autos/carril (funciona con cualquier 'count').
+        private int NearestAhead(int i)
+        {
+            int dir = _dirs[i];
+            float zi = _cars[i].localPosition.z;
+            int best = -1;
+            float bestGap = minGap;
+            for (int j = i % 2; j < _cars.Count; j += 2)
+            {
+                if (j == i) continue;
+                float ahead = dir * (_cars[j].localPosition.z - zi); // >0 => j va adelante de i
+                if (ahead > 0f && ahead < bestGap) { bestGap = ahead; best = j; }
+            }
+            return best;
+        }
+
+        // Posicion z al reaparecer tras salir del tramo, garantizando una separacion >= minGap
+        // respecto del companero de carril que quede cerca del borde de reaparicion. El auto
+        // reaparece MAS ALLA del borde (dir>0: detras de endZ; dir<0: adelante de startZ) a una
+        // distancia random en [minGap, wrapGapMax]. Si el companero mas rezagado del carril ya
+        // esta fuera del tramo (cerca del punto de reaparicion), medimos desde EL (lo empujamos
+        // detras); si esta lejos dentro del tramo, el gap desde el borde ya alcanza.
+        private float WrapZ(int i, int dir)
+        {
+            // Protege el caso degenerado wrapGapMax <= minGap: el rango no puede invertirse.
+            float gap = Random.Range(minGap, Mathf.Max(minGap, wrapGapMax));
+            if (dir > 0)
+            {
+                float refZ = endZ; // borde de entrada del carril que se aleja
+                for (int j = i % 2; j < _cars.Count; j += 2)
+                    if (j != i) refZ = Mathf.Min(refZ, _cars[j].localPosition.z); // companero mas rezagado
+                return refZ - gap;
+            }
+            float refZs = startZ; // borde de entrada del carril que viene de frente
+            for (int j = i % 2; j < _cars.Count; j += 2)
+                if (j != i) refZs = Mathf.Max(refZs, _cars[j].localPosition.z);
+            return refZs + gap;
         }
 
         // Tinta solo el/los slot(s) cuyo material se llama "Body" (carroceria), dejando

@@ -131,7 +131,21 @@ Render por frame (URP RenderGraph):
   (el que se aleja detrás de `endZ`, el que viene delante de `startZ`) a distancia random → tarda
   un tiempo variable en re-entrar, dejando huecos (no siempre están los `count` autos visibles);
   (c) **jitter de velocidad por auto** (`speedJitter=0.15` → ±15% de `speed`, guardado en
-  `_speeds`) que rompe la periodicidad del paso. **Re-tinte en el wrap:** el pool de GameObjects
+  `_speeds`) que rompe la periodicidad del paso. **Invariante de espaciado mínimo por carril
+  (`minGap=18 m`, ~1.1 s a 16 m/s):** evita que dos autos del MISMO carril viajen/reaparezcan
+  pegados (el jitter de velocidad hacía que el rápido alcanzara al lento a lo largo del tramo de
+  84 m; el wrap con `Random.Range(0, wrapGapMax)` podía re-inyectar dos autos casi juntos). Dos
+  mecanismos, ambos con el "compañero de carril" resuelto por **paridad de índice** (`for j = i%2;
+  j += 2`) — no se hardcodea "2 autos/carril", funciona con cualquier `count`: **(1)** en el wrap
+  (`WrapZ`) el gap es `Random.Range(minGap, max(minGap, wrapGapMax))` medido desde el compañero
+  de carril MÁS REZAGADO si éste quedó fuera del tramo cerca del punto de reaparición (`min z` para
+  el que se aleja, `max z` para el que viene) — empuja la reaparición detrás de él; si el compañero
+  está lejos dentro del tramo, el borde (`endZ`/`startZ`) alcanza. Protege el caso degenerado
+  `wrapGapMax <= minGap` con `Mathf.Max`. **(2)** en `Update` (`NearestAhead`) un **clamp de
+  seguimiento**: si el auto de adelante del mismo carril está a menos de `minGap`, la velocidad se
+  topa a la suya ese frame (`effSpeed = min(propia, del líder)`, tope suave sin física) para que no
+  lo siga alcanzando; NO se re-sortea `_speeds[i]` (recupera su velocidad propia sola al reabrirse
+  el hueco). **Re-tinte en el wrap:** el pool de GameObjects
   se recicla (no se destruye/instancia — minimal footprint), así que en cada wrap se re-randomiza
   el color de carrocería (`ApplyBodyColor` + `PickColor`, evitando repetir el color inmediato
   anterior del mismo auto vía `_colorIdx`) y se re-sortea la velocidad → cada reentrada parece un
