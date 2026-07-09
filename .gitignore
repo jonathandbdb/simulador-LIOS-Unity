@@ -124,3 +124,9 @@ backend/.env
 
 # Artefactos de scripts/ci-local.sh (logs, XML de tests, venv temporal)
 /ci-artifacts/
+
+# Python (backend) — bytecode y caches de pytest/venv
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/api/.venv/
