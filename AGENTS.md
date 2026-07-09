@@ -121,6 +121,7 @@ Resumen (el detalle y el porqué viven en la skill `il2cpp-networking-gotchas`):
 | Catálogo / motor de lentes | `Assets/Scripts/Runtime/Data/`, `StreamingAssets/lentes.json` | `docs/catalogo-lentes.md` |
 | Builds y deploy | `Assets/Scripts/Editor/TabletBuild.cs`, adb, docker | `docs/builds-deploy.md` |
 | Backend | `backend/` | `docs/backend.md` |
+| Updates | `Assets/Scripts/Runtime/Update/` | `docs/updates.md` |
 
 **Regla (loop anti-drift)**: la doc viva se **lee ANTES de grepear el código** (es el resumen
 curado) y se **actualiza EN SITIO en la misma tarea** si el cambio altera arquitectura,

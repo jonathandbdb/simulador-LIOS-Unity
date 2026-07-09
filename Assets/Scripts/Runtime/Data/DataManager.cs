@@ -35,6 +35,11 @@ namespace Simulador.Data
 
         public static DataManager Instance { get; private set; }
 
+        /// <summary>URL de backend ya resuelta por capas (ver LoadBackendConfig). Consumida por UpdateManager.</summary>
+        public string BackendUrl => backendUrl;
+        /// <summary>True cuando LoadBackendConfig() termino (incluye el caso "ninguna capa aplico, se uso el default").</summary>
+        public bool BackendConfigReady { get; private set; }
+
         // ---------------- Eventos (equivalen a las signals de Godot) ----------------
         /// <summary>(version, source, lensCount). source: "cache" | "defaults" | "backend".</summary>
         public event Action<string, string, int> CatalogLoaded;
@@ -132,6 +137,11 @@ namespace Simulador.Data
                 Debug.LogWarning("DataManager: config.json (StreamingAssets) invalido, usando backendUrl default.");
             if (!string.IsNullOrWhiteSpace(overrideText) && DataManagerLogic.ExtractBackendUrl(overrideText) == null)
                 Debug.LogWarning($"DataManager: override invalido en {OverrideConfigPath}, ignorando.");
+
+            // "Config resuelta" cubre TODOS los caminos (incluido el default serializado
+            // cuando ninguna capa aplico) -- UpdateManager espera este flag para leer
+            // BackendUrl ya resuelta, no solo el camino feliz.
+            BackendConfigReady = true;
         }
 
         // ---------------- Carga local ----------------
