@@ -129,25 +129,42 @@ def _load_default_catalog() -> dict:
     }
 
 
+# Version dummy del seed. DELIBERADAMENTE igual al bundleVersion actual de
+# Unity (visor y tablet) para que el dummy jamas dispare el cartel de
+# actualizacion (min_apk_version == apk_version instalado real). Si el
+# bundleVersion base de Unity cambia, actualizar esta constante a mano.
+_DUMMY_APK_VERSION = "0.1.0"
+
+
 def _seed_version(session: Session) -> None:
-    existing = session.exec(select(Version).where(Version.is_active == True)).first()  # noqa: E712
-    if existing:
-        return
-    version = Version(
-        apk_version="0.1.0",
-        min_apk_version="0.1.0",
-        asset_version="0.1.0",
-        apk_url=f"{settings.public_base_url}/dummy/simulador-0.1.0.apk",
-        pck_url=f"{settings.public_base_url}/dummy/assets-0.1.0.pck",
-        pck_sha256="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",  # SHA256 de archivo vacio
-        changelog="Sprint 3: backend minimo desplegado. Sin APK/PCK reales.",
-        is_active=True,
-    )
-    session.add(version)
-    logger.info(
-        "[seed] version activa creada: APK v%s / assets v%s",
-        version.apk_version, version.asset_version,
-    )
+    """Crea una version dummy POR APP (visor, tablet) si ese canal no tiene activa.
+
+    Una version activa es por canal desde que se partio `Version.app` (antes
+    era global, herencia del prototipo Godot con PCK). En un backend que ya
+    corrio antes de esta migracion, la fila vieja (unica) quedo con
+    `app='visor'` (server_default de la migracion 0002) — por eso este seed
+    normalmente solo agrega la version dummy que falta, la de "tablet".
+    """
+    for app_name in ("visor", "tablet"):
+        existing = session.exec(
+            select(Version).where(Version.is_active == True, Version.app == app_name)  # noqa: E712
+        ).first()
+        if existing:
+            continue
+        version = Version(
+            app=app_name,
+            apk_version=_DUMMY_APK_VERSION,
+            min_apk_version=_DUMMY_APK_VERSION,
+            apk_url=f"{settings.public_base_url}/dummy/simulador-{app_name}-{_DUMMY_APK_VERSION}.apk",
+            apk_sha256="",  # dummy: sin APK real todavia
+            changelog=f"Version dummy del seed para el canal '{app_name}'. Sin APK real.",
+            is_active=True,
+        )
+        session.add(version)
+        logger.info(
+            "[seed] version dummy creada: app=%s APK v%s",
+            version.app, version.apk_version,
+        )
 
 
 def _seed_test_device(session: Session) -> None:

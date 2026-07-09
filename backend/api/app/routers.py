@@ -10,7 +10,7 @@ Sprint 8 agregara /api/admin/* con JWT + CRUD completo.
 """
 import json
 from datetime import date
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -33,12 +33,11 @@ SessionDep = Annotated[Session, Depends(get_session)]
 # Schemas Pydantic (separadas de los modelos SQLModel para no exponer la BD)
 # ---------------------------------------------------------------------------
 class ManifestResponse(BaseModel):
+    app: str
+    apk_version: str
     min_apk_version: str
-    current_apk_version: str
-    current_asset_version: str
     apk_url: str
-    pck_url: str
-    pck_sha256: str
+    apk_sha256: str
     changelog: str
 
 
@@ -80,19 +79,27 @@ class LogRequest(BaseModel):
 # GET /api/manifest.json
 # ---------------------------------------------------------------------------
 @router.get("/manifest.json", response_model=ManifestResponse)
-def get_manifest(session: SessionDep) -> ManifestResponse:
+def get_manifest(session: SessionDep, app: Literal["visor", "tablet"] = "visor") -> ManifestResponse:
+    """Manifest de actualizacion, UNA version activa POR APP (`app` query param).
+
+    Sin `?app=` devuelve el canal "visor" (compat con el unico consumidor
+    previsto hoy). Un valor fuera de {"visor","tablet"} devuelve 422
+    automatico (FastAPI valida el `Literal`).
+    """
     version = session.exec(
-        select(Version).where(Version.is_active == True)  # noqa: E712
+        select(Version).where(Version.is_active == True, Version.app == app)  # noqa: E712
     ).first()
     if version is None:
-        raise HTTPException(status_code=503, detail="No hay version activa publicada.")
+        raise HTTPException(
+            status_code=503,
+            detail=f"No hay version activa publicada para el canal '{app}'.",
+        )
     return ManifestResponse(
+        app=version.app,
+        apk_version=version.apk_version,
         min_apk_version=version.min_apk_version,
-        current_apk_version=version.apk_version,
-        current_asset_version=version.asset_version,
         apk_url=version.apk_url,
-        pck_url=version.pck_url,
-        pck_sha256=version.pck_sha256,
+        apk_sha256=version.apk_sha256,
         changelog=version.changelog,
     )
 

@@ -108,7 +108,12 @@ def dashboard(request: Request, admin: AdminDep, session: SessionDep):
         select(func.count()).select_from(Device).where(Device.status == "active")
     ).one()
     logs_total = session.exec(select(func.count()).select_from(UpdateLog)).one()
-    active_version = session.exec(select(Version).where(Version.is_active == True)).first()  # noqa: E712
+    active_version_visor = session.exec(
+        select(Version).where(Version.is_active == True, Version.app == "visor")  # noqa: E712
+    ).first()
+    active_version_tablet = session.exec(
+        select(Version).where(Version.is_active == True, Version.app == "tablet")  # noqa: E712
+    ).first()
     active_catalog = session.exec(select(LensCatalog).where(LensCatalog.is_active == True)).first()  # noqa: E712
     recent_logs = session.exec(
         select(UpdateLog).order_by(desc(UpdateLog.created_at)).limit(20)
@@ -124,7 +129,8 @@ def dashboard(request: Request, admin: AdminDep, session: SessionDep):
         devices_total=devices_total,
         devices_active=devices_active,
         logs_total=logs_total,
-        active_version=active_version,
+        active_version_visor=active_version_visor,
+        active_version_tablet=active_version_tablet,
         active_catalog=active_catalog,
         recent_logs=recent_logs,
         insecure_pass=insecure_pass,
@@ -305,34 +311,40 @@ def versions_list(request: Request, admin: AdminDep, session: SessionDep):
     return render(request, "versions.html", admin_user=admin, versions=versions)
 
 
+_VALID_APPS = {"visor", "tablet"}
+
+
 @router.post("/versions")
 async def versions_create(
     admin: AdminDep, session: SessionDep,
+    app: Annotated[str, Form()],
     apk_version: Annotated[str, Form()],
-    asset_version: Annotated[str, Form()],
     min_apk_version: Annotated[str, Form()],
     apk_file: Annotated[UploadFile, File()],
-    pck_file: Annotated[UploadFile, File()],
     changelog: Annotated[str, Form()] = "",
 ):
+    app = app.strip().lower()
+    if app not in _VALID_APPS:
+        return _flash_redirect("/admin/versions", f"Invalid app channel: {app}", "error")
+
     try:
-        apk_key = f"apk/simulador-{apk_version}.apk"
-        pck_key = f"pck/assets-{asset_version}.pck"
-        apk_url, _apk_sha = upload_file_streaming(apk_file.file, apk_key, "application/vnd.android.package-archive")
-        pck_url, pck_sha = upload_file_streaming(pck_file.file, pck_key, "application/octet-stream")
+        apk_key = f"apk/{app}/simulador-{app}-{apk_version}.apk"
+        apk_url, apk_sha = upload_file_streaming(apk_file.file, apk_key, "application/vnd.android.package-archive")
     except Exception as e:
         return _flash_redirect("/admin/versions", f"Upload error: {e}", "error")
 
-    for prev in session.exec(select(Version).where(Version.is_active == True)).all():  # noqa: E712
+    # Desactivar solo las versiones previas del MISMO canal (una activa por app).
+    for prev in session.exec(
+        select(Version).where(Version.is_active == True, Version.app == app)  # noqa: E712
+    ).all():
         prev.is_active = False
         session.add(prev)
     v = Version(
+        app=app,
         apk_version=apk_version.strip(),
         min_apk_version=min_apk_version.strip(),
-        asset_version=asset_version.strip(),
         apk_url=apk_url,
-        pck_url=pck_url,
-        pck_sha256=pck_sha,
+        apk_sha256=apk_sha,
         changelog=changelog.strip(),
         is_active=True,
     )
@@ -346,7 +358,10 @@ def versions_activate(admin: AdminDep, session: SessionDep, version_pk: int):
     target = session.get(Version, version_pk)
     if target is None:
         raise HTTPException(404)
-    for prev in session.exec(select(Version).where(Version.is_active == True)).all():  # noqa: E712
+    # Desactivar solo las previas del MISMO canal que la version a activar.
+    for prev in session.exec(
+        select(Version).where(Version.is_active == True, Version.app == target.app)  # noqa: E712
+    ).all():
         prev.is_active = False
         session.add(prev)
     target.is_active = True
@@ -359,11 +374,10 @@ def versions_activate(admin: AdminDep, session: SessionDep, version_pk: int):
 def versions_delete(admin: AdminDep, session: SessionDep, version_pk: int):
     v = session.get(Version, version_pk)
     if v is not None:
-        # Borramos objetos del bucket (best-effort).
-        for url in (v.apk_url, v.pck_url):
-            key = url.split("/files/", 1)[-1] if "/files/" in url else None
-            if key:
-                delete_object(key)
+        # Borramos el objeto del bucket (best-effort). Sin PCK: solo APK.
+        key = v.apk_url.split("/files/", 1)[-1] if "/files/" in v.apk_url else None
+        if key:
+            delete_object(key)
         session.delete(v)
         session.commit()
     return _flash_redirect("/admin/versions", "OK")

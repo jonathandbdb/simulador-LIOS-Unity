@@ -27,20 +27,28 @@ class Device(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
-# Versiones (APK + assets PCK)
+# Versiones (APK por app — una version activa por canal)
 # ---------------------------------------------------------------------------
 class Version(SQLModel, table=True):
+    """Una fila = un release de APK para un canal (`app`).
+
+    Herencia del prototipo Godot: originalmente habia una sola version activa
+    global con APK+PCK (Godot empaqueta assets en un `.pck` separado). Unity
+    no tiene equivalente a PCK (todo va en el APK/AAB), y el simulador ahora
+    son DOS apps Android independientes (visor Quest y tablet), cada una con
+    su propio ciclo de release. Por eso `app` particiona la version activa
+    por canal en vez de haber una sola global.
+    """
     __tablename__ = "versions"
 
     id: Optional[int] = Field(default=None, primary_key=True)
+    app: str = Field(default="visor", index=True, description='Canal: "visor" | "tablet"')
     apk_version: str = Field(description='Version del APK, ej. "1.0.5"')
     min_apk_version: str = Field(description="Version minima requerida para correr esta release")
-    asset_version: str = Field(description='Version del paquete de assets, ej. "2.1.0"')
     apk_url: str = Field(description="URL publica del APK en el bucket")
-    pck_url: str = Field(description="URL publica del PCK en el bucket")
-    pck_sha256: str = Field(description="SHA256 hex del PCK para verificacion de integridad")
+    apk_sha256: str = Field(description="SHA256 hex del APK para verificacion de integridad")
     changelog: str = Field(default="", description="Notas de release")
-    is_active: bool = Field(default=False, description="Solo una version puede estar activa")
+    is_active: bool = Field(default=False, description="Una version activa por app (no global)")
     created_at: datetime = Field(default_factory=utcnow)
 
 

@@ -20,9 +20,15 @@
     <div class="sub">{{ devices_active }} {{ t('dash.devices_active')|lower }}</div>
   </div>
   <div class="card stat">
-    <div class="label">{{ t('dash.active_version') }}</div>
+    <div class="label">{{ t('dash.active_version_visor') }}</div>
     <div class="value" style="font-size: 19px;">
-      {% if active_version %}APK {{ active_version.apk_version }}<br/><span class="hint">PCK {{ active_version.asset_version }}</span>{% else %}{{ t('dash.no_active') }}{% endif %}
+      {% if active_version_visor %}APK {{ active_version_visor.apk_version }}{% else %}{{ t('dash.no_active') }}{% endif %}
+    </div>
+  </div>
+  <div class="card stat">
+    <div class="label">{{ t('dash.active_version_tablet') }}</div>
+    <div class="value" style="font-size: 19px;">
+      {% if active_version_tablet %}APK {{ active_version_tablet.apk_version }}{% else %}{{ t('dash.no_active') }}{% endif %}
     </div>
   </div>
   <div class="card stat">

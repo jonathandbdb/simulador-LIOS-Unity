@@ -8,12 +8,15 @@
   <p class="hint mb-4">{{ t('ver.upload_hint') }}</p>
   <form method="post" action="/admin/versions" enctype="multipart/form-data" class="grid cols-3" style="gap: 12px;">
     <label class="field">
-      <span>{{ t('ver.apk_version') }}</span>
-      <input class="input" name="apk_version" placeholder="1.0.5" required />
+      <span>{{ t('ver.app') }}</span>
+      <select class="input" name="app" required>
+        <option value="visor">{{ t('ver.app_visor') }}</option>
+        <option value="tablet">{{ t('ver.app_tablet') }}</option>
+      </select>
     </label>
     <label class="field">
-      <span>{{ t('ver.asset_version') }}</span>
-      <input class="input" name="asset_version" placeholder="2.1.0" required />
+      <span>{{ t('ver.apk_version') }}</span>
+      <input class="input" name="apk_version" placeholder="1.0.5" required />
     </label>
     <label class="field">
       <span>{{ t('ver.min_apk') }}</span>
@@ -27,10 +30,6 @@
       <span>{{ t('ver.apk_file') }}</span>
       <input class="input" name="apk_file" type="file" accept=".apk" required />
     </label>
-    <label class="field">
-      <span>{{ t('ver.pck_file') }}</span>
-      <input class="input" name="pck_file" type="file" accept=".pck" required />
-    </label>
     <div class="row items-end">
       <button class="btn btn-primary w-full" type="submit">{{ t('ver.upload') }}</button>
     </div>
@@ -41,8 +40,8 @@
   <table>
     <thead>
       <tr>
+        <th>{{ t('ver.app') }}</th>
         <th>{{ t('ver.apk_version') }}</th>
-        <th>{{ t('ver.asset_version') }}</th>
         <th>{{ t('ver.min_apk') }}</th>
         <th>SHA256</th>
         <th>{{ t('ver.changelog') }}</th>
@@ -53,10 +52,10 @@
     <tbody>
       {% for v in versions %}
       <tr>
+        <td>{{ t('ver.app_visor') if v.app == 'visor' else t('ver.app_tablet') if v.app == 'tablet' else v.app }}</td>
         <td>{{ v.apk_version }}</td>
-        <td>{{ v.asset_version }}</td>
         <td>{{ v.min_apk_version }}</td>
-        <td class="mono xs muted">{{ v.pck_sha256[:12] }}…</td>
+        <td class="mono xs muted">{{ v.apk_sha256[:12] }}…</td>
         <td class="muted xs truncate">{{ v.changelog }}</td>
         <td>{% if v.is_active %}<span class="badge badge-ok">{{ t('lens.active') }}</span>{% endif %}</td>
         <td class="right nowrap">

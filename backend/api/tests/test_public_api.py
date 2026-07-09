@@ -2,11 +2,32 @@
 
 
 def test_manifest_ok(client):
+    """Sin ?app devuelve el canal 'visor' con el shape nuevo (sin PCK)."""
     r = client.get("/api/manifest.json")
     assert r.status_code == 200
     body = r.json()
-    assert body["current_apk_version"] == "0.1.0"
+    assert body["app"] == "visor"
+    assert body["apk_version"] == "0.1.0"
+    assert body["min_apk_version"] == "0.1.0"
     assert body["apk_url"]
+    assert "apk_sha256" in body
+    assert "changelog" in body
+    assert "pck_url" not in body
+    assert "pck_sha256" not in body
+    assert "current_apk_version" not in body
+
+
+def test_manifest_tablet_channel(client):
+    r = client.get("/api/manifest.json", params={"app": "tablet"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["app"] == "tablet"
+    assert body["apk_version"]
+
+
+def test_manifest_invalid_app_is_422(client):
+    r = client.get("/api/manifest.json", params={"app": "phone"})
+    assert r.status_code == 422
 
 
 def test_lenses_ok(client):
