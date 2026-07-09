@@ -10,7 +10,7 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
 
 | Archivo | Rol |
 |---|---|
-| `Assets/Scripts/Runtime/Net/NetworkController.cs` | Orquestador del lado visor. Se auto-crea vía `[RuntimeInitializeOnLoadMethod]` (salvo que la escena tenga un `TabletController`: ahí la app es cliente y NO levanta server). Genera el `PairingPin` (6 dígitos) de la sesión, arranca `WebSocketServer` (:9090), `DiscoveryBeacon` (:9091) y `StreamingCapture`; valida el emparejamiento por PIN (capa de protocolo) y traduce comandos JSON a llamadas sobre `DataManager`, `GlareController` y `ScenarioManager`. |
+| `Assets/Scripts/Runtime/Net/NetworkController.cs` | Orquestador del lado visor. Se auto-crea vía `[RuntimeInitializeOnLoadMethod]` (salvo que la escena tenga un `TabletController`: ahí la app es cliente y NO levanta server). Genera el `PairingPin` (6 dígitos) de la sesión, arranca `WebSocketServer` (:9090), `DiscoveryBeacon` (:9091) y `StreamingCapture`; valida el emparejamiento por PIN (capa de protocolo) y traduce comandos JSON a llamadas sobre `DataManager`, `GlareController`, `ScenarioManager` y (`set_hud`) el `HudController` de `Vision/` (referencia resuelta y cacheada on-demand con `FindObjectsInactive.Include`, sin editar `HudController.cs` — frontera con `Vision/`). |
 | `Assets/Scripts/Runtime/Net/WebSocketServer.cs` | Servidor WebSocket RFC 6455 hecho a mano sobre `TcpListener`/`NetworkStream`. Handshake HTTP, framing, ping→pong, broadcast texto/binario. Guarda el flag `Authenticated` por cliente (lo fija `NetworkController` tras validar el PIN) y filtra los broadcasts por ese flag. |
 | `Assets/Scripts/Runtime/Net/WebSocketClient.cs` | Cliente WebSocket espejo (lado tablet). Handshake cliente, lectura de frames texto/binario, envío de texto **enmascarado** (obligatorio cliente→servidor por RFC 6455). |
 | `Assets/Scripts/Runtime/Net/StreamingCapture.cs` | Captura la vista del paciente (cámara propia que sigue la XR camera) y la broadcastea como JPG con header de 1 byte por ojo. |
@@ -214,6 +214,15 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   `_tokenByClientId[id]`, poblado al autenticar sea por PIN o por token) de
   `paired_tokens.json`. Sin respuesta del visor: la tablet ya cierra la conexión y borra su
   token local por su cuenta apenas lo manda (ver Decisiones y porqués, `TabletSession.Unpair`).
+- `{"cmd":"set_hud","visible":bool}` → togglea el HUD de diagnóstico del visor (FPS/lentes/halos/
+  PIN, `Vision/HudController.cs`) desde la tablet. `NetworkController.ResolveHud()` resuelve y
+  cachea la referencia con `FindFirstObjectByType<HudController>(FindObjectsInactive.Include)` (el
+  `Include` es necesario para poder volver a encontrarlo — y por lo tanto re-mostrarlo — después de
+  un `SetActive(false)`) y llama `hud.gameObject.SetActive(visible)` directo, sin tocar
+  `HudController.cs` (frontera con `Vision/`). **Sin ack ni campo en `vision_state`**: es
+  fire-and-forget, igual que `set_astigmatism`/`load_scenario` — el visor no confirma el estado
+  resultante, así que la tablet no tiene forma de consultar si el HUD está realmente visible u
+  oculto en este momento (ver Gotchas en `docs/tablet.md`).
 - Cualquier otro `cmd` loguea warning; texto no-JSON se descarta con warning.
 
 **Stream binario:** `[1 byte header B/L/R][JPG]`, 768×576, 20 Hz, calidad JPG 85
@@ -439,6 +448,16 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
     backend, refrescar sin reconectar"): con un segundo cliente WS (`websocat`, mismo PIN) aplicar
     una lente distinta; confirmar que "Actualizar" en la tablet trae el `vision_state` resultante
     aunque la tablet no hubiera recibido ese `vision_state` por el broadcast normal.
+12. **`set_hud` (toggle de HUD, 2 dispositivos):** con la tablet conectada, tocar "Ocultar HUD" en
+    el header → en el visor (HMD o Editor con la vista Game) el HUD de diagnóstico debe
+    desaparecer al instante; el botón de la tablet debe pasar a decir "Mostrar HUD". Tocarlo de
+    nuevo → el HUD debe reaparecer (con sus valores actualizados, no un frame congelado) y el botón
+    vuelve a "Ocultar HUD". Confirmar en consola del visor que NO aparece `comando desconocido`
+    (llegó `{"cmd":"set_hud"}`) y que, si el HUD no existe en la escena, se loguea el warning
+    `Net: set_hud recibido pero no se encontro HudController en la escena.` en vez de una excepción.
+    Con el HUD oculto, desconectar la tablet (botón Desconectar) y volver a conectar (mismo PIN o
+    token) → el botón debe volver a mostrar "Ocultar HUD" (reset local, ver `docs/tablet.md`)
+    aunque el HUD del visor siga oculto hasta el próximo toggle — mismatch conocido, ver Pendientes.
 
 ## Pendientes / deuda
 - Sin `MulticastLock` Android en `DiscoveryListener` (documentado como "si hiciera falta se agrega").
@@ -448,6 +467,14 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
 - **HUD del visor todavía no muestra `PairingPin`/`AuthenticatedClientCount`** — ambos expuestos
   como propiedad pública en `NetworkController`, falta que `Vision/` los pinte (fuera de alcance
   de esta tarea).
+- **`set_hud` no tiene estado sincronizado ni persistente** — es fire-and-forget (sin ack, sin
+  campo en `vision_state`): el visor no informa si el HUD terminó visible u oculto, y el botón de
+  la tablet (`_hudVisible`, ver `docs/tablet.md`) es puramente optimista, reseteado a "visible" en
+  cada conexión nueva (`OnSessionConnected`). Si una tablet oculta el HUD y se desconecta, y otra
+  tablet (o la misma, tras reconectar) se conecta después, el botón nuevo arranca en "Ocultar HUD"
+  aunque el HUD real siga oculto de la vez anterior — mismatch aceptado (HUD de diagnóstico, no un
+  control clínico crítico); si hiciera falta cerrarlo, la vía natural es agregar `hud_visible` al
+  `vision_state`/`hello` (mismo patrón que `blend_active`, P2.1).
 - **Lockout global (no por IP)** — un atacante en la LAN puede agotar el tope a propósito y
   bloquear también al clínico legítimo por hasta 60 s (ver Gotchas y Modelo de amenaza). Aceptado
   para el modelo de amenaza actual (LAN de consultorio, un solo visor); si hiciera falta acotarlo
