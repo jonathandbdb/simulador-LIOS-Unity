@@ -64,5 +64,60 @@ namespace Simulador.Data
                 return false;
             }
         }
+
+        // ---------------- Config del backend por capas ----------------
+        private class BackendConfig { public string backend_url; }
+
+        /// <summary>
+        /// Extrae "backend_url" de un JSON de config (StreamingAssets/config.json o el
+        /// override de persistentDataPath, mismo schema para ambos). Devuelve null si
+        /// json es vacio/null, si no parsea, o si "backend_url" esta ausente/vacio --
+        /// nunca tira excepcion. El llamador usa null para decidir "esta capa no aplica".
+        /// </summary>
+        public static string ExtractBackendUrl(string json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return null;
+            try
+            {
+                var cfg = JsonConvert.DeserializeObject<BackendConfig>(json);
+                return cfg != null && !string.IsNullOrWhiteSpace(cfg.backend_url) ? cfg.backend_url.Trim() : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Resuelve la URL efectiva del backend con precedencia
+        /// override (persistentDataPath) &gt; streaming (StreamingAssets, empaquetado en
+        /// el build) &gt; defaultUrl (el [SerializeField] legacy, fallback de ultima
+        /// instancia). Cada capa es opcional: streamingJson/overrideJson nulos, vacios o
+        /// invalidos simplemente no participan y se sigue con la siguiente en la
+        /// precedencia. "source" indica cual capa gano ("default" | "streaming" |
+        /// "override") para que el llamador loguee sin duplicar el parseo. Nunca tira
+        /// excepcion.
+        /// </summary>
+        public static string ResolveBackendUrl(string defaultUrl, string streamingJson, string overrideJson, out string source)
+        {
+            string resolved = defaultUrl ?? string.Empty;
+            source = "default";
+
+            string streamingUrl = ExtractBackendUrl(streamingJson);
+            if (streamingUrl != null)
+            {
+                resolved = streamingUrl;
+                source = "streaming";
+            }
+
+            string overrideUrl = ExtractBackendUrl(overrideJson);
+            if (overrideUrl != null)
+            {
+                resolved = overrideUrl;
+                source = "override";
+            }
+
+            return resolved;
+        }
     }
 }

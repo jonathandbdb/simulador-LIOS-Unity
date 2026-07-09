@@ -90,5 +90,69 @@ namespace Simulador.Tests
             Assert.AreEqual(0.7f, roundTripped["panoptix"]["halo_intensity"], 1e-4f);
             Assert.AreEqual(0.55f, roundTripped["vivity"]["foco_intermedio_m"], 1e-4f);
         }
+
+        // ---------------- ResolveBackendUrl (config por capas: override > streaming > default) ----------------
+
+        [Test]
+        public void ResolveBackendUrl_SoloStreaming_GanaStreaming()
+        {
+            string url = DataManagerLogic.ResolveBackendUrl(
+                "https://vr.conecta.sh",
+                @"{""backend_url"":""http://192.168.1.10:8080""}",
+                null,
+                out string source);
+
+            Assert.AreEqual("http://192.168.1.10:8080", url);
+            Assert.AreEqual("streaming", source);
+        }
+
+        [Test]
+        public void ResolveBackendUrl_StreamingYOverride_GanaOverride()
+        {
+            string url = DataManagerLogic.ResolveBackendUrl(
+                "https://vr.conecta.sh",
+                @"{""backend_url"":""http://192.168.1.10:8080""}",
+                @"{""backend_url"":""http://10.0.0.5:9000""}",
+                out string source);
+
+            Assert.AreEqual("http://10.0.0.5:9000", url);
+            Assert.AreEqual("override", source);
+        }
+
+        [Test]
+        public void ResolveBackendUrl_OverrideCorrupto_IgnoraYSigueConStreaming()
+        {
+            string url = DataManagerLogic.ResolveBackendUrl(
+                "https://vr.conecta.sh",
+                @"{""backend_url"":""http://192.168.1.10:8080""}",
+                "no soy json",
+                out string source);
+
+            Assert.AreEqual("http://192.168.1.10:8080", url);
+            Assert.AreEqual("streaming", source);
+        }
+
+        [Test]
+        public void ResolveBackendUrl_AmbosVacios_UsaDefault()
+        {
+            string url = DataManagerLogic.ResolveBackendUrl(
+                "https://vr.conecta.sh",
+                null,
+                "",
+                out string source);
+
+            Assert.AreEqual("https://vr.conecta.sh", url);
+            Assert.AreEqual("default", source);
+        }
+
+        [Test]
+        public void ExtractBackendUrl_JsonInvalidoOSinClave_DevuelveNull()
+        {
+            Assert.IsNull(DataManagerLogic.ExtractBackendUrl(null));
+            Assert.IsNull(DataManagerLogic.ExtractBackendUrl(""));
+            Assert.IsNull(DataManagerLogic.ExtractBackendUrl("no soy json"));
+            Assert.IsNull(DataManagerLogic.ExtractBackendUrl(@"{""otra_clave"":""x""}"));
+            Assert.IsNull(DataManagerLogic.ExtractBackendUrl(@"{""backend_url"":""   ""}"));
+        }
     }
 }

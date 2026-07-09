@@ -12,8 +12,11 @@ limpieza de overrides) está separada en clases PURAS testeables en EditMode. Es
 ## Arquitectura actual
 
 ```
-StreamingAssets/config.json ─┐ (opcional: backend_url) ─┐
-StreamingAssets/lentes.json ─┤ (defaults embebidos, base del merge)  │
+StreamingAssets/config.json ─┐ (default de produccion: backend_url)   │
+persistentDataPath/config.json ─┤ (override opcional, dev, vía adb) ──┤ ResolveBackendUrl
+[SerializeField] backendUrl ─┘ (fallback de ultima instancia)  ───────┘ (override > streaming > default)
+        │
+StreamingAssets/lentes.json ─┐ (defaults embebidos, base del merge)  │
 persistentDataPath/lentes.json ─┤ cache (última copia buena del backend) │
 GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄────────┘
         │
@@ -31,17 +34,23 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
 - `Assets/Scripts/Runtime/Data/DataManager.cs` — MonoBehaviour singleton. Se auto-crea antes de
   cargar la escena (`[RuntimeInitializeOnLoadMethod(BeforeSceneLoad)]`). Orquesta carga, sync,
   aplicación de lentes (`ApplyLens(lensId, eye)` con eye `"left" | "right" | "both"`), overrides
-  en vivo (`OverrideParams`) y su persistencia con debounce. Config backend (P2.4): el
-  `[SerializeField] backendUrl = "http://192.168.88.198:8080"` es el default legacy (en la
-  práctica inconfigurable en el Inspector: `DataManager` se crea por código, no hay instancia en
-  la escena) — `LoadBackendConfig()` intenta sobreescribirlo con
-  `Assets/StreamingAssets/config.json` opcional (`{"backend_url": "..."}`) ANTES del sync;
-  archivo ausente o inválido → se mantiene el default. Endpoint `/api/lenses`, timeout 5 s.
-- `Assets/StreamingAssets/config.json` — config opcional del visor (P2.4). Único campo soportado:
-  `backend_url`. Se lee con el MISMO mecanismo (`LoadStreamingText` / `UnityWebRequest`) con que
-  ya se lee `lentes.json` de `StreamingAssets` en Android (`jar://`). El archivo del repo trae la
-  IP LAN de desarrollo actual (`http://192.168.88.198:8080`) — cambiarlo ahí para apuntar a otro
-  backend sin recompilar.
+  en vivo (`OverrideParams`) y su persistencia con debounce. **Config backend por capas** (P2.4 +
+  config-layers): el `[SerializeField] backendUrl = "https://vr.conecta.sh"` es el fallback de
+  **última instancia** (en la práctica inconfigurable en el Inspector: `DataManager` se crea por
+  código, no hay instancia en la escena). `LoadBackendConfig()` resuelve la URL efectiva con
+  precedencia **override (`persistentDataPath/config.json`) > streaming
+  (`StreamingAssets/config.json`) > default serializado**, vía la función pura
+  `DataManagerLogic.ResolveBackendUrl(defaultUrl, streamingJson, overrideJson, out source)`; corre
+  ANTES del sync para que ya use la URL ganadora. Endpoint `/api/lenses`, timeout 5 s.
+- `Assets/StreamingAssets/config.json` — default de **producción** empaquetado en el build. Único
+  campo soportado: `backend_url` (hoy `https://vr.conecta.sh`). Se lee con el MISMO mecanismo
+  (`LoadStreamingText` / `UnityWebRequest`) con que ya se lee `lentes.json` de `StreamingAssets` en
+  Android (`jar://`).
+- `Application.persistentDataPath/config.json` — override **opcional de desarrollo**, incluso schema
+  (`{"backend_url": "..."}`), leído con `File.Exists`/`File.ReadAllText` + try/catch (mismo patrón
+  que `TryLoadFromCache`). Se sube por `adb` **sin recompilar** el APK — ver gotcha más abajo. Pisa
+  al default de `StreamingAssets` si existe y parsea; ausente o inválido → se ignora esa capa y se
+  sigue con la siguiente en la precedencia (streaming, y si tampoco, el fallback serializado).
 - `Assets/Scripts/Runtime/Data/CatalogModel.cs` — POCOs Newtonsoft: `ParamSpec {default,min,max}`,
   `LensDef {id,nombre,descripcion,params}` (params como `Dictionary<string,ParamSpec>` para
   tolerar claves nuevas del backend sin recompilar), `LensCatalog {version,catalogo}` (sin
@@ -59,19 +68,24 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
   y son distintas; solo informativo) y `CleanOverrides(saved, new, catalogParams, epsilon=0.0005)`
   (si un valor vuelve al default dentro de epsilon el override se ELIMINA; ignora la clave
   `lens_id`).
-- `Assets/Scripts/Runtime/Data/DataManagerLogic.cs` (P6.5) — lógica pura extraída de
+- `Assets/Scripts/Runtime/Data/DataManagerLogic.cs` (P6.5 + config-layers) — lógica pura extraída de
   `DataManager` para poder testearla sin corrutinas/IO: `BuildSyncUrl(backendUrl, endpoint)`
-  (concatena normalizando la barra, evita `"//"` si `backendUrl` trae trailing slash) y
+  (concatena normalizando la barra, evita `"//"` si `backendUrl` trae trailing slash),
   `SerializeLensOverrides`/`TryParseLensOverrides` (round-trip de `lens_overrides.json`; el parseo
-  nunca tira excepción, devuelve `false` ante JSON inválido/vacío/nulo). `DataManager` llama a
-  estas mismas funciones — no hay una reimplementación paralela para los tests.
+  nunca tira excepción, devuelve `false` ante JSON inválido/vacío/nulo), `ExtractBackendUrl(json)`
+  (extrae `backend_url` de un JSON de config; null si vacío/inválido/sin la clave, nunca tira) y
+  `ResolveBackendUrl(defaultUrl, streamingJson, overrideJson, out source)` (precedencia
+  override > streaming > default; `source` ∈ `"default"|"streaming"|"override"`, para que
+  `DataManager` loguee sin duplicar el parseo). `DataManager` llama a estas mismas funciones — no
+  hay una reimplementación paralela para los tests.
 - `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.5.0-clinical`,
   3 lentes: `monofocal`, `panoptix`, `vivity`).
 - `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de `CatalogParser`/`LensEngine`
   + un test de integración sobre el JSON real.
-- `Assets/Tests/EditMode/DataManagerLogicTests.cs` (P6.5, nuevo) — tests de `DataManagerLogic`
-  (URL de sync + round-trip de overrides). Ver "Límite de cobertura" más abajo para lo que
-  queda deliberadamente FUERA de esta suite.
+- `Assets/Tests/EditMode/DataManagerLogicTests.cs` (P6.5 + config-layers) — tests de
+  `DataManagerLogic` (URL de sync + round-trip de overrides + `ExtractBackendUrl`/
+  `ResolveBackendUrl`). Ver "Límite de cobertura" más abajo para lo que queda deliberadamente
+  FUERA de esta suite.
 
 ### Schema del JSON (contrato con el backend)
 
@@ -159,10 +173,15 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 1. `LoadLensOverrides()` desde `persistentDataPath/lens_overrides.json` (corrupto ⇒ se ignora).
 2. Defaults embebidos: `StreamingAssets/lentes.json` por UnityWebRequest (en Android vive dentro
    del APK, `jar://`; en desktop se antepone `file://`). Se parsean y guardan para el merge.
-3. **(P2.4)** `LoadBackendConfig()`: intenta `StreamingAssets/config.json` con el mismo mecanismo;
-   si existe y trae `backend_url` no vacío, sobreescribe `backendUrl` (log `DataManager: backendUrl
-   desde config.json -> ...`). Archivo ausente/inválido ⇒ se mantiene el default serializado, sin
-   loguear error (solo un warning si el archivo existe pero no parsea).
+3. **(P2.4 + config-layers)** `LoadBackendConfig()`: lee `StreamingAssets/config.json` (mismo
+   mecanismo que `lentes.json`) y, si existe, `persistentDataPath/config.json` (`File.Exists` +
+   `File.ReadAllText` + try/catch). Resuelve la URL efectiva con
+   `DataManagerLogic.ResolveBackendUrl(backendUrl, streamingText, overrideText, out source)`
+   (precedencia override > streaming > default) y la asigna a `backendUrl`. Log según quién ganó:
+   `DataManager: backendUrl desde override (...) -> ...` o `... desde config.json -> ...`; si
+   `source == "default"` no se loguea nada (mismo comportamiento silencioso que antes cuando
+   ninguna capa aplica). Cualquier capa presente pero inválida ⇒ warning propio y se ignora esa
+   capa (se sigue con la siguiente en la precedencia).
 4. Cache: `persistentDataPath/lentes.json` si existe y parsea → `MergeMissingParams` con defaults
    → `CatalogLoaded(version, "cache", count)`. Si no, defaults → `CatalogLoaded(..., "defaults", ...)`.
 5. Sync en background (no bloquea el arranque): `GET {backendUrl}/api/lenses` (con el `backendUrl`
@@ -221,15 +240,32 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 - **`LensEngine`, `CatalogParser` y `DataManagerLogic` son lógica pura testeable: tocarlas ⇒
   extender `Assets/Tests/EditMode/DataLogicTests.cs` (los dos primeros) o
   `DataManagerLogicTests.cs` (el tercero)** en el mismo cambio.
-- **`backendUrl` es configurable vía `StreamingAssets/config.json`, default legacy la IP LAN**
-  (`http://192.168.88.198:8080`, P2.4): cambiar de backend ya no exige recompilar, solo editar
-  ese JSON (o generar builds con configs distintas). Sigue siendo HTTP cleartext: en Android puede
-  lanzar excepción síncrona al iniciar el request (está atrapada y degrada a `CatalogSyncFailed`),
-  y requiere permitir cleartext o cambiar a HTTPS para producción — eso no cambió.
-- **`config.json` se lee ANTES de la cache/defaults pero el log de la URL efectiva puede
-  confundirse con la del sync**: si el archivo existe, el log `backendUrl desde config.json -> ...`
-  sale primero; el log de sync (`sync con backend -> {url}/api/lenses`) sale después y ya usa esa
-  URL — son dos logs distintos, no una contradicción.
+- **`backendUrl` se resuelve por capas (config-layers): override (`persistentDataPath/config.json`)
+  > streaming (`StreamingAssets/config.json`, default de producción `https://vr.conecta.sh`) >
+  `[SerializeField]` (mismo valor, fallback de última instancia).** Cambiar de backend en producción
+  no exige recompilar: alcanza con reemplazar `StreamingAssets/config.json` (nuevo build) o subir un
+  override por `adb` (sin build nuevo). **Cómo subir el override (modo desarrollo)**: el visor
+  (Quest) buildea con `applicationIdentifier` `com.simulador.vr` (`ProjectSettings.asset`;
+  `com.simulador.tablet` es el de la tablet, ver `Assets/Scripts/Editor/TabletBuild.cs` — el
+  override de backend solo tiene sentido en el visor, la tablet no habla con el backend). En
+  Android, `Application.persistentDataPath` resuelve al external files dir de la app
+  (`getExternalFilesDir`), es decir:
+  ```
+  adb push config.json /sdcard/Android/data/com.simulador.vr/files/config.json
+  ```
+  Si el push falla por permisos (Android 11+ restringe `Android/data/` a otras apps, aunque `adb`
+  como shell suele poder escribir ahí): probar `adb shell run-as com.simulador.vr` para confirmar el
+  path exacto, o usar `adb push` seguido de `adb shell am force-stop com.simulador.vr` + reabrir la
+  app para que `DataManager` relea en el próximo `Awake`. El archivo NO se borra solo — para volver
+  a producción hay que `adb shell rm` el override o reinstalar (limpia `persistentDataPath`).
+  Si el `backend_url` resuelto sigue siendo HTTP (LAN de desarrollo, no el HTTPS de producción):
+  Android puede lanzar excepción síncrona al iniciar el request (atrapada, degrada a
+  `CatalogSyncFailed`) y requiere permitir cleartext para esa URL — el HTTPS de producción
+  (`vr.conecta.sh`) no tiene ese problema.
+- **`config.json` (ambas capas) se lee ANTES de la cache/defaults pero el log de la URL efectiva
+  puede confundirse con la del sync**: si alguna capa gana, el log `backendUrl desde override
+  (...) -> ...` o `... desde config.json -> ...` sale primero; el log de sync (`sync con backend ->
+  {url}/api/lenses`) sale después y ya usa esa URL — son logs distintos, no una contradicción.
 - **`min`/`max` de `ParamSpec` SI se aplican en runtime** (defensa en profundidad aunque el canal
   tiene auth por PIN, P1.1: un cliente ya autenticado igual podria inyectar `override_params`
   fuera de rango — bug, version distinta, etc.). El clamp
@@ -249,30 +285,41 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 
 ## Cómo probar
 
-1. Editor: Window → General → Test Runner → EditMode → correr `Simulador.Tests.EditMode`
-   (**19 tests, todos verdes**): `DataLogicTests` (13 — parseo válido/inválido, merge sin pisar
-   existentes, defaults + overrides con clamp, blend, limpieza de overrides e integración contra
-   el JSON real `0.5.0-clinical`/13 params por lente) + `DataManagerLogicTests` (6, P6.5 — armado
-   de URL de sync con/sin trailing slash, round-trip de `lens_overrides.json` con JSON válido e
-   inválido). Sin ventana de Test Runner: `Simulador → Run EditMode Tests`
-   (`Assets/Scripts/Editor/EditModeTestRunner.cs`) loguea el resumen `passed/failed/skipped` + el
-   detalle de cada falla a la consola — útil para verificar desde MCP (`unity_execute_menu_item` +
-   `unity_console_log`) sin abrir la ventana.
+1. Editor: Window → General → Test Runner → EditMode → correr `Simulador.Tests.EditMode`:
+   `DataLogicTests` (13 — parseo válido/inválido, merge sin pisar existentes, defaults + overrides
+   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.5.0-clinical`/13
+   params por lente) + `DataManagerLogicTests` (**11**, P6.5 + config-layers — armado de URL de
+   sync con/sin trailing slash, round-trip de `lens_overrides.json` con JSON válido e inválido,
+   `ExtractBackendUrl` con JSON inválido/sin la clave, y `ResolveBackendUrl` con los 4 casos de
+   precedencia: solo streaming, streaming+override, override corrupto, ambos vacíos) = **24 tests
+   de este documento, todos verdes** (la suite completa de `Simulador.Tests.EditMode` puede reportar
+   más si corre junto a `PairingStoreTests`, de networking, fuera de este documento). Sin ventana de
+   Test Runner: `Simulador → Run EditMode Tests` (`Assets/Scripts/Editor/EditModeTestRunner.cs`)
+   loguea el resumen `passed/failed/skipped` + el detalle de cada falla a la consola — útil para
+   verificar desde MCP (`unity_execute_menu_item` + `unity_console_log`) sin abrir la ventana.
 2. Play mode: en consola debe aparecer `DataManager: catalogo vX cargado desde defaults|cache (3
-   lentes)` y luego `sync con backend -> http://192.168.88.198:8080/api/lenses` (con el backend
-   apagado, el fallo de sync es esperado y no bloquea).
-3. Backend local: levantar `backend/docker-compose.yml`, editar `Assets/StreamingAssets/config.json`
-   con la IP de ese backend (o apuntar `backendUrl` directo si se prefiere sin el config) y
-   verificar en consola `DataManager: backendUrl desde config.json -> ...` seguido de
-   `catalogo vX sincronizado desde backend` + que se escribió `persistentDataPath/lentes.json`.
+   lentes)` y luego `sync con backend -> https://vr.conecta.sh/api/lenses` (si el backend de
+   producción no responde desde el entorno de desarrollo, el fallo de sync es esperado y no
+   bloquea).
+3. Backend local: levantar `backend/docker-compose.yml` y apuntar a él SIN tocar el
+   `StreamingAssets/config.json` de producción: escribir un override en
+   `persistentDataPath/config.json` con la IP/puerto de ese backend (en Editor, `persistentDataPath`
+   es una carpeta de `%APPDATA%`/`~/Library`; ver `Application.persistentDataPath` en consola o
+   `Debug.Log` temporal) y verificar en consola `DataManager: backendUrl desde override (...) -> ...`
+   seguido de `catalogo vX sincronizado desde backend` + que se escribió
+   `persistentDataPath/lentes.json`.
 4. Overrides: llamar `DataManager.Instance.OverrideParams(...)` (o mover sliders desde la tablet),
    esperar 1 s y verificar `lens_overrides.json` en `persistentDataPath`; volver el valor al
    default y comprobar que la clave desaparece del archivo.
-5. **`config.json` (P2.4):** con el archivo presente (default del repo:
-   `http://192.168.88.198:8080`), Play mode debe loguear `DataManager: backendUrl desde
-   config.json -> http://192.168.88.198:8080` antes del log de sync. Borrar/renombrar el archivo
-   temporalmente y volver a Play → no debe aparecer ese log ni ningún error, y el sync debe seguir
-   usando el default serializado (mismo comportamiento que antes de esta tarea).
+5. **`config.json` por capas (P2.4 + config-layers):** con SOLO `StreamingAssets/config.json`
+   presente (default del repo: `https://vr.conecta.sh`), Play mode debe loguear `DataManager:
+   backendUrl desde config.json -> https://vr.conecta.sh` antes del log de sync. Agregando además
+   un override en `persistentDataPath/config.json` con otra URL, el log pasa a `DataManager:
+   backendUrl desde override (...) -> <la del override>` y el sync usa esa URL. Borrando ambos
+   archivos → no debe aparecer ningún log de `backendUrl desde ...` ni ningún error, y el sync debe
+   usar el default serializado (`https://vr.conecta.sh`). En Quest: subir/quitar el override con
+   `adb push`/`adb shell rm` (ver gotcha de `adb push` arriba) y reabrir la app para ver el cambio
+   sin rebuildear.
 
 ## Pendientes / deuda
 

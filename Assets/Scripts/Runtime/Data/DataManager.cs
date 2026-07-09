@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
-using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -18,14 +17,15 @@ namespace Simulador.Data
     /// </summary>
     public class DataManager : MonoBehaviour
     {
-        // --- Config backend (LAN de desarrollo). Cambiar segun la red del backend. ---
-        // El backend hoy no esta levantado: el sync fallara y se usa el catalogo local.
-        // P2.4: este [SerializeField] es en la practica inconfigurable (DataManager se
-        // crea por codigo via Bootstrap, no hay instancia en la escena para editar en
-        // el Inspector) -> default legacy. Configurable de verdad via
-        // StreamingAssets/config.json opcional (ver LoadBackendConfig); si no existe o
-        // no parsea, se mantiene este valor.
-        [SerializeField] private string backendUrl = "http://192.168.88.198:8080";
+        // --- Config backend por capas (ver LoadBackendConfig y docs/catalogo-lentes.md). ---
+        // P2.4/config-layers: este [SerializeField] es en la practica inconfigurable
+        // (DataManager se crea por codigo via Bootstrap, no hay instancia en la escena
+        // para editar en el Inspector) -> es solo el fallback de ULTIMA instancia si ni
+        // StreamingAssets/config.json ni el override de persistentDataPath existen o
+        // parsean. Hoy apunta a produccion (https://vr.conecta.sh); la precedencia real
+        // es override (persistentDataPath, adb, sin recompilar) > StreamingAssets
+        // (empaquetado en el build) > este default.
+        [SerializeField] private string backendUrl = "https://vr.conecta.sh";
         private const string CatalogEndpoint = "/api/lenses";
         private const int SyncTimeoutSeconds = 5;
 
@@ -73,6 +73,10 @@ namespace Simulador.Data
             if (Instance != null && Instance != this) { Destroy(gameObject); return; }
             Instance = this;
             DontDestroyOnLoad(gameObject);
+            // Sin esto, un fallo de sync (backend inalcanzable, JSON invalido, etc.) queda
+            // silencioso en consola: hoy nadie mas esta suscripto a CatalogSyncFailed
+            // (gap detectado en validacion real, ver docs/catalogo-lentes.md).
+            CatalogSyncFailed += msg => Debug.LogWarning($"DataManager: {msg}");
             StartCoroutine(InitializeAsync());
         }
 
@@ -95,30 +99,39 @@ namespace Simulador.Data
         }
 
         // ---------------- Config (backendUrl) ----------------
-        // Unico campo soportado hoy: {"backend_url": "http://..."}. Mismo mecanismo
-        // (LoadStreamingText / UnityWebRequest) con que ya se lee lentes.json de
-        // StreamingAssets en Android (jar://); archivo ausente o invalido -> se
-        // mantiene backendUrl (el default serializado).
-        private class BackendConfig { public string backend_url; }
+        // Unico campo soportado hoy: {"backend_url": "http://..."}. Dos capas opcionales
+        // (precedencia resuelta por DataManagerLogic.ResolveBackendUrl, logica pura):
+        //   1) StreamingAssets/config.json -- empaquetado en el build, mismo mecanismo
+        //      (LoadStreamingText / UnityWebRequest) con que ya se lee lentes.json en
+        //      Android (jar://).
+        //   2) persistentDataPath/config.json -- override de desarrollo, se sube por adb
+        //      SIN recompilar (mismo patron File.Exists/ReadAllText/try-catch que
+        //      TryLoadFromCache); pisa a la capa 1 si existe y parsea.
+        // Ninguna de las dos presente/valida -> se mantiene el default serializado.
+        private string OverrideConfigPath => Path.Combine(Application.persistentDataPath, ConfigFileName);
 
         private IEnumerator LoadBackendConfig()
         {
-            string text = null;
-            yield return LoadStreamingText(ConfigFileName, t => text = t);
-            if (string.IsNullOrEmpty(text)) yield break; // archivo ausente: default legacy
-            try
+            string streamingText = null;
+            yield return LoadStreamingText(ConfigFileName, t => streamingText = t);
+
+            string overrideText = null;
+            if (File.Exists(OverrideConfigPath))
             {
-                var cfg = JsonConvert.DeserializeObject<BackendConfig>(text);
-                if (cfg != null && !string.IsNullOrWhiteSpace(cfg.backend_url))
-                {
-                    backendUrl = cfg.backend_url.Trim();
-                    Debug.Log($"DataManager: backendUrl desde config.json -> {backendUrl}");
-                }
+                try { overrideText = File.ReadAllText(OverrideConfigPath); }
+                catch (Exception) { Debug.LogWarning($"DataManager: no se pudo leer {OverrideConfigPath}."); }
             }
-            catch (Exception)
-            {
-                Debug.LogWarning("DataManager: config.json invalido, usando backendUrl default.");
-            }
+
+            backendUrl = DataManagerLogic.ResolveBackendUrl(backendUrl, streamingText, overrideText, out string source);
+            if (source == "override")
+                Debug.Log($"DataManager: backendUrl desde override ({OverrideConfigPath}) -> {backendUrl}");
+            else if (source == "streaming")
+                Debug.Log($"DataManager: backendUrl desde config.json -> {backendUrl}");
+
+            if (!string.IsNullOrWhiteSpace(streamingText) && DataManagerLogic.ExtractBackendUrl(streamingText) == null)
+                Debug.LogWarning("DataManager: config.json (StreamingAssets) invalido, usando backendUrl default.");
+            if (!string.IsNullOrWhiteSpace(overrideText) && DataManagerLogic.ExtractBackendUrl(overrideText) == null)
+                Debug.LogWarning($"DataManager: override invalido en {OverrideConfigPath}, ignorando.");
         }
 
         // ---------------- Carga local ----------------
