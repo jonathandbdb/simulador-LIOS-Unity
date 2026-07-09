@@ -130,3 +130,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 backend/api/.venv/
+
+# Keystore de firma del proyecto (irreemplazable, JAMÁS committear — repo público)
+/keystore/

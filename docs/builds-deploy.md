@@ -13,7 +13,8 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 | `Assets/XR/Loaders/OpenXRLoader.asset` | El loader OpenXR que se activa/desactiva. |
 | `Assets/XR/Settings/OpenXR Package Settings.asset` | Configuración del paquete OpenXR (features, interaction profiles). |
 | `ProjectSettings/EditorBuildSettings.asset` | Lista de escenas del build normal: solo `Assets/Scenes/Main.unity` (visor). También registra el config object XR bajo la key `com.unity.xr.management.loader_settings`, la misma que lee `TabletBuild.GetAndroidXrManager()`. |
-| `ProjectSettings/ProjectSettings.asset` | `companyName: Simulador`, `productName: Simulador`, `applicationIdentifier` Android: `com.simulador.vr` (visor). La tablet usa `com.simulador.tablet`/"Simulador Tablet", seteados SOLO durante `TabletBuild` y restaurados al terminar (P6.7, ver abajo) — este archivo nunca queda con los valores de la tablet. |
+| `ProjectSettings/ProjectSettings.asset` | `companyName: Simulador`, `productName: Simulador`, `applicationIdentifier` Android: `com.simulador.vr` (visor). La tablet usa `com.simulador.tablet`/"Simulador Tablet", seteados SOLO durante `TabletBuild` y restaurados al terminar (P6.7, ver abajo) — este archivo nunca queda con los valores de la tablet. También guarda el icono default del proyecto (`PlayerSettings.SetIcons(NamedBuildTarget.Unknown, ...)`, serializado en `m_BuildTargetIcons` con `m_BuildTarget` vacío): es el icono del **visor** (`Assets/Textures/Icons/icon_visor.png`) — Android lo hereda como fallback salvo que tenga icono propio seteado (ver fila siguiente y `TabletBuild`). |
+| `Assets/Textures/Icons/icon_visor.png`, `Assets/Textures/Icons/icon_tablet.png` | Iconos 1024×1024 full-bleed (sin alpha) de cada app: una LIO estilizada (óptica central + dos hápticos en C) — visor en cian sobre azul marino, tablet en blanco sobre teal con 4 marcas de escala como acento. El default del proyecto (todas las plataformas que no tengan override) es el del visor; `TabletBuild` pisa el de Android con el de tablet SOLO durante su build (ver abajo). |
 | `backend/docker-compose.yml` + `backend/Caddyfile` | Deploy del backend (detalle en `docs/backend.md`). |
 | `README.md` (raíz, sección 3) | Instrucciones de instalación para humanos; este doc es la referencia operativa. |
 
@@ -27,6 +28,7 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 | Ruta de salida | La que elija el usuario (localmente existen `builds/Simulador_VR.apk` y `build/Simulador.apk`, ambas carpetas gitignoradas) | `Builds/Android/Simulador.apk` (constante `OutputPath` en `TabletBuild.cs`) |
 | Package | `com.simulador.vr` | `com.simulador.tablet` (P6.7, CERRADO — antes compartía `com.simulador.vr` con el visor; ver Decisiones/Gotchas) |
 | Product name | `Simulador` (Project Settings) | `Simulador Tablet` (seteado/restaurado solo durante el build, igual que el package) |
+| Icono | `icon_visor.png` (es el default del proyecto, target `Unknown`; Android lo hereda si no tiene override) | `icon_tablet.png` (seteado en los slots de Android SOLO durante `TabletBuild`, restaurado al terminar — mismo patrón try/finally que package/nombre) |
 | Scripting backend | IL2CPP / arm64-v8a, min SDK 29 (según `README.md`) | Idéntico (mismo target compartido) |
 
 ### Flujo del build de tablet (`TabletBuild.BuildTablet()`)
@@ -37,13 +39,16 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 GetAndroidXrManager()  ← lee XRGeneralSettingsPerBuildTarget vía EditorBuildSettings
 guardar loaders actuales (SerializedObject "m_Loaders")
 guardar applicationIdentifier (NamedBuildTarget.Android) + productName actuales   (P6.7)
+guardar platform icons de Android por kind (GetPlatformIcons(Android, Legacy/Round/Adaptive))
 try:
     SetLoaders(manager, lista vacía)        ← XR OFF
     SetApplicationIdentifier(Android, "com.simulador.tablet") + productName = "Simulador Tablet"
+    SetPlatformIcons(Android, Legacy/Round/Adaptive, icon_tablet.png en todas las capas)  ← icono propio (NO IconKind.Application, ver Gotchas — esa API generica no tiene efecto en Android)
     BuildPipeline.BuildPlayer(Tablet.unity → Builds/Android/Simulador.apk)
 finally:
     SetLoaders(manager, loaders guardados)                 ← XR ON de nuevo, SIEMPRE
     SetApplicationIdentifier(Android, guardado) + productName = guardado   ← SIEMPRE (P6.7)
+    SetPlatformIcons(Android, Legacy/Round/Adaptive, icons guardados)      ← SIEMPRE (icono del visor de nuevo, heredado del default)
     (+ SaveAssets: el .asset de XR queda persistido como estaba)
 ```
 
@@ -99,6 +104,74 @@ seed del catálogo (`0.5.1-clinical`, 3 lentes) sin errores en `docker compose l
 `http://vr.conecta.sh/healthz` → 308 a HTTPS, `/admin/login` → 200, y consola MinIO (9001)
 solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin intervención manual.
 
+## Firma (keystore) del proyecto
+
+**Desde 2026-07-09 el proyecto firma con un keystore propio, no con el debug keystore de la
+máquina.** Esto es requisito no negociable del sistema de updates semi-automáticos
+(`docs/updates.md`): Android exige que dos APKs con el mismo `applicationId` estén firmados con
+el **mismo certificado** para que uno pueda instalarse sobre el otro sin desinstalar — la
+primera build update-capable que se distribuya define la firma **para siempre** en esos
+dispositivos.
+
+| Archivo | Rol |
+|---------|-----|
+| `keystore/simulador.keystore` | Keystore JKS, alias `simulador`, RSA 2048, validez 10000 días, `dname` `CN=Simulador LIOs, O=TFM, C=UY`. Generado con el `keytool` que trae el propio Unity (`<Editor>/Data/PlaybackEngines/AndroidPlayer/OpenJDK/bin/keytool.exe`), no hace falta un JDK del sistema. |
+| `keystore/keystore.properties` | `storePassword` / `keyPassword` (misma password única para ambos) / `keyAlias=simulador` / `storeFile=keystore/simulador.keystore`. Documenta la password para quien tenga que reconfigurar el Editor; **no lo lee ningún script automáticamente todavía** (no hay Gradle template custom que lo parsee). |
+| `.gitignore` → `/keystore/` | Toda la carpeta gitignorada. El repo es **público**: el keystore JAMÁS se commitea, ni siquiera cifrado. |
+
+**Cómo se configura el Editor (por sesión, no persiste solo):**
+
+```csharp
+// PlayerSettings.Android.useCustomKeystore / keystoreName / keyaliasName SÍ persisten en
+// ProjectSettings/ProjectSettings.asset (solo path + alias, ninguna password) — commiteable.
+PlayerSettings.Android.useCustomKeystore = true;
+PlayerSettings.Android.keystoreName = "keystore/simulador.keystore";
+PlayerSettings.Android.keyaliasName = "simulador";
+
+// keystorePass / keyaliasPass NUNCA se persisten a disco (ni en ProjectSettings.asset ni en
+// ningún .asset) — hay que setearlas por unity_execute_code EN CADA sesión del Editor, antes
+// de cualquier build Android, o el build queda esperando el diálogo interactivo de contraseña
+// (que cuelga un build headless/CI).
+PlayerSettings.Android.keystorePass = "<password>";
+PlayerSettings.Android.keyaliasPass = "<password>";
+```
+
+**BACKUP — CRÍTICO, léase dos veces:** `keystore/` vive SOLO en esta máquina y está gitignorada
+a propósito. **Hacer backup de la carpeta completa fuera del repo (y fuera de esta máquina) es
+responsabilidad del operador humano.** Si se pierde el keystore, no hay forma de recuperarlo
+(no es un secreto derivable) y **ninguna build futura puede actualizar los APKs ya publicados/
+instalados** en dispositivos de campo — la única salida sería desinstalar manualmente cada
+dispositivo y reinstalar desde cero con una firma nueva. Es, junto con la base de datos de
+producción, el activo más irreemplazable del proyecto.
+
+**Checklist de release del operador** (una vez que exista un release real a publicar):
+
+1. Bump de versión: `PlayerSettings.bundleVersion` (semver `major.minor.patch`, contrato del
+   manifest en `docs/updates.md`) + `PlayerSettings.Android.bundleVersionCode` (entero,
+   incremental).
+2. Setear `keystorePass`/`keyaliasPass` por `unity_execute_code` (no persisten entre sesiones
+   del Editor, ver arriba).
+3. Build visor (`unity_build`, `Main.unity`, loader OpenXR ON) y build tablet (**SIEMPRE**
+   `Simulador → Build Tablet (Android)` / `TabletBuild.BuildTablet()`, nunca `unity_build`
+   directo — gotcha de arriba).
+4. Verificar el gate F4 en AMBOS APKs (aapt/apksigner, ver `docs/updates.md`): activity
+   `UnityPlayerGameActivity` completa con intent-filter LAUNCHER, permiso
+   `REQUEST_INSTALL_PACKAGES`, provider `<applicationId>.fileprovider` con
+   `FILE_PROVIDER_PATHS`, clase `androidx.core.content.FileProvider` presente en el dex, y firma
+   con el certificado del keystore del proyecto (no debug) — ver gotcha de `keytool -printcert`
+   más abajo. **Además, en el APK de tablet: extraer el PNG del ícono embebido (`aapt dump
+   badging | grep application-icon-480` para ubicar el resource ofuscado, `unzip -j <apk>
+   res/<nombre>.png`) y compararlo visual/por hash contra `icon_tablet.png` — `aapt dump badging`
+   solo confirma que HAY un ícono, no cuál; hay un bug real abierto donde el APK de tablet sale
+   con el ícono del visor pese a que `TabletBuild.cs` restaura bien loader/identifier/productName
+   (ver gotcha de íconos más abajo, 2026-07-09).**
+5. Subir ambos APKs al panel admin del backend con `app` (`visor`/`tablet`), `apk_version`,
+   `changelog` (ver `docs/updates.md` §Contrato del manifest).
+6. Activar la versión desde el panel.
+7. Verificar en `/admin/logs` (o `docker compose exec db psql ...`) que los dispositivos de
+   campo reportan `update_check`/`update_prompt_shown` y, tras aceptar, el resto de la cadena
+   `update_*` (`docs/updates.md` §Telemetría).
+
 ## Decisiones y porqués
 
 - **Un solo proyecto y un solo build target Android para visor y tablet** → evita duplicar código compartido (catálogo, red WebSocket, modelos); el costo es tener que conmutar el loader XR por build.
@@ -118,6 +191,27 @@ solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin interve
   en el `finally` — igual de atómico e imposible de olvidar que la conmutación XR. El guard de
   target no-Android sigue devolviendo `null` ANTES de guardar/tocar nada, así que no hay estado
   que restaurar en ese camino.
+- **Icono propio por app (visor vs tablet), mismo patrón try/finally que loader XR / identifier /
+  productName.** Antes de esta tarea ambas apps usaban el icono default de Unity (nunca se había
+  seteado ninguno). Ahora: (1) el icono default del proyecto —
+  `PlayerSettings.SetIcons(NamedBuildTarget.Unknown, ..., IconKind.Application)` — es el del
+  **visor** (`Assets/Textures/Icons/icon_visor.png`), seteado una sola vez (no por `TabletBuild`,
+  es config persistente del proyecto) y persistido en `ProjectSettings.asset`; (2) `TabletBuild`
+  guarda `PlayerSettings.GetPlatformIcons(NamedBuildTarget.Android, kind)` para los tres kinds
+  reales de Android (`AndroidPlatformIconKind.Legacy/Round/Adaptive` — **NO**
+  `IconKind.Application`, esa es la API genérica multi-plataforma sin efecto en Android, ver el
+  gotcha resuelto más abajo con la causa raíz confirmada) ANTES de tocarlos (por defecto, antes de
+  esta tarea, `layerCount == 0` en los tres — Android no tenía override propio y heredaba el
+  default), los pisa con `Assets/Textures/Icons/icon_tablet.png` replicado en todas las capas que
+  pide cada slot (`icon.maxLayerCount` — 1 para Legacy/Round, 2 para Adaptive), y los restaura
+  SIEMPRE en el `finally` — Android vuelve a quedar sin override propio y hereda otra vez el
+  default (visor). Motivo de usar `NamedBuildTarget.Unknown` para el default en vez de setear
+  Android directamente para el visor: el visor se buildea con Build Settings/`unity_build` normal
+  (no hay un `VisorBuild.cs` dedicado), así que no hay un punto único try/finally para pisar el
+  icono de Android solo durante SU build — más simple dejar que Android herede el default y que
+  sea `TabletBuild` el único que hace un override temporal (igual que ya hacía con XR/identifier).
+  Carga del `Texture2D` por `AssetDatabase.LoadAssetAtPath` (NO `Resources.Load` — restricción del
+  repo, ver `AGENTS.md` §Reglas de assets Unity).
 
 ## Gotchas
 
@@ -183,6 +277,15 @@ solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin interve
   31+; este proyecto targetea 36). **Regla para cualquier manifest custom futuro en este
   proyecto:** un manifest "solo permisos" (que no toca `<application>` en absoluto) es seguro; uno
   que agrega `<application>` sin declarar la Activity completa junto con ella NO lo es.
+- **F4 de updates semi-automáticos agregó entradas al manifest compartido (2026-07-09)**:
+  `<uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />` junto a
+  los permisos existentes, y un `<provider android:name="androidx.core.content.FileProvider"
+  .../>` como HERMANO de la `<activity>` (sin tocarla) dentro de `<application>` — respetando
+  las dos reglas de abajo (activity completa intacta, sin `--` en comentarios nuevos). El
+  provider depende de la carpeta Android Library Plugin
+  `Assets/Plugins/Android/SimuladorUpdate.androidlib/` (recursos `res/xml/file_paths.xml`);
+  detalle completo, incluyendo el pendiente de verificar la versión de `androidx.core` en el
+  primer build real, en `docs/updates.md` §Gotchas.
 - **Comentario XML con `--` en `AndroidManifest.xml` rompe la generación del manifest —
   INCIDENTE REAL, ABIERTO (2026-07-04).** Al corregir el gotcha anterior, el comentario de
   cabecera agregado a `Assets/Plugins/Android/AndroidManifest.xml` usa `--` (doble guión) como
@@ -198,6 +301,19 @@ solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin interve
   `TabletBuild` corre aunque `BuildPlayer` falle). **Fix:** sacar las dos ocurrencias de `--` del
   comentario (reemplazar por `-` simple, `—` em dash, o reformular la frase). **Regla:** ningún
   comentario XML en este manifest puede contener `--`.
+- **`keytool -printcert -jarfile <apk>` dice "No es un archivo jar firmado" en APKs firmados por
+  Unity 6, aunque SÍ estén firmados — falso negativo, verificado en vivo (2026-07-09) con las
+  primeras builds firmadas con el keystore del proyecto.** El Gradle/Unity moderno firma con
+  **APK Signature Scheme v2** (y NO con v1/JAR signing — no hay `META-INF/*.RSA`/`*.SF`), y
+  `keytool -printcert -jarfile` solo entiende firmas v1 estilo JAR. La forma correcta de
+  verificar firma/certificado en este proyecto es `apksigner` (mismo `build-tools/<version>/`
+  que trae Unity, `lib/apksigner.jar`, se invoca con el `java` del OpenJDK embebido):
+  ```bash
+  java -jar ".../build-tools/36.0.0/lib/apksigner.jar" verify -v <apk>            # esquema usado (v2: true)
+  java -jar ".../build-tools/36.0.0/lib/apksigner.jar" verify --print-certs <apk>  # DN + hashes del certificado
+  ```
+  Confirmar que el `Signer #1 certificate DN` sea el del keystore del proyecto
+  (`CN=Simulador LIOs, O=TFM, C=UY`) y no el de un debug keystore (`CN=Android Debug`).
 - **Un intento de build Android (aunque falle) puede ensuciar el working tree fuera del alcance
   del try/finally de `TabletBuild`.** Detectado en vivo durante el incidente de arriba: tras un
   `BuildTablet()` fallido, además del loader/identifier (que sí se restauran), aparecieron dos
@@ -212,6 +328,63 @@ solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin interve
   `AssetDatabase.SaveAssets()`, y los JSON con `unity_asset_delete` (o borrarlos y dejar que el
   Editor limpie el `.meta` huérfano). No se automatizó la limpieza en `TabletBuild.cs` todavía —
   quedaría a criterio de `@unity-dev` si vale la pena extender el `finally`.
+- **Otro efecto colateral de build Android detectado (2026-07-09): `Assets/Settings/
+  Mobile_RPAsset.asset` (el `UniversalRenderPipelineAsset` del tier Mobile, ver `AGENTS.md`
+  §Reglas de assets Unity) cambia `m_PrefilterXRKeywords` de `0` a `1`.** Es Unity precompilando/
+  prefiltrando keywords de shader para XR al preprocesar el build Android, mismo mecanismo que
+  el preload de OpenXR Package Settings de arriba — no es una edición deliberada de nadie.
+  Mismo tratamiento: revisar `git status` post-build y `git checkout -- "Assets/Settings/
+  Mobile_RPAsset.asset"` si aparece y no se querían tocar sus flags de prefiltrado a propósito
+  en esa tarea.
+- **`TabletBuild.cs` pisaba `PlayerSettings.SetIcons(NamedBuildTarget.Android, ..., IconKind.
+  Application)` pero el APK de tablet salía con el ícono del VISOR — BUG REAL, RESUELTO (detectado
+  en vivo en el release 0.2.0, 2026-07-09; fix en la misma fecha).** Causa raíz **confirmada** (no
+  ya hipótesis) inspeccionando la API de Unity 6000.5 por reflection: `UnityEditor.IconKind`
+  (`Application/Settings/Notification/Spotlight/Store/Any`) es un enum **genérico multi-plataforma**
+  sin efecto real en lo que Android empaqueta. Android resuelve su ícono de lanzador contra los
+  **platform icons** específicos de la plataforma:
+  `PlayerSettings.GetPlatformIcons(NamedBuildTarget, PlatformIconKind)` /
+  `SetPlatformIcons(...)`, con los kinds expuestos en
+  `UnityEditor.Android.AndroidPlatformIconKind.Legacy` / `.Round` / `.Adaptive` (assembly
+  `UnityEditor.Android.Extensions`, namespace `UnityEditor.Android` — alcanza con
+  `using UnityEditor.Android;`, NO hace falta agregar una referencia nueva al
+  `Simulador.Editor.asmdef`, la extensión de plataforma Android ya está disponible porque el
+  módulo Android está instalado). Antes del fix, los tres kinds estaban en su estado por defecto
+  (`layerCount == 0`, ningún `Texture2D` asignado) — Android cae al ícono default genérico
+  (`NamedBuildTarget.Unknown`, el del visor) cuando sus platform icons están vacíos, que es
+  exactamente lo que se observó. **Fix aplicado:** `TabletBuild.cs` ahora guarda
+  `PlayerSettings.GetPlatformIcons(Android, kind)` para los tres kinds ANTES de tocar nada, en el
+  `try` los pisa con `icon_tablet.png` (replicado en todas las capas que pide cada slot — Legacy
+  y Round piden 1 capa, Adaptive pide EXACTAMENTE 2, `minLayerCount == maxLayerCount == 2`
+  background+foreground; se usa el mismo PNG en ambas capas ya que es full-bleed opaco, así que el
+  foreground cubre completo y el resultado visual es equivalente a Legacy/Round recortado por el
+  mask circular/squircle de Android), y los restaura SIEMPRE en el `finally` — mismo patrón
+  try/finally que loader XR / `applicationIdentifier` / `productName`. Verificado en frío (sin
+  build, por `unity_execute_code`): tras aplicar el swap con la misma API, `GetPlatformIcons`
+  devuelve `icon_tablet` en los 6 tamaños × 3 kinds (12 slots en Adaptive por las 2 capas); tras
+  restaurar, los tres kinds vuelven a `layerCount == 0` (estado pristino, idéntico al inicial).
+  **Verificación end-to-end en APK real — CERRADO (2026-07-09, rebuild de `tablet-0.2.0.apk`
+  tras el fix).** `aapt dump badging` ya no lista PNGs sueltos para `application-icon-*` sino un
+  único `res/<hash>.xml` (mismo valor en las 7 densidades) — es el descriptor `<adaptive-icon>`
+  (`res/Qu.xml` en esta build: `background=@0x7f0c0002`, `foreground=@0x7f0c0003`), señal en sí
+  misma de que el Adaptive icon kind quedó seteado (antes del fix no existía ese XML, aaptdump
+  mostraba PNGs directos heredados del default). Log de Unity durante `BuildPlayer` cambió de
+  `"Compressed texture icon_visor is used as icon"` (bug) a **`"Compressed texture icon_tablet is
+  used as icon"`** (fix) — más dos warnings nuevos y esperables `"Round/Legacy icons are
+  deprecated, use Adaptive instead"` (confirma que los tres kinds quedaron poblados). Resolviendo
+  los resource ID del XML contra la tabla de recursos (`aapt dump --values resources <apk>`) y
+  extrayendo los PNG de xxxhdpi (`unzip -j`): **Legacy (`mipmap/app_icon`) y Round
+  (`mipmap/app_icon_round`) son el mismo archivo** (mismo MD5, `65b80e48...`, 10038 bytes —
+  esperable, ambos piden 1 capa y usan el mismo `icon_tablet.png` fuente) y **el foreground y
+  background del Adaptive también coinciden entre sí** (mismo MD5, `0cb86952...`, 29728 bytes —
+  esperable también, ver "Fix aplicado" arriba: se replica el mismo PNG full-bleed opaco en ambas
+  capas). Inspección visual de los 3 PNG únicos extraídos (Legacy/Round + Adaptive fg/bg): las
+  4 imágenes muestran el diseño correcto de tablet — LIO blanca sobre fondo teal con las 4 marcas
+  de escala — **no** el cian-sobre-azul-marino del visor. Firma (`apksigner --print-certs`) y
+  `aapt dump badging` (package `com.simulador.tablet`, versionCode `200`, versionName `0.2.0`)
+  también verificados sobre el mismo APK. Bug cerrado del todo: código corregido + verificado a
+  nivel API (por @unity-dev) + verificado end-to-end en el artefacto compilado real
+  (por @build-deploy).
 
 ## Cómo probar
 
@@ -222,6 +395,18 @@ solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin interve
    `com.simulador.vr` y `Product Name` a `Simulador` (NO deben quedar en `com.simulador.tablet`/
    "Simulador Tablet"). `git status` no debe mostrar `Assets/XR/XRGeneralSettingsPerBuildTarget.asset`
    ni `ProjectSettings/ProjectSettings.asset` modificados.
+2.b. **Verificar restauración del icono (Legacy/Round/Adaptive, no el genérico "Icon" del panel):**
+   en *Project Settings → Player → Android → Icon*, las secciones **Adaptive**, **Round** y
+   **Legacy** deben quedar vacías (sin textura asignada) tras el build — Android hereda entonces
+   `icon_visor.png` del default del proyecto (sección "Default Icon" arriba del todo). Si alguna
+   quedó con `icon_tablet.png` asignado, el `finally` no restauró (bug). Chequeo equivalente por
+   código: `unity_execute_code` con `PlayerSettings.GetPlatformIcons(NamedBuildTarget.Android,
+   UnityEditor.Android.AndroidPlatformIconKind.Adaptive)` (y `.Round`/`.Legacy`) — cada
+   `PlatformIcon.GetTextures()` debe devolver `null`/vacío. **La verificación real del artefacto
+   (no solo del estado del Editor) es extraer el PNG embebido del APK y compararlo por hash**
+   contra `icon_tablet.png` (ver el gotcha resuelto más abajo para el comando exacto) —
+   `aapt dump badging Builds/Android/Simulador.apk | grep application-icon` sin extraer el PNG NO
+   alcanza para confirmar cuál ícono quedó embebido, solo que hay uno.
 3. **Instalar y arrancar:**
    ```bash
    adb install -r Builds/Android/Simulador.apk
