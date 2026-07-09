@@ -126,6 +126,15 @@ TabletController.Start()
   panel normal, ver Decisiones) con etiquetas "OD — \<lente\>" / "OI — \<lente\>". Reacciona a un
   cambio de lente mientras está abierto porque `RefreshFullscreenUI` se llama siempre desde
   `RefreshVisionUI` (no solo al abrir el overlay).
+- **`UpdateScreen` (F5, updates semi-automáticos — overlay modal):** se muestra cuando
+  `UpdateManager.UpdateAvailable` se dispara, ENCIMA de cualquier pantalla activa (Connect/Pin/
+  Reconnect/Main/FullscreenStream — se construye ÚLTIMO en `BuildUI`, ver Decisiones "Orden de
+  construcción" en `docs/updates.md`). Scrim semi-opaco + card centrada con título/versión/
+  changelog/estado y 2 botones cuyo texto/handler/visibilidad cambia según el estado
+  (Available → Actualizar/Ahora no; Downloading → progreso %/Cancelar; Ready → Instalar; Failed
+  → Reintentar/Cerrar). Detalle completo del estado/eventos/API en `docs/updates.md` §"UI del
+  cartel (F5)" — esa es la doc viva del sistema de updates, esta sección solo ubica la pantalla
+  dentro del mapa de `TabletController`.
 - **Footer:** `N fps · X.X MB recibidos`, actualizado cada segundo. En blend (P5.5), el fps
   mostrado se divide entre 2 (ver Decisiones): representa la tasa REAL por pane, no la suma L+R.
 

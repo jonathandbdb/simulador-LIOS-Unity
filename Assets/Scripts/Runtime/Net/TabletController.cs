@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
+using Simulador.Update;
 using TMPro;
 using UnityEngine;
 using UnityEngine.Android;
@@ -101,6 +102,22 @@ namespace Simulador.Tablet
         private Slider _magSlider, _angleSlider;
         private TMP_Text _magValue, _angleValue;
 
+        // --- Update semi-automatico (F5, ver docs/updates.md) ---
+        // Overlay MODAL construido por encima de TODAS las demas pantallas (se
+        // agrega ULTIMO en BuildUI -> ultimo hijo del canvas -> se dibuja arriba
+        // de todo, incluido el overlay de FullscreenStream). Sigue el mismo
+        // patron que PinScreen (region dentro de esta clase, no una clase
+        // aparte): UpdateManager es quien decide/dispara los eventos, esta
+        // clase solo traduce eventos -> widgets y clicks -> metodos de
+        // UpdateManager, igual que TabletSession/OnSession* para la sesion de
+        // red. En el visor VR la UI equivalente es Update/UpdatePromptVR.cs
+        // (esta clase NO corre en Main.unity).
+        private GameObject _updateScreen;
+        private TMP_Text _updateTitleLabel, _updateVersionLabel, _updateChangelogLabel, _updateStatusLabel;
+        private TabletButton _updatePrimaryBtn, _updateSecondaryBtn;
+        private UpdateLogic.UpdateManifest _updateManifest;
+        private bool _updateForced;
+
         // --- Stream a pantalla completa ---
         // Overlay que reusa las MISMAS Texture2D del stream normal (_texLeft/
         // _texRight, ver OnSessionFrame): RawImage nuevo por ojo apuntando a la
@@ -157,6 +174,7 @@ namespace Simulador.Tablet
             ApplyTheme(_isDark);
             LoadPresetsFromDisk();
             RebuildPresetList();
+            SubscribeUpdateEvents();
 
             _session = new TabletSession();
             _session.Connected += OnSessionConnected;
@@ -184,7 +202,11 @@ namespace Simulador.Tablet
             if (_footerTimer >= 1f) { _footerTimer = 0f; UpdateFooter(); }
         }
 
-        private void OnDestroy() => _session?.Shutdown();
+        private void OnDestroy()
+        {
+            _session?.Shutdown();
+            UnsubscribeUpdateEvents();
+        }
 
         // ============================================================
         // Eventos de TabletSession -> UI
@@ -982,6 +1004,7 @@ namespace Simulador.Tablet
             BuildReconnectScreen(canvasGo.transform);
             BuildMainScreen(canvasGo.transform);
             BuildFullscreenStream(canvasGo.transform);
+            BuildUpdateScreen(canvasGo.transform); // ULTIMO: debe quedar arriba de TODAS las demas pantallas/overlays
         }
 
         private void BuildConnectScreen(Transform parent)
@@ -1469,6 +1492,173 @@ namespace Simulador.Tablet
             PinTopRight(closeBtn.GetComponent<RectTransform>(), closeBtn.GetComponent<LayoutElement>(), 16, 16);
             closeBtn.OnClick = CloseFullscreenStream;
         }
+
+        // ============================================================
+        // Update semi-automatico (F5) -- cartel modal, ver docs/updates.md
+        // ============================================================
+        // Overlay full-screen: scrim semi-opaco (deliberadamente NO tematizado,
+        // igual criterio que FullscreenBg -- un modal se comporta como
+        // "lightbox" encima de CUALQUIER pantalla/tema) + card centrada con
+        // titulo/version/changelog/estado + 2 botones (primario/secundario) cuyo
+        // texto/handler/visibilidad cambian segun el estado (Available/
+        // Downloading/Ready/Failed) en vez de construir 4 pares de botones.
+        private void BuildUpdateScreen(Transform parent)
+        {
+            _updateScreen = new GameObject("UpdateScreen", typeof(RectTransform));
+            _updateScreen.transform.SetParent(parent, false);
+            Stretch(_updateScreen.GetComponent<RectTransform>());
+            _updateScreen.SetActive(false);
+
+            var scrim = new GameObject("UpdateScrim", typeof(RectTransform), typeof(Image));
+            scrim.transform.SetParent(_updateScreen.transform, false);
+            Stretch(scrim.GetComponent<RectTransform>());
+            scrim.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f);
+
+            var card = _kit.Card(_updateScreen.transform, "UpdateCard");
+            card.anchorMin = card.anchorMax = new Vector2(0.5f, 0.5f);
+            card.pivot = new Vector2(0.5f, 0.5f);
+            card.sizeDelta = new Vector2(480, 0);
+            var fit = card.gameObject.AddComponent<ContentSizeFitter>();
+            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            _updateTitleLabel = _kit.Label(card, "Actualización disponible", LabelKind.Title, TextAlignmentOptions.Center);
+            _updateVersionLabel = _kit.Label(card, "", LabelKind.Subtitle, TextAlignmentOptions.Center);
+            _updateChangelogLabel = _kit.Label(card, "", LabelKind.Hint, TextAlignmentOptions.Left);
+            _updateStatusLabel = _kit.Label(card, "", LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Spacer(card, 4, false);
+
+            var row = _kit.Box(card, "UpdateButtons", false, 8, null, expandW: true);
+            _updateSecondaryBtn = _kit.Button(row, "Ahora no", BtnStyle.Ghost, false, 48, 16);
+            _kit.Size(_updateSecondaryBtn.GetComponent<RectTransform>(), flexW: 1);
+            _updatePrimaryBtn = _kit.Button(row, "Actualizar", BtnStyle.Accent, false, 48, 16);
+            _kit.Size(_updatePrimaryBtn.GetComponent<RectTransform>(), flexW: 1);
+        }
+
+        // ---- UpdateManager -> UI (suscripcion null-safe: UpdateManager es un
+        // singleton bootstrapeado por RuntimeInitializeOnLoad, deberia existir
+        // ya para cuando corre este Start(), pero si algo fallo en su
+        // inicializacion no hay por que romper el resto de la tablet) ----
+        private void SubscribeUpdateEvents()
+        {
+            var um = UpdateManager.Instance;
+            if (um == null)
+            {
+                Debug.LogWarning("[Tablet] UpdateManager no encontrado; UI de actualizaciones deshabilitada.");
+                return;
+            }
+            um.UpdateAvailable += OnUpdateAvailable;
+            um.DownloadProgress += OnUpdateDownloadProgress;
+            um.UpdateFailed += OnUpdateFailed;
+            um.ReadyToInstall += OnUpdateReadyToInstall;
+        }
+
+        private void UnsubscribeUpdateEvents()
+        {
+            var um = UpdateManager.Instance;
+            if (um == null) return;
+            um.UpdateAvailable -= OnUpdateAvailable;
+            um.DownloadProgress -= OnUpdateDownloadProgress;
+            um.UpdateFailed -= OnUpdateFailed;
+            um.ReadyToInstall -= OnUpdateReadyToInstall;
+        }
+
+        private void OnUpdateAvailable(UpdateLogic.UpdateManifest manifest, bool forced)
+        {
+            _updateManifest = manifest;
+            _updateForced = forced;
+            _updateTitleLabel.text = "Actualización disponible";
+            _updateVersionLabel.text = $"v{Application.version} → v{manifest.ApkVersion}";
+            _updateChangelogLabel.text = manifest.Changelog ?? "";
+            _updateStatusLabel.text = "";
+            _updatePrimaryBtn.gameObject.SetActive(true);
+            _updatePrimaryBtn.Label.text = "Actualizar";
+            _updatePrimaryBtn.OnClick = OnUpdateAcceptPressed;
+            _updateSecondaryBtn.gameObject.SetActive(!forced); // "Ahora no" oculto si es forzada
+            _updateSecondaryBtn.Label.text = "Ahora no";
+            _updateSecondaryBtn.OnClick = OnUpdatePostponePressed;
+            _updateScreen.SetActive(true);
+        }
+
+        private void OnUpdateAcceptPressed()
+        {
+            UpdateManager.Instance?.AcceptUpdate();
+            ShowUpdateDownloading();
+        }
+
+        private void ShowUpdateDownloading()
+        {
+            _updateTitleLabel.text = "Descargando actualización";
+            _updateStatusLabel.text = "Descargando… 0 %";
+            _updatePrimaryBtn.gameObject.SetActive(false);
+            _updateSecondaryBtn.gameObject.SetActive(true); // Cancelar siempre disponible, incluso si es forzada
+            _updateSecondaryBtn.Label.text = "Cancelar";
+            _updateSecondaryBtn.OnClick = OnUpdateCancelPressed;
+        }
+
+        private void OnUpdateDownloadProgress(float progress)
+        {
+            if (_updateStatusLabel == null) return;
+            _updateStatusLabel.text = $"Descargando… {Mathf.RoundToInt(progress * 100f)} %";
+        }
+
+        // Sin API de cancelacion previa en UpdateManager (F3/F4 no la necesitaban,
+        // no habia UI todavia) -- se agrego UpdateManager.CancelDownload() en esta
+        // tarea (F5) para este boton, ver docs/updates.md.
+        private void OnUpdateCancelPressed()
+        {
+            UpdateManager.Instance?.CancelDownload();
+            UpdateManager.Instance?.PostponeUpdate();
+            HideUpdateScreen();
+        }
+
+        private void OnUpdateReadyToInstall(string path)
+        {
+            _updateTitleLabel.text = "Descarga verificada";
+            _updateStatusLabel.text = "Descarga verificada";
+            _updatePrimaryBtn.gameObject.SetActive(true);
+            _updatePrimaryBtn.Label.text = "Instalar";
+            _updatePrimaryBtn.OnClick = OnUpdateInstallPressed;
+            _updateSecondaryBtn.gameObject.SetActive(false);
+            _updateScreen.SetActive(true);
+        }
+
+        private void OnUpdateInstallPressed()
+        {
+            UpdateManager.Instance?.LaunchInstall();
+            HideUpdateScreen();
+        }
+
+        private void OnUpdateFailed(string message)
+        {
+            _updateTitleLabel.text = "Error al actualizar";
+            _updateStatusLabel.text = FriendlyUpdateError(message);
+            _updatePrimaryBtn.gameObject.SetActive(true);
+            _updatePrimaryBtn.Label.text = "Reintentar";
+            _updatePrimaryBtn.OnClick = OnUpdateRetryPressed;
+            _updateSecondaryBtn.gameObject.SetActive(!_updateForced); // "Cerrar" oculto si es forzada
+            _updateSecondaryBtn.Label.text = "Cerrar";
+            _updateSecondaryBtn.OnClick = OnUpdateClosePressed;
+            _updateScreen.SetActive(true);
+        }
+
+        private void OnUpdateRetryPressed()
+        {
+            UpdateManager.Instance?.RetryDownload();
+            ShowUpdateDownloading();
+        }
+
+        private void OnUpdateClosePressed() => HideUpdateScreen();
+
+        private void OnUpdatePostponePressed()
+        {
+            UpdateManager.Instance?.PostponeUpdate();
+            HideUpdateScreen();
+        }
+
+        private void HideUpdateScreen() => _updateScreen?.SetActive(false);
+
+        private static string FriendlyUpdateError(string raw) =>
+            raw == "sha_mismatch" ? "La descarga no pasó la verificación de integridad." : raw;
 
         // Vista de stream por ojo: contenedor flexible (lo dimensiona la columna) con
         // un RawImage que se ajusta dentro preservando el aspecto 4:3 del visor (sin
