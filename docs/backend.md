@@ -11,6 +11,7 @@ Stack: FastAPI 0.115 + uvicorn (Python 3.12), SQLModel, Postgres 16, MinIO, Cadd
 | Archivo | Rol |
 |---------|-----|
 | `backend/docker-compose.yml` | 4 servicios: `api` (FastAPI), `db` (postgres:16-alpine), `bucket` (MinIO, consola en `127.0.0.1:9001`), `caddy` (reverse proxy/TLS). Monta `defaults/lentes.json` como volumen read-only en `/seed/lentes.json` del `api`. |
+| `backend/docker-compose.prod.yml` | Override de producción (VPS con dominio real): pisa `caddy.ports` con `!override` a `80:80` + `443:443` (el compose base mapea `${PORT}:${PORT}` + `${HTTPS_PORT}:443`, que en prod con `PORT=443` deja el 80 sin publicar — sin redirect HTTP→HTTPS ni challenge ACME HTTP-01). Requiere Docker Compose ≥ 2.24 (soporte de `!override`). Se aplica con `-f docker-compose.yml -f docker-compose.prod.yml`. |
 | `backend/Caddyfile` | Site address `{$SCHEME}{$DOMAIN}:{$PORT}`; `/healthz` respondido por Caddy, el resto `reverse_proxy api:8000`. Con `DOMAIN` vacío escucha en cualquier hostname (acceso por IP de LAN desde Quest/tablet). |
 | `backend/api/Dockerfile` | python:3.12-slim + libpq5/curl, uvicorn en :8000 con `--proxy-headers`, healthcheck a `/healthz`. |
 | `backend/api/app/main.py` | App FastAPI; monta routers público/admin/files y `/static`. Arranque vía `lifespan` (no `@app.on_event`, deprecado): `run_migrations()` (Alembic), `seed()`, `ensure_bucket()`. Handler global que convierte `HTTPException(303, Location=...)` en redirect (mecanismo del login admin). CORS configurable (`CORS_ORIGINS`, default `*`) con `allow_credentials=False`. |
@@ -116,7 +117,7 @@ python -m pytest -v
 - Panel admin: `http://localhost:8080/admin` → login `admin`/`admin123` → dashboard con avisos de credenciales inseguras.
 - Swagger: `http://localhost:8080/docs`. Consola MinIO: `http://localhost:9001` (`minioadmin`/`minioadmin`).
 - Contra Unity: poner la IP de la máquina que corre Docker en `backendUrl` de `DataManager.cs`, entrar a Play y buscar en consola `DataManager: catalogo v... sincronizado desde backend`.
-- Producción (VPS): DNS A record → IP del VPS, puertos 80/443 abiertos, `.env` con `DOMAIN`, `SCHEME=` vacío, `PORT=443`, `PUBLIC_BASE_URL=https://...` y secrets regenerados (`openssl rand -hex 32`); `docker compose up -d` y verificar `curl https://<dominio>/healthz` (Caddy tarda ~30 s en emitir el certificado).
+- Producción (VPS): DNS A record → IP del VPS, puertos 80/443 abiertos, `.env` con `DOMAIN`, `SCHEME=` vacío, `PORT=443`, `PUBLIC_BASE_URL=https://...` y secrets regenerados (`openssl rand -hex 32`); levantar con el override `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` (necesario para que Caddy publique el 80 además del 443 — el compose base solo mapea `${PORT}:${PORT}`, ver `backend/docker-compose.prod.yml`) y verificar `curl https://<dominio>/healthz` (Caddy tarda ~30 s en emitir el certificado).
 
 ## Pendientes / deuda
 

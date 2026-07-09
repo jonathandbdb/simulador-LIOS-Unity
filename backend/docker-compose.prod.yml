@@ -1,0 +1,17 @@
+# docker-compose.prod.yml — override de produccion (VPS con dominio + TLS).
+#
+# Reemplaza el mapeo de puertos de caddy del compose base: en prod Caddy
+# necesita el 80 (challenge ACME HTTP-01 de Let's Encrypt + redirect a HTTPS)
+# y el 443 (HTTPS). El compose base mapea ${PORT:-8080}:${PORT:-8080}, que en
+# prod (PORT=443) deja el 80 sin publicar (sin redirect ni challenge ACME) y
+# ademas duplicaria el 443 con ${HTTPS_PORT:-443}:443 — por eso `!override`
+# pisa la lista completa en vez de mergearla (requiere Docker Compose >= 2.24).
+#
+# Uso (en el VPS, con .env de produccion — ver docs/backend.md, seccion
+# "Como probar" > Produccion (VPS)):
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  caddy:
+    ports: !override
+      - "80:80"
+      - "443:443"

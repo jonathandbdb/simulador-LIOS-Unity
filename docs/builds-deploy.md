@@ -79,6 +79,26 @@ curl http://localhost:8080/healthz
 
 En producción: VPS con Docker, DNS apuntando al dominio, `.env` con `DOMAIN=api.tu-dominio.com`, `SCHEME=` (vacío), `PORT=443` y secrets regenerados; Caddy emite el certificado Let's Encrypt solo. Detalle completo en `docs/backend.md` y `backend/README.md`.
 
+**Deploy real (2026-07-09):** VPS `root@2.25.81.197` (Ubuntu, Docker 29.1.3, Compose 2.40.3),
+dominio `vr.conecta.sh` (DNS A record → esa IP), repo clonado en `/opt/simulador-lios`
+(reemplaza al deploy viejo del prototipo Godot que vivía en `/opt/simulador`, dado de baja:
+dump de su Postgres en `/root/backups/simulador-viejo-20260709.sql` y su `.env` en
+`/root/backups/env-viejo-20260709`). `docker-compose.prod.yml` se copió a mano al server
+(en esa fecha el archivo todavía no estaba commiteado en el repo) y se linkeó también como
+`docker-compose.override.yml` para que un `docker compose` pelado en `/opt/simulador-lios/backend`
+también aplique el override. Comando de arranque usado:
+
+```bash
+cd /opt/simulador-lios/backend
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+Verificado end-to-end: `docker compose ps` con los 4 servicios Up/healthy, migraciones Alembic +
+seed del catálogo (`0.5.1-clinical`, 3 lentes) sin errores en `docker compose logs api`,
+`https://vr.conecta.sh/healthz` → `ok`, `/api/lenses` y `/api/manifest.json` respondiendo,
+`http://vr.conecta.sh/healthz` → 308 a HTTPS, `/admin/login` → 200, y consola MinIO (9001)
+solo en `127.0.0.1` (no expuesta). Certificado Let's Encrypt emitido sin intervención manual.
+
 ## Decisiones y porqués
 
 - **Un solo proyecto y un solo build target Android para visor y tablet** → evita duplicar código compartido (catálogo, red WebSocket, modelos); el costo es tener que conmutar el loader XR por build.
