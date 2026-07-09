@@ -1,6 +1,6 @@
 """Proxy publico para servir archivos almacenados en MinIO.
 
-Sprint 8: el visor (y el admin que prueba) descargan APK/PCK desde
+Sprint 8: el visor (y el admin que prueba) descargan APK desde
 `/files/<key>` en lugar de hablar directo con MinIO. Asi:
 - el endpoint MinIO interno no necesita exponerse al exterior;
 - las URLs publicadas en `manifest.json` no requieren tokens.

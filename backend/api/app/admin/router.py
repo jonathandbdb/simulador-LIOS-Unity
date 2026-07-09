@@ -303,7 +303,7 @@ def lenses_activate(admin: AdminDep, session: SessionDep, catalog_pk: int):
 
 
 # ---------------------------------------------------------------------------
-# Versions (upload APK + PCK directo al bucket)
+# Versions (upload APK directo al bucket)
 # ---------------------------------------------------------------------------
 @router.get("/versions")
 def versions_list(request: Request, admin: AdminDep, session: SessionDep):

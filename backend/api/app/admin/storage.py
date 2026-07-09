@@ -48,7 +48,7 @@ def upload_file_streaming(stream: IO[bytes], key: str, content_type: str) -> Tup
     s3 = get_s3_client()
     sha = hashlib.sha256()
 
-    # Acumulamos en memoria por simplicidad (APK + PCK juntos ~150 MB).
+    # Acumulamos en memoria por simplicidad (APK ~150 MB).
     # Si llega a ser problema, migramos a multipart upload.
     buf = io.BytesIO()
     while True:
