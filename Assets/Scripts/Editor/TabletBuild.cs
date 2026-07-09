@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditor.Android;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEditor.XR.Management;
@@ -23,7 +24,19 @@ namespace Simulador.EditorTools
     /// (setear -> try/finally restaurar) para el applicationIdentifier/productName
     /// (P6.7): visor y tablet comparten el mismo Player Settings del target Android, asi
     /// que sin esto ambos APKs saldrian con el package del visor (com.simulador.vr) y no
-    /// podrian convivir instalados en el mismo dispositivo.
+    /// podrian convivir instalados en el mismo dispositivo. Tambien el icono: el default
+    /// del proyecto (PlayerSettings, target Unknown) es el del visor. Android NO resuelve
+    /// su icono real de lanzador contra ese default generico ni contra
+    /// PlayerSettings.SetIcons(..., IconKind.Application) (eso es la API generica estilo
+    /// iOS/otras plataformas, sin efecto real en el APK de Android) -- resuelve contra los
+    /// "platform icons" especificos de Android (PlayerSettings.GetPlatformIcons/
+    /// SetPlatformIcons con AndroidPlatformIconKind.Legacy/Round/Adaptive). Si esos slots
+    /// estan vacios (layerCount 0, el estado por defecto del proyecto), Android cae al
+    /// icono default generico -- por eso el primer intento de este swap (solo IconKind.
+    /// Application) compilaba y corria sin error pero el APK seguia saliendo con el icono
+    /// del visor (BUG REAL detectado en el release 0.2.0, ver docs/builds-deploy.md
+    /// Gotchas). Este script pisa los TRES platform icon kinds de Android con
+    /// Assets/Textures/Icons/icon_tablet.png SOLO durante el build y los restaura siempre.
     ///
     /// Uso:
     ///   - Menu: Simulador > Build Tablet (Android)
@@ -39,6 +52,28 @@ namespace Simulador.EditorTools
         // de este script) sigue con com.simulador.vr / "Simulador" (Project Settings).
         const string TabletApplicationIdentifier = "com.simulador.tablet";
         const string TabletProductName = "Simulador Tablet";
+
+        // Icono propio de la tablet. El default del proyecto (PlayerSettings, target
+        // Unknown) es el del visor -- Android hereda ese default cuando sus platform
+        // icons (Legacy/Round/Adaptive) estan vacios. Mismo patron que el identifier/
+        // productName: se pisan SOLO durante este build y se restauran siempre en el
+        // finally.
+        const string TabletIconPath = "Assets/Textures/Icons/icon_tablet.png";
+
+        // Los tres platform icon kinds que Android resuelve realmente (a diferencia de
+        // PlayerSettings.SetIcons(..., IconKind.Application), que es generico multi-
+        // plataforma y NO tiene efecto en el icono real del APK de Android -- ver
+        // gotcha en docs/builds-deploy.md). Legacy/Round piden 1 capa; Adaptive pide
+        // EXACTAMENTE 2 (background + foreground, minLayerCount == maxLayerCount == 2):
+        // se replica el mismo icon_tablet.png en ambas capas -- como el PNG ya es
+        // full-bleed opaco, el foreground cubre completo y el mask de Android recorta
+        // el circulo/squircle central igual que en Legacy/Round.
+        static readonly PlatformIconKind[] AndroidIconKinds =
+        {
+            AndroidPlatformIconKind.Legacy,
+            AndroidPlatformIconKind.Round,
+            AndroidPlatformIconKind.Adaptive,
+        };
 
         [MenuItem("Simulador/Build Tablet (Android)")]
         public static void BuildTabletMenu()
@@ -74,6 +109,13 @@ namespace Simulador.EditorTools
             string savedApplicationIdentifier = PlayerSettings.GetApplicationIdentifier(androidTarget);
             string savedProductName = PlayerSettings.productName;
 
+            // Icono: guardar los platform icons de Android (Legacy/Round/Adaptive; hoy
+            // vacios -- layerCount 0 -- porque nunca se seteo ninguno) ANTES de tocarlos,
+            // mismo momento que lo de arriba. Un array de PlatformIcon[] por kind.
+            var savedAndroidIcons = new Dictionary<PlatformIconKind, PlatformIcon[]>();
+            foreach (var kind in AndroidIconKinds)
+                savedAndroidIcons[kind] = PlayerSettings.GetPlatformIcons(androidTarget, kind);
+
             try
             {
                 // Apagar XR para Android: vaciar la lista de loaders.
@@ -85,6 +127,34 @@ namespace Simulador.EditorTools
                 // el mismo dispositivo -- instalar uno reemplaza al otro.
                 PlayerSettings.SetApplicationIdentifier(androidTarget, TabletApplicationIdentifier);
                 PlayerSettings.productName = TabletProductName;
+
+                // Icono propio de la tablet: sin esto, Android cae al icono default del
+                // proyecto (el del visor) porque sus platform icons quedan vacios. Se
+                // carga por path (AssetDatabase, NO Resources.Load -- restriccion del
+                // repo) y se pisa en los TRES platform icon kinds reales de Android
+                // (Legacy/Round/Adaptive -- ver comentario de la clase y de
+                // AndroidIconKinds).
+                var tabletIcon = AssetDatabase.LoadAssetAtPath<Texture2D>(TabletIconPath);
+                if (tabletIcon != null)
+                {
+                    foreach (var kind in AndroidIconKinds)
+                    {
+                        var icons = PlayerSettings.GetPlatformIcons(androidTarget, kind);
+                        foreach (var icon in icons)
+                        {
+                            var layers = new Texture2D[icon.maxLayerCount];
+                            for (int i = 0; i < layers.Length; i++)
+                                layers[i] = tabletIcon;
+                            icon.SetTextures(layers);
+                        }
+                        PlayerSettings.SetPlatformIcons(androidTarget, kind, icons);
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[TabletBuild] No se encontro el icono de tablet en '{TabletIconPath}'; " +
+                                      "se buildea con el icono default del proyecto (el del visor).");
+                }
 
                 Directory.CreateDirectory(Path.GetDirectoryName(OutputPath));
 
@@ -100,12 +170,15 @@ namespace Simulador.EditorTools
             }
             finally
             {
-                // Restaurar SIEMPRE los loaders XR y el identifier/nombre originales
-                // (el proyecto vuelve a quedar configurado para el visor, Quest intacto).
+                // Restaurar SIEMPRE los loaders XR, el identifier/nombre y el icono
+                // originales (el proyecto vuelve a quedar configurado para el visor,
+                // Quest intacto).
                 if (manager != null)
                     SetLoaders(manager, savedLoaders);
                 PlayerSettings.SetApplicationIdentifier(androidTarget, savedApplicationIdentifier);
                 PlayerSettings.productName = savedProductName;
+                foreach (var kind in AndroidIconKinds)
+                    PlayerSettings.SetPlatformIcons(androidTarget, kind, savedAndroidIcons[kind]);
             }
         }
 
