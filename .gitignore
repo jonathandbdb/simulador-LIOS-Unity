@@ -133,3 +133,9 @@ backend/api/.venv/
 
 # Keystore de firma del proyecto (irreemplazable, JAMÁS committear — repo público)
 /keystore/
+
+# Slides del TFM (material de presentación local; la entrega usa la URL pública del PDF)
+/slides/
+
+# Capturas de trabajo (material local, no forma parte de la entrega)
+/capturas/

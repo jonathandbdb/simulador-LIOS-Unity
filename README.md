@@ -35,7 +35,9 @@ El sistema se compone de **tres piezas que cooperan en red local**:
 
 El clínico se sienta junto al paciente con la tablet; el paciente lleva el visor. El clínico cambia de lente o ajusta un parámetro en la tablet y el paciente ve el cambio al instante, mientras el clínico monitoriza el resultado en la pantalla de la tablet. La comunicación visor↔tablet es **totalmente local** (WebSocket + autodescubrimiento UDP), sin depender de internet.
 
-> El proyecto se originó como prototipo en Godot y se ha **reimplementado y ampliado en Unity 6 + URP**, que es la versión presentada en este TFM. El catálogo de lentes embebido (v`0.5.0-clinical`) está calibrado con valores clínicos para tres lentes representativas: **Monofocal estándar**, **PanOptix Pro** (trifocal difractiva) y **Vivity EDOF**.
+> El proyecto se originó como prototipo en Godot y se ha **reimplementado y ampliado en Unity 6 + URP**, que es la versión presentada en este TFM. El catálogo de lentes embebido (v`0.5.1-clinical`) está calibrado con valores clínicos para tres lentes representativas: **Monofocal estándar**, **PanOptix Pro** (trifocal difractiva) y **Vivity EDOF**.
+>
+> El backend está **desplegado en producción**: `https://vr.conecta.sh` (API pública + panel de administración).
 
 ---
 
@@ -63,7 +65,7 @@ El clínico se sienta junto al paciente con la tablet; el paciente lleva el viso
 | API | **FastAPI 0.115** + Uvicorn (Python 3.12) |
 | ORM | **SQLModel** (SQLAlchemy 2 + Pydantic v2) |
 | Base de datos | **PostgreSQL 16** |
-| Almacenamiento de binarios | **MinIO** (S3-compatible) — para APK/PCK de actualizaciones |
+| Almacenamiento de binarios | **MinIO** (S3-compatible) — para los APK del sistema de actualizaciones OTA |
 | Reverse proxy / TLS | **Caddy 2** (HTTPS automático vía Let's Encrypt en producción) |
 | Panel admin | Jinja2 + HTMX + Tailwind (CDN), i18n es/en |
 | Auth | JWT (python-jose) + passlib/bcrypt |
@@ -101,7 +103,7 @@ curl http://localhost:8080/api/manifest.json   # versión activa
 
 En el **primer arranque**, `app/seed.py` siembra de forma idempotente: un usuario administrador, el catálogo de lentes (leído de `defaults/lentes.json`, montado como volumen), una versión *dummy* y un dispositivo de prueba (`DEV_TEST_001`).
 
-> Para producción (VPS con dominio + HTTPS), ver instrucciones detalladas en [`backend/README.md`](backend/README.md).
+> **Producción**: el backend de este TFM corre en `https://vr.conecta.sh` (VPS con Docker Compose + Caddy/Let's Encrypt, repo clonado y actualizable por `git pull`). Instrucciones detalladas de despliegue en [`backend/README.md`](backend/README.md) y [`docs/builds-deploy.md`](docs/builds-deploy.md).
 
 ### 3.2. Aplicación Unity
 
@@ -122,6 +124,12 @@ Build estándar de Unity para Android con el target Quest:
 
 - Package name: `com.simulador.vr`, arm64-v8a, OpenXR activado, min SDK 29.
 - Desde *File → Build Settings → Android* (escena `Main.unity`).
+
+> ⚠️ **Nota para builds Android desde un clon fresco:** el proyecto está configurado para firmar con
+> un keystore propio (`keystore/simulador.keystore`) que **no se distribuye en el repositorio** (está
+> gitignoreado; la firma es la identidad de la app para el sistema de actualizaciones). Para compilar
+> localmente: *Project Settings → Player → Publishing Settings* → desmarcar **Custom Keystore** (firma
+> con el debug keystore de tu máquina) o crear un keystore propio.
 
 Instalar en el Quest:
 
@@ -151,11 +159,20 @@ Unity -batchmode -quit -projectPath "." \
 3. Arrancar la tablet: detecta el visor automáticamente (o introducir su IP a mano) y conectar.
 4. El catálogo se carga sin conexión (catálogo embebido en `StreamingAssets/lentes.json`); si el backend está accesible, se sincroniza en segundo plano sin bloquear el arranque.
 
-> **Nota de red:** la URL del backend está fijada en `Assets/Scripts/Runtime/Data/DataManager.cs` (`http://192.168.88.198:8080`, IP de desarrollo en LAN). Si no hay backend accesible, la app **funciona igualmente** con el catálogo embebido y la caché local — el backend es opcional para la experiencia VR.
+> **Nota de red:** la URL del backend se resuelve por capas: `persistentDataPath/config.json`
+> (override de desarrollo, se sube por `adb push` sin recompilar) > `Assets/StreamingAssets/config.json`
+> (default de producción: `https://vr.conecta.sh`) > constante de respaldo en código. Si no hay backend
+> accesible, la sincronización del catálogo degrada al catálogo embebido y la caché local — y la
+> licencia del visor tiene un período de gracia offline (ver §5).
 
 ### 3.3. Tests
 
-Desde el editor: *Window → General → Test Runner → EditMode → Run All*. Cubren el parseo del catálogo, el merge de parámetros, la construcción del estado por ojo, la lógica de *blend* y la limpieza de *overrides*.
+Desde el editor: *Window → General → Test Runner → EditMode → Run All*. **5 suites / 86 tests** de la
+lógica pura del proyecto: catálogo y motor de lentes (`DataLogicTests`), resolución de configuración
+(`DataManagerLogicTests`), tokens de emparejamiento (`PairingStoreTests`), sistema de actualizaciones
+(`UpdateLogicTests`: semver, decisión de update, manifiesto, SHA-256) y licenciamiento
+(`LicenseLogicTests`: contrato de verificación, política de gracia offline). El backend tiene además su
+propia suite (`backend/api/tests/`, pytest, 22 tests — sin Docker, SQLite en memoria).
 
 ---
 
@@ -183,6 +200,10 @@ Desde el editor: *Window → General → Test Runner → EditMode → Run All*. 
 │   │   │   │   ├── TabletController.cs # App tablet: UI + cliente + descubrimiento
 │   │   │   │   └── StreamingCapture.cs # Captura de vídeo 768×576 @20 Hz → JPG a la tablet
 │   │   │   ├── Tablet/          # UI procedural de la tablet (temas, tarjetas, sliders)
+│   │   │   ├── Update/          # Actualizaciones OTA: UpdateLogic (pura), UpdateManager,
+│   │   │   │                    #   UpdateInstaller (intent+FileProvider), UpdatePromptVR
+│   │   │   ├── License/         # Licenciamiento: LicenseLogic (pura), LicenseManager,
+│   │   │   │                    #   LicenseBlockScreenVR (pantalla de bloqueo fail-closed)
 │   │   │   └── Vision/          # Render y óptica
 │   │   │       ├── VisionRendererFeature.cs # Feature URP (post-proceso por ojo)
 │   │   │       ├── VisionParamsBinder.cs    # Mapea parámetros de catálogo → uniforms
@@ -193,20 +214,28 @@ Desde el editor: *Window → General → Test Runner → EditMode → Run All*. 
 │   │   │       ├── BookHolder.cs             # Distancia libro→cámara (foco de lectura)
 │   │   │       ├── SimuladorInput.cs         # Mandos VR (A/B/X/Y)
 │   │   │       └── HudController.cs          # HUD diagnóstico (FPS, lente, escenario)
-│   │   └── Editor/             # CarLightTool, TabletBuild (herramientas de editor)
+│   │   └── Editor/             # CarLightTool, TabletBuild (build tablet: XR off, id, ícono)
 │   ├── Shaders/                # VisionPostProcess.shader, GlareBillboard.shader
+│   ├── Plugins/Android/        # AndroidManifest (permisos update) + FileProvider (.androidlib)
 │   ├── StreamingAssets/
-│   │   └── lentes.json         # Catálogo de lentes embebido (fallback offline)
+│   │   ├── lentes.json         # Catálogo de lentes embebido (fallback offline)
+│   │   └── config.json         # URL del backend (default de producción)
+│   ├── Textures/Icons/         # Íconos por app (visor / tablet)
 │   ├── Settings/               # URP: tiers PC y Mobile (Renderer + RP Asset)
 │   ├── XR/ · XRI/              # Configuración OpenXR + XR Interaction Toolkit
 │   ├── Prefabs/ · Art/ · Meshes/ · Materials/ · Fonts/ · Resources/
-│   └── Tests/EditMode/         # DataLogicTests.cs (NUnit)
+│   └── Tests/EditMode/         # 5 suites NUnit (86 tests de lógica pura)
 ├── backend/                    # Backend FastAPI + Postgres + MinIO + Caddy (Docker)
-│   ├── docker-compose.yml
+│   ├── docker-compose.yml      # + docker-compose.prod.yml (override de producción)
 │   ├── api/app/                # main, config, database, models, seed, routers, admin/
+│   ├── api/tests/              # Suite pytest del backend (22 tests)
 │   └── README.md               # Documentación específica del backend
 ├── defaults/
 │   └── lentes.json             # Semilla del catálogo (montada por el backend)
+├── docs/                       # Docs vivas por sistema (arquitectura, decisiones y gotchas):
+│                               #   vision-optica, networking, tablet, catalogo-lentes,
+│                               #   updates, licenciamiento, builds-deploy, backend
+├── keystore/                   # Keystore de firma (GITIGNOREADO — ver nota en §3.2)
 ├── Packages/ · ProjectSettings/ # Configuración de Unity
 └── README.md                   # (este archivo)
 ```
@@ -265,39 +294,60 @@ Mandos OpenXR: **A** cicla la lente del ojo izquierdo, **B** la del derecho, **X
 - **WebSocket propio** compatible con IL2CPP/Android (la implementación de `System.Net.WebSockets` no es fiable en ese runtime).
 - **Persistencia local** de overrides de parámetros (con *debounce*) y preferencias de UI.
 
+### Actualizaciones OTA semi-automáticas
+
+- Al abrir, **cada app consulta el manifiesto de versión de su canal** (`visor` / `tablet`) contra el backend.
+- Si hay una versión más nueva: **cartel de actualización** (en la tablet, overlay táctil; en el visor, panel VR con botones del mando) con el *changelog* → **descarga con progreso** → verificación **SHA-256** → instalador de Android (vía `FileProvider`).
+- El backend soporta **versión mínima forzada** (bloqueo hasta actualizar), versiones activas independientes por app, y calcula el hash automáticamente al subir el APK desde el panel.
+- **Telemetría del ciclo completo** (`update_check`, `update_accepted`, `update_success`…) visible en el panel de logs.
+
+### Licenciamiento por dispositivo
+
+- El visor **verifica su identidad** (`device_id`) contra el backend al arrancar. Un dispositivo desconocido se **auto-registra como "pendiente"** y queda en una pantalla de bloqueo *fail-closed*: sin input de gameplay y **sin red local** (la tablet ni siquiera puede descubrirlo).
+- El administrador **aprueba o rechaza** con un clic desde el panel (los pendientes se destacan y el dashboard avisa). Un dispositivo rechazado no puede volver a auto-registrarse; también hay suspensión y licencias con vencimiento.
+- **Gracia offline de 10 días**: un visor ya aprobado sigue funcionando sin internet con su última verificación cacheada — pensado para consultorios con conectividad intermitente.
+
 ### Backend y administración
 
-- **API pública:** catálogo de lentes, manifiesto de versión, verificación de licencia (rate-limited) y recepción de logs.
-- **Panel de administración web** (`/admin`): login JWT, CRUD de dispositivos, editor visual del catálogo de lentes, gestor de versiones con subida de APK/PCK a MinIO, visor de logs e i18n es/en.
+- **API pública:** catálogo de lentes, manifiesto de versión por app, verificación de licencia (rate-limited, con auto-registro) y recepción de logs.
+- **Panel de administración web** (`/admin`): login JWT, gestión de dispositivos (aprobar/rechazar/suspender), editor visual del catálogo de lentes, gestor de versiones por app con subida de APK a MinIO (SHA-256 automático), visor de logs con filtros/CSV e i18n es/en.
 
 ---
 
 ## 6. Usuario y contraseña de prueba
 
-El **panel de administración del backend** (`http://localhost:8080/admin`) tiene login. Credenciales sembradas por defecto en desarrollo:
+El **panel de administración del backend** tiene login. Usuario de prueba para el panel de **producción**:
 
-| Usuario | Contraseña |
-|---------|-----------|
-| `admin` | `admin123` |
+| Entorno | URL | Usuario | Contraseña |
+|---------|-----|---------|-----------|
+| **Producción (demo del TFM)** | https://vr.conecta.sh/admin | `revisor` | `14d00edcd119fbfe` |
+| Desarrollo local (`docker compose up`) | http://localhost:8080/admin | `admin` | `admin123` |
 
-> Estas credenciales se definen en `backend/.env` (`ADMIN_DEFAULT_USER` / `ADMIN_DEFAULT_PASS`) y **deben rotarse antes de cualquier despliegue en producción**.
+> Las credenciales locales se definen en `backend/.env` (`ADMIN_DEFAULT_USER` / `ADMIN_DEFAULT_PASS`);
+> en producción están rotadas. El usuario `revisor` existe específicamente para la corrección del TFM.
 
-La **aplicación VR y la tablet no tienen login**: el control de acceso se realiza por pre-registro del `device_id` del visor en el panel admin (verificación de licencia vía `/api/verify`).
+La **aplicación VR y la tablet no tienen login de usuario**: el control de acceso del visor es por
+**licencia de dispositivo** — al arrancar se auto-registra como "pendiente" y queda bloqueado hasta que
+un administrador lo aprueba desde el panel (`/api/verify`, ver §5 y [`docs/licenciamiento.md`](docs/licenciamiento.md)).
 
 ---
 
 ## 7. Despliegue, presentación y vídeo
 
-> _Sección requerida por la entrega del TFM. Completar con las URLs definitivas antes de entregar._
-
 | Recurso | Enlace |
 |---------|--------|
 | **Repositorio GitHub** | https://github.com/jonathandbdb/simulador-LIOS-Unity |
-| **Despliegue / build descargable** | _(pendiente — APK del visor y de la tablet, y/o backend en VPS)_ |
-| **Presentación (slides)** | _(pendiente — URL pública de Google Slides / PowerPoint / Canva)_ |
-| **Vídeo de demostración** | _(pendiente — URL pública de YouTube / Drive)_ |
+| **Despliegue (backend + panel admin)** | https://vr.conecta.sh — panel en [`/admin`](https://vr.conecta.sh/admin) (credenciales en §6), API interactiva en [`/docs`](https://vr.conecta.sh/docs) |
+| **Presentación (slides)** | _(pendiente — URL pública del PDF)_ |
+| **Vídeo de demostración** | _(pendiente — URL pública)_ |
 
-**Notas sobre el despliegue:** al ser una aplicación de realidad virtual para Meta Quest, el "despliegue" natural es la distribución del **APK por sideload** (instalación directa con `adb`), más el APK de la tablet. El backend puede desplegarse en un VPS con Docker Compose y HTTPS automático vía Caddy (ver [`backend/README.md`](backend/README.md)). La experiencia VR es plenamente funcional **sin backend**, gracias al catálogo embebido.
+**Notas sobre el despliegue:** el backend corre en un VPS con Docker Compose y HTTPS automático vía
+Caddy (ver [`docs/builds-deploy.md`](docs/builds-deploy.md)). Las aplicaciones (visor Quest y tablet)
+son APKs Android que se instalan por *sideload* en los dispositivos y a partir de ahí **se actualizan
+solas** contra el backend mediante el sistema OTA propio (§5) — no se distribuyen públicamente porque
+el visor requiere además la aprobación de licencia del dispositivo. La parte visitable de la demo sin
+hardware VR es el **panel de administración** y la API; la experiencia VR completa se muestra en el
+vídeo de demostración.
 
 ---
 
