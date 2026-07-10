@@ -51,6 +51,7 @@
       <div class="device-summary-meta hint xs">
         {{ t('dev.last_seen') }}: {% if d.last_seen %}{{ d.last_seen.strftime('%Y-%m-%d %H:%M') }}{% else %}{{ t('never') }}{% endif %}
         &nbsp;·&nbsp;{{ t('dev.last_ip') }}: {{ d.last_ip or '—' }}
+        &nbsp;·&nbsp;{{ t('dev.apk_version') }}: {{ d.last_apk_version or '—' }}
         &nbsp;·&nbsp;{{ t('dev.expiry') }}: {% if d.license_expiry %}{{ d.license_expiry.isoformat() }}{% else %}{{ t('dev.expiry_hint') }}{% endif %}
       </div>
       <div class="device-actions" onclick="event.stopPropagation()">

@@ -163,6 +163,7 @@ def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
             notes="auto-registrado por verify",
             last_seen=utcnow(),
             last_ip=client_ip,
+            last_apk_version=body.current_apk_version or None,
         )
         session.add(device)
         try:
@@ -197,6 +198,11 @@ def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
     # actualizar last_seen / last_ip (auditoria) antes de evaluar.
     device.last_seen = utcnow()
     device.last_ip = client_ip
+    # Solo pisamos la version conocida si llega un valor no vacio: un verify
+    # sin current_apk_version (cliente viejo o campo omitido) no debe borrar
+    # el ultimo valor bueno que ya teniamos registrado.
+    if body.current_apk_version:
+        device.last_apk_version = body.current_apk_version
 
     if device.status == "pending":
         session.commit()

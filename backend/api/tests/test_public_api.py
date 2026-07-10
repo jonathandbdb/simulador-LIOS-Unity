@@ -225,6 +225,60 @@ def test_verify_auto_register_race_recovers_without_500(client, monkeypatch):
         assert rows[0].status == "pending"
 
 
+def test_verify_persists_apk_version_new_device(client):
+    """El auto-registro persiste current_apk_version si vino en el body."""
+    r = client.post(
+        "/api/verify",
+        json={"device_id": "NUEVO_VISOR_APK", "current_apk_version": "0.3.0"},
+    )
+    assert r.status_code == 403
+    assert r.json()["reason"] == "DEVICE_PENDING"
+
+    from app.database import engine
+    from app.models import Device
+    from sqlmodel import Session, select
+
+    with Session(engine) as s:
+        d = s.exec(select(Device).where(Device.device_id == "NUEVO_VISOR_APK")).first()
+        assert d is not None
+        assert d.last_apk_version == "0.3.0"
+
+
+def test_verify_persists_apk_version_existing_device(client):
+    """Un device ya existente actualiza last_apk_version en cada verify OK."""
+    r = client.post(
+        "/api/verify",
+        json={"device_id": "DEV_TEST_001", "current_apk_version": "0.3.0"},
+    )
+    assert r.status_code == 200
+
+    from app.database import engine
+    from app.models import Device
+    from sqlmodel import Session, select
+
+    with Session(engine) as s:
+        d = s.exec(select(Device).where(Device.device_id == "DEV_TEST_001")).first()
+        assert d.last_apk_version == "0.3.0"
+
+    # Un verify posterior sin current_apk_version (ausente) NO debe pisar el
+    # valor ya conocido con None.
+    r2 = client.post("/api/verify", json={"device_id": "DEV_TEST_001"})
+    assert r2.status_code == 200
+    with Session(engine) as s:
+        d = s.exec(select(Device).where(Device.device_id == "DEV_TEST_001")).first()
+        assert d.last_apk_version == "0.3.0"
+
+    # Tampoco un current_apk_version vacio ("").
+    r3 = client.post(
+        "/api/verify",
+        json={"device_id": "DEV_TEST_001", "current_apk_version": ""},
+    )
+    assert r3.status_code == 200
+    with Session(engine) as s:
+        d = s.exec(select(Device).where(Device.device_id == "DEV_TEST_001")).first()
+        assert d.last_apk_version == "0.3.0"
+
+
 def test_verify_pending_cap_falls_back_to_not_found(client):
     """Con MAX_PENDING_DEVICES pending ya existentes, un unknown nuevo no crea
     fila y responde DEVICE_NOT_FOUND (no DEVICE_PENDING)."""

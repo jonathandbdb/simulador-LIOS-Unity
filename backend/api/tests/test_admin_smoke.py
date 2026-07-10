@@ -33,6 +33,24 @@ def _login(client):
     return client
 
 
+def test_devices_page_shows_apk_version(client):
+    """El resumen de cada dispositivo muestra last_apk_version ('-' si es NULL)."""
+    from app.database import engine
+    from app.models import Device
+    from sqlmodel import Session
+
+    _login(client)
+    with Session(engine) as s:
+        s.add(Device(device_id="DEV_WITH_APK", name="Con version", status="active",
+                      last_apk_version="0.3.0"))
+        s.add(Device(device_id="DEV_NO_APK", name="Sin version", status="active"))
+        s.commit()
+
+    r = client.get("/admin/devices")
+    assert r.status_code == 200
+    assert "0.3.0" in r.text
+
+
 def test_devices_approve_and_reject_change_status(client):
     from app.database import engine
     from app.models import Device

@@ -19,6 +19,10 @@ class Device(SQLModel, table=True):
     status: str = Field(default="active", description="active | suspended | pending | rejected")
     last_seen: Optional[datetime] = None
     last_ip: Optional[str] = None
+    last_apk_version: Optional[str] = Field(
+        default=None,
+        description="Ultima version de APK reportada por el visor en /api/verify (current_apk_version)",
+    )
     # NULL = licencia permanente (decision tomada en Sprint 0).
     license_expiry: Optional[date] = None
     notes: Optional[str] = None

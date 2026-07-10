@@ -59,6 +59,7 @@ TRANSLATIONS: dict[str, dict[Lang, str]] = {
     "dev.status":          {"es": "Estado",                       "en": "Status"},
     "dev.last_seen":       {"es": "Ultima conexion",              "en": "Last seen"},
     "dev.last_ip":         {"es": "IP",                           "en": "IP"},
+    "dev.apk_version":     {"es": "Version app",                  "en": "App version"},
     "dev.expiry":          {"es": "Vence",                        "en": "Expires"},
     "dev.notes":           {"es": "Notas",                        "en": "Notes"},
     "dev.actions":         {"es": "Acciones",                     "en": "Actions"},
