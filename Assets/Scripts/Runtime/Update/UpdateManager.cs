@@ -515,27 +515,10 @@ namespace Simulador.Update
             if (DataManager.Instance == null) yield break; // sin backend resuelto todavia, no hay a donde mandar
             string url = DataManagerLogic.BuildSyncUrl(DataManager.Instance.BackendUrl, LogEndpoint);
             string json = UpdateLogic.SerializeLogBatch(SystemInfo.deviceUniqueIdentifier, events);
-            byte[] bodyRaw = System.Text.Encoding.UTF8.GetBytes(json);
-
-            using var req = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
-            req.uploadHandler = new UploadHandlerRaw(bodyRaw);
-            req.downloadHandler = new DownloadHandlerBuffer();
-            req.SetRequestHeader("Content-Type", "application/json");
-            req.timeout = ManifestTimeoutSeconds; // batch chico, mismo criterio que el check de manifest
-
-            // Mismo patron de degradacion sin excepciones que CheckManifest/DownloadApk:
-            // un fallo de telemetria JAMAS debe propagarse ni afectar el flujo de update real.
-            UnityWebRequestAsyncOperation op = null;
-            try { op = req.SendWebRequest(); }
-            catch (Exception e)
-            {
-                Debug.Log($"Update: telemetria no se pudo enviar ({e.GetType().Name}).");
-                yield break;
-            }
-            yield return op;
-
-            if (req.result != UnityWebRequest.Result.Success)
-                Debug.Log($"Update: telemetria fallo al enviar ({req.result}).");
+            // Cuerpo del POST extraido a BackendTelemetry.PostJson (compartido con
+            // Simulador.License.LicenseManager, ver docs/updates.md) -- mismo timeout
+            // que el check de manifest (batch chico), mismo criterio de degradacion.
+            yield return BackendTelemetry.PostJson(url, json, "Update: telemetria", ManifestTimeoutSeconds);
         }
     }
 }

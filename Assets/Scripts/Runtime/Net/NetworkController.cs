@@ -107,8 +107,28 @@ namespace Simulador.Net
             ["ruta_noche"] = "Ruta nocturna",
         };
 
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
-        private static void Bootstrap()
+        // NOTA fail-closed (ver docs/licenciamiento.md): este controller YA NO se
+        // auto-crea al cargar la escena. Antes habia un [RuntimeInitializeOnLoadMethod]
+        // que llamaba EnsureCreated() directo, y eso dejaba la red del visor (server WS
+        // + beacon UDP) arriba y descubrible/conectable por una tablet durante los
+        // segundos que tarda el gate de licencia en decidir (WaitUntil de config +
+        // verify HTTP), incluso si el dispositivo terminaba denegado/bloqueado. Ahora la
+        // creacion queda CONDICIONADA a la licencia: es
+        // <c>Simulador.License.LicenseManager</c> quien llama <see cref="EnsureCreated"/>
+        // -- al arrancar si la gracia offline lo permite, tras un verify 200 OK, o al
+        // desbloquear. La app tablet (con <see cref="TabletController"/> en escena, sin
+        // <c>LicenseManager</c>) nunca necesito este bootstrap: sigue sin levantar server.
+
+        /// <summary>
+        /// Crea el <see cref="NetworkController"/> si todavia no existe (idempotente:
+        /// no-op si ya hay una <see cref="Instance"/>, o si la escena tiene un
+        /// <see cref="TabletController"/> -- ahi la app es cliente y no se levanta
+        /// server). La llama exclusivamente <c>Simulador.License.LicenseManager</c>
+        /// (ver nota arriba y docs/licenciamiento.md): al arrancar por gracia offline,
+        /// tras un verify 200 OK (idempotente, sirve tanto para crear como para
+        /// RECREAR tras un bloqueo previo que la destruyo), o al desbloquear.
+        /// </summary>
+        public static void EnsureCreated()
         {
             if (Instance != null) return;
             // En la app tablet (escena con TabletController) NO se levanta el server:

@@ -269,11 +269,13 @@ descarta, igual que el resto de las llamadas de red de esta clase.
   `[JsonProperty("device_id")]` etc. porque `event` es palabra reservada de C# — se mapea por
   atributo en vez de escapar el identificador con `@event`.
 - `UpdateManager.SendTelemetry(params UpdateLogic.LogEvent[])` encola un
-  `StartCoroutine(SendTelemetryAsync(...))` por batch — `POST` con
-  `UploadHandlerRaw`/`DownloadHandlerBuffer`, `Content-Type: application/json`, mismo timeout
-  que el chequeo de manifest (5 s, batch chico). `device_id` es siempre
-  `SystemInfo.deviceUniqueIdentifier` (no `Application.identifier`: eso es el canal, no el
-  dispositivo).
+  `StartCoroutine(SendTelemetryAsync(...))` por batch — arma la URL/JSON y delega el POST en sí
+  a `Simulador.Data.BackendTelemetry.PostJson` (extraído en la tarea de licenciamiento, F3 de
+  `docs/licenciamiento.md`, para que `LicenseManager` comparta el mismo cuerpo en vez de
+  duplicarlo): `UploadHandlerRaw`/`DownloadHandlerBuffer`, `Content-Type: application/json`,
+  mismo timeout que el chequeo de manifest (5 s, batch chico), degradación sin excepción. `device_id`
+  es siempre `SystemInfo.deviceUniqueIdentifier` (no `Application.identifier`: eso es el canal,
+  no el dispositivo).
 
 | Evento | Cuándo se emite | Detail |
 |--------|------------------|--------|

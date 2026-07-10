@@ -10,7 +10,7 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
 
 | Archivo | Rol |
 |---|---|
-| `Assets/Scripts/Runtime/Net/NetworkController.cs` | Orquestador del lado visor. Se auto-crea vía `[RuntimeInitializeOnLoadMethod]` (salvo que la escena tenga un `TabletController`: ahí la app es cliente y NO levanta server). Genera el `PairingPin` (6 dígitos) de la sesión, arranca `WebSocketServer` (:9090), `DiscoveryBeacon` (:9091) y `StreamingCapture`; valida el emparejamiento por PIN (capa de protocolo) y traduce comandos JSON a llamadas sobre `DataManager`, `GlareController`, `ScenarioManager` y (`set_hud`) el `HudController` de `Vision/` (referencia resuelta y cacheada on-demand con `FindObjectsInactive.Include`, sin editar `HudController.cs` — frontera con `Vision/`). |
+| `Assets/Scripts/Runtime/Net/NetworkController.cs` | Orquestador del lado visor. **Ya NO tiene un `[RuntimeInitializeOnLoadMethod]` propio** (fail-closed, hardening posterior a F3 — ver `docs/licenciamiento.md`): `public static void EnsureCreated()` (idempotente: no-op si ya hay `Instance` o si la escena tiene un `TabletController` — ahí la app es cliente y NO levanta server) sigue existiendo, pero la creación depende por completo de que `Simulador.License.LicenseManager` la llame — al arrancar por gracia offline, tras un verify 200 OK (siempre, idempotente) o al desbloquear tras un bloqueo. Antes de este hardening había un bootstrap automático al cargar la escena que dejaba la red arriba (y descubrible por una tablet) mientras el gate de licencia todavía estaba decidiendo; ahora la red del visor existe si y solo si la licencia está OK. Genera el `PairingPin` (6 dígitos) de la sesión, arranca `WebSocketServer` (:9090), `DiscoveryBeacon` (:9091) y `StreamingCapture`; valida el emparejamiento por PIN (capa de protocolo) y traduce comandos JSON a llamadas sobre `DataManager`, `GlareController`, `ScenarioManager` y (`set_hud`) el `HudController` de `Vision/` (referencia resuelta y cacheada on-demand con `FindObjectsInactive.Include`, sin editar `HudController.cs` — frontera con `Vision/`). |
 | `Assets/Scripts/Runtime/Net/WebSocketServer.cs` | Servidor WebSocket RFC 6455 hecho a mano sobre `TcpListener`/`NetworkStream`. Handshake HTTP, framing, ping→pong, broadcast texto/binario. Guarda el flag `Authenticated` por cliente (lo fija `NetworkController` tras validar el PIN) y filtra los broadcasts por ese flag. |
 | `Assets/Scripts/Runtime/Net/WebSocketClient.cs` | Cliente WebSocket espejo (lado tablet). Handshake cliente, lectura de frames texto/binario, envío de texto **enmascarado** (obligatorio cliente→servidor por RFC 6455). |
 | `Assets/Scripts/Runtime/Net/StreamingCapture.cs` | Captura la vista del paciente (cámara propia que sigue la XR camera) y la broadcastea como JPG con header de 1 byte por ojo. |
@@ -380,11 +380,16 @@ puntual) o borrar `persistentDataPath/paired_tokens.json` del lado visor a mano 
 emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y porqués).
 
 ## Cómo probar
-1. **En Editor (loopback):** abrir `Assets/Scenes/Main.unity` y dar Play — `NetworkController` se
-   auto-instancia y loguea `WebSocketServer: escuchando en :9090`, el beacon a :9091 y el PIN de la
-   sesión (`Net: PIN de emparejamiento de esta sesion: NNNNNN`; en el visor real lo muestra el HUD,
-   fuera de este cambio). En otra instancia (o build) correr `Assets/Scenes/Tablet.unity`: debe
-   listar el visor descubierto en segundos; si no, usar "Conexión manual" con `127.0.0.1`.
+1. **En Editor (loopback):** abrir `Assets/Scenes/Main.unity` y dar Play — `NetworkController` YA
+   NO se auto-instancia sola (fail-closed, ver `docs/licenciamiento.md`): es
+   `Simulador.License.LicenseManager` quien la crea apenas el gate de licencia lo permite (gracia
+   offline al arrancar, o tras un verify 200 OK contra el backend configurado). Con un dispositivo
+   con licencia válida (o dentro de la gracia offline) debe verse igual que antes, solo que el log
+   `WebSocketServer: escuchando en :9090` aparece DESPUÉS de los logs de `License:`, no al cargar
+   la escena. Loguea el beacon a :9091 y el PIN de la sesión (`Net: PIN de emparejamiento de esta
+   sesion: NNNNNN`; en el visor real lo muestra el HUD, fuera de este cambio). En otra instancia
+   (o build) correr `Assets/Scenes/Tablet.unity`: debe listar el visor descubierto en segundos; si
+   no, usar "Conexión manual" con `127.0.0.1`.
 2. Tocar el visor en la lista (o "Conectar" en manual) abre el `PinScreen`: ingresar el PIN de la
    consola del visor y confirmar. Verificar en consola del visor `Net: cliente N conectado;
    esperando PIN de emparejamiento.` → `Net: cliente N autenticado, enviando hello.`, y que la

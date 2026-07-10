@@ -119,6 +119,7 @@ Resumen (el detalle y el porqué viven en la skill `il2cpp-networking-gotchas`):
 | Networking visor↔tablet | `Assets/Scripts/Runtime/Net/` | `docs/networking.md` |
 | App tablet | `Assets/Scripts/Runtime/Tablet/`, `TabletController.cs` | `docs/tablet.md` |
 | Catálogo / motor de lentes | `Assets/Scripts/Runtime/Data/`, `StreamingAssets/lentes.json` | `docs/catalogo-lentes.md` |
+| Licenciamiento por dispositivo | `Assets/Scripts/Runtime/License/` | `docs/licenciamiento.md` |
 | Builds y deploy | `Assets/Scripts/Editor/TabletBuild.cs`, adb, docker | `docs/builds-deploy.md` |
 | Backend | `backend/` | `docs/backend.md` |
 | Updates | `Assets/Scripts/Runtime/Update/` | `docs/updates.md` |
