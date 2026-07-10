@@ -17,7 +17,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
-from sqlmodel import Session, select
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, func, select
 
 from app.database import get_session
 from app.models import Device, LensCatalog, UpdateLog, Version
@@ -44,7 +45,6 @@ class ManifestResponse(BaseModel):
 class VerifyRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=128)
     current_apk_version: str | None = None
-    current_asset_version: str | None = None
 
 
 class VerifyResponse(BaseModel):
@@ -107,6 +107,20 @@ def get_manifest(session: SessionDep, app: Literal["visor", "tablet"] = "visor")
 # ---------------------------------------------------------------------------
 # POST /api/verify
 # ---------------------------------------------------------------------------
+# Tope de devices auto-registrados en estado "pending" simultaneos. Evita que
+# un atacante inunde la tabla de devices con auto-registros (DoS de storage);
+# por encima del tope, un device_id desconocido vuelve a DEVICE_NOT_FOUND sin
+# crear fila (el admin tiene que pre-registrarlo a mano o liberar cupo).
+MAX_PENDING_DEVICES = 50
+
+
+def _denied(reason: str, message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=403,
+        content=VerifyDenied(reason=reason, message=message).model_dump(),
+    )
+
+
 @router.post("/verify")
 @limiter.limit("10/minute")
 def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
@@ -115,45 +129,96 @@ def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
     Rate-limited a 10 requests/min/IP para evitar brute-force sin romper
     clinicas donde varios visores comparten IP publica por NAT.
     Decision Sprint 0: licencias permanentes (license_expiry NULL = permanente).
+
+    Orden de chequeos (feature de licenciamiento por dispositivo):
+    unknown (auto-registro) -> pending -> rejected -> suspended -> expired -> ok.
     """
     device = session.exec(
         select(Device).where(Device.device_id == body.device_id)
     ).first()
-
-    # Actualizar last_seen / last_ip si el device existe (auditoria).
-    if device is not None:
-        device.last_seen = utcnow()
-        device.last_ip = request.client.host if request.client else None
+    client_ip = request.client.host if request.client else None
 
     if device is None:
-        # Decision Sprint 0: pre-registro manual. Devices desconocidos = denied.
+        # Auto-registro: si hay cupo, se crea en estado "pending" para que el
+        # admin lo apruebe/rechace desde el panel. Un device "rejected" NUNCA
+        # vuelve a pasar por esta rama (ya existe la fila), asi que rechazar
+        # es definitivo hasta que un admin lo edite a mano.
+        pending_count = session.exec(
+            select(func.count()).select_from(Device).where(Device.status == "pending")
+        ).one()
+        if pending_count >= MAX_PENDING_DEVICES:
+            return _denied(
+                "DEVICE_NOT_FOUND",
+                "Este dispositivo no esta registrado. Contacte al administrador.",
+            )
+        device = Device(
+            device_id=body.device_id,
+            name=f"Visor {body.device_id[:8]}",
+            status="pending",
+            notes="auto-registrado por verify",
+            last_seen=utcnow(),
+            last_ip=client_ip,
+        )
+        session.add(device)
+        try:
+            session.commit()
+        except IntegrityError:
+            # Carrera: dos requests concurrentes con el mismo device_id
+            # desconocido pasan ambas el SELECT de arriba antes de que
+            # cualquiera hiciera commit; el segundo commit pisa el unique
+            # constraint de device_id. Descartamos nuestro insert y releemos
+            # la fila que gano la carrera para evaluar SU status (cae al
+            # flujo normal de abajo; en la practica va a ser "pending", el
+            # estado inicial del auto-registro, pero re-evaluamos en vez de
+            # asumirlo por si un admin ya la edito en el intervalo).
+            session.rollback()
+            device = session.exec(
+                select(Device).where(Device.device_id == body.device_id)
+            ).first()
+            if device is None:
+                # Practicamente imposible (la fila ganadora se borraria justo
+                # en este intervalo), pero no seguimos con device=None.
+                return _denied(
+                    "DEVICE_NOT_FOUND",
+                    "Este dispositivo no esta registrado. Contacte al administrador.",
+                )
+        else:
+            return _denied(
+                "DEVICE_PENDING",
+                "Dispositivo registrado, pendiente de aprobacion del administrador.",
+            )
+
+    # Device existente (o resuelto tras una carrera de auto-registro):
+    # actualizar last_seen / last_ip (auditoria) antes de evaluar.
+    device.last_seen = utcnow()
+    device.last_ip = client_ip
+
+    if device.status == "pending":
         session.commit()
-        return JSONResponse(
-            status_code=403,
-            content=VerifyDenied(
-                reason="DEVICE_NOT_FOUND",
-                message="Este dispositivo no esta registrado. Contacte al administrador.",
-            ).model_dump(),
+        return _denied(
+            "DEVICE_PENDING",
+            "Dispositivo pendiente de aprobacion del administrador.",
+        )
+
+    if device.status == "rejected":
+        session.commit()
+        return _denied(
+            "DEVICE_REJECTED",
+            "Dispositivo rechazado. Contacte al administrador.",
         )
 
     if device.status == "suspended":
         session.commit()
-        return JSONResponse(
-            status_code=403,
-            content=VerifyDenied(
-                reason="DEVICE_SUSPENDED",
-                message="Este dispositivo esta suspendido.",
-            ).model_dump(),
+        return _denied(
+            "DEVICE_SUSPENDED",
+            "Este dispositivo esta suspendido.",
         )
 
     if device.license_expiry is not None and device.license_expiry < date.today():
         session.commit()
-        return JSONResponse(
-            status_code=403,
-            content=VerifyDenied(
-                reason="LICENSE_EXPIRED",
-                message="La licencia de este dispositivo ha vencido.",
-            ).model_dump(),
+        return _denied(
+            "LICENSE_EXPIRED",
+            "La licencia de este dispositivo ha vencido.",
         )
 
     session.commit()

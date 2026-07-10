@@ -13,6 +13,18 @@
 </div>
 {% endif %}
 
+{% if devices_pending > 0 %}
+<div class="banner-warn">
+  <div class="title">⚠ {{ t('dash.pending_title') }}</div>
+  <ul>
+    <li>
+      {{ t('dash.pending_devices').format(count=devices_pending) }}
+      <a href="/admin/devices">{{ t('dash.pending_link') }}</a>
+    </li>
+  </ul>
+</div>
+{% endif %}
+
 <div class="grid cols-4 mb-6">
   <div class="card stat">
     <div class="label">{{ t('dash.devices_total') }}</div>

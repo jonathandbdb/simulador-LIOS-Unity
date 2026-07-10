@@ -16,7 +16,7 @@ class Device(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     device_id: str = Field(unique=True, index=True, description="OS.get_unique_id() del visor")
     name: str = Field(description='Nombre descriptivo (ej. "Visor Consultorio 3")')
-    status: str = Field(default="active", description="active | suspended | pending")
+    status: str = Field(default="active", description="active | suspended | pending | rejected")
     last_seen: Optional[datetime] = None
     last_ip: Optional[str] = None
     # NULL = licencia permanente (decision tomada en Sprint 0).

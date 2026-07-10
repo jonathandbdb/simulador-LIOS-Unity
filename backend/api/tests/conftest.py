@@ -27,11 +27,17 @@ def client(monkeypatch):
       la version dummy y el device `DEV_TEST_001` que usan los tests.
     """
     import app.main as main_module
+    from app.routers import limiter
 
     monkeypatch.setattr(main_module, "run_migrations", lambda: None)
     monkeypatch.setattr(main_module, "ensure_bucket", lambda: None)
 
     init_db()
+    # El limiter (slowapi) es un singleton de modulo con storage en memoria
+    # que persiste entre tests (el `app` de FastAPI tambien es un singleton
+    # de modulo). Sin este reset, la cuota de /api/verify (10/min/IP, misma
+    # IP "testclient" siempre) se agotaria entre tests independientes.
+    limiter.reset()
 
     with TestClient(main_module.app) as c:
         yield c

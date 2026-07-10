@@ -12,11 +12,13 @@
       <option value="active">{{ t('dev.status.active') }}</option>
       <option value="pending">{{ t('dev.status.pending') }}</option>
       <option value="suspended">{{ t('dev.status.suspended') }}</option>
+      <option value="rejected">{{ t('dev.status.rejected') }}</option>
     </select>
     <input class="input" name="license_expiry" type="date" title="{{ t('dev.expiry_hint') }}" />
     <button class="btn btn-primary" type="submit">{{ t('dev.save') }}</button>
     <input class="input span-full" name="notes" placeholder="{{ t('dev.notes') }}" />
   </form>
+  <p class="muted xs" style="margin-top: 8px;">{{ t('dev.disable_hint') }}</p>
 </div>
 
 <div class="card">
@@ -24,6 +26,10 @@
     <form id="edit-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/edit"></form>
     <form id="del-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/delete"
           onsubmit="return confirm('{{ t('dev.delete_confirm') }}');"></form>
+    {% if d.status == 'pending' %}
+    <form id="approve-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/approve"></form>
+    <form id="reject-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/reject"></form>
+    {% endif %}
   {% endfor %}
 
   <table>
@@ -41,13 +47,18 @@
     <tbody>
       {% for d in devices %}
       <tr>
-        <td class="mono xs">{{ d.device_id }}</td>
+        <td class="mono xs">
+          {{ d.device_id }}
+          {% if d.status == 'pending' %}<span class="badge badge-warn">{{ t('dev.status.pending') }}</span>{% endif %}
+          {% if d.status == 'rejected' %}<span class="badge badge-err">{{ t('dev.status.rejected') }}</span>{% endif %}
+        </td>
         <td><input form="edit-{{ d.id }}" class="input" name="name" value="{{ d.name }}" style="min-width: 140px;" /></td>
         <td>
           <select form="edit-{{ d.id }}" class="select" name="status">
             <option value="active"    {% if d.status=='active' %}selected{% endif %}>{{ t('dev.status.active') }}</option>
             <option value="pending"   {% if d.status=='pending' %}selected{% endif %}>{{ t('dev.status.pending') }}</option>
             <option value="suspended" {% if d.status=='suspended' %}selected{% endif %}>{{ t('dev.status.suspended') }}</option>
+            <option value="rejected"  {% if d.status=='rejected' %}selected{% endif %}>{{ t('dev.status.rejected') }}</option>
           </select>
         </td>
         <td class="muted xs nowrap">{% if d.last_seen %}{{ d.last_seen.strftime('%Y-%m-%d %H:%M') }}{% else %}{{ t('never') }}{% endif %}</td>
@@ -57,6 +68,10 @@
                  value="{{ d.license_expiry.isoformat() if d.license_expiry else '' }}" />
         </td>
         <td class="right nowrap">
+          {% if d.status == 'pending' %}
+          <button form="approve-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.approve') }}</button>
+          <button form="reject-{{ d.id }}"  class="btn btn-danger btn-sm"  type="submit">{{ t('dev.reject') }}</button>
+          {% endif %}
           <button form="edit-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.save') }}</button>
           <button form="del-{{ d.id }}"  class="btn btn-danger btn-sm"  type="submit">{{ t('dev.delete') }}</button>
         </td>

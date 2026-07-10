@@ -107,6 +107,9 @@ def dashboard(request: Request, admin: AdminDep, session: SessionDep):
     devices_active = session.exec(
         select(func.count()).select_from(Device).where(Device.status == "active")
     ).one()
+    devices_pending = session.exec(
+        select(func.count()).select_from(Device).where(Device.status == "pending")
+    ).one()
     logs_total = session.exec(select(func.count()).select_from(UpdateLog)).one()
     active_version_visor = session.exec(
         select(Version).where(Version.is_active == True, Version.app == "visor")  # noqa: E712
@@ -128,6 +131,7 @@ def dashboard(request: Request, admin: AdminDep, session: SessionDep):
         admin_user=admin,
         devices_total=devices_total,
         devices_active=devices_active,
+        devices_pending=devices_pending,
         logs_total=logs_total,
         active_version_visor=active_version_visor,
         active_version_tablet=active_version_tablet,
@@ -157,8 +161,18 @@ def _flash_redirect(target: str, msg: str, kind: str = "ok") -> RedirectResponse
 
 @router.get("/devices")
 def devices_list(request: Request, admin: AdminDep, session: SessionDep):
-    devices = session.exec(select(Device).order_by(Device.created_at.desc())).all()
-    return render(request, "devices.html", admin_user=admin, devices=devices)
+    # Pending primero (requieren accion del admin), despues el resto por
+    # fecha de creacion descendente.
+    devices = session.exec(
+        select(Device).order_by(
+            (Device.status != "pending"), desc(Device.created_at)
+        )
+    ).all()
+    pending_count = sum(1 for d in devices if d.status == "pending")
+    return render(
+        request, "devices.html", admin_user=admin,
+        devices=devices, pending_count=pending_count,
+    )
 
 
 @router.post("/devices")
@@ -201,6 +215,30 @@ def devices_edit(
     d.name = name.strip()
     d.status = status
     d.license_expiry = _parse_date(license_expiry)
+    d.updated_at = utcnow()
+    session.add(d)
+    session.commit()
+    return _flash_redirect("/admin/devices", "OK")
+
+
+@router.post("/devices/{device_pk}/approve")
+def devices_approve(admin: AdminDep, session: SessionDep, device_pk: int):
+    d = session.get(Device, device_pk)
+    if d is None:
+        raise HTTPException(404)
+    d.status = "active"
+    d.updated_at = utcnow()
+    session.add(d)
+    session.commit()
+    return _flash_redirect("/admin/devices", "OK")
+
+
+@router.post("/devices/{device_pk}/reject")
+def devices_reject(admin: AdminDep, session: SessionDep, device_pk: int):
+    d = session.get(Device, device_pk)
+    if d is None:
+        raise HTTPException(404)
+    d.status = "rejected"
     d.updated_at = utcnow()
     session.add(d)
     session.commit()
