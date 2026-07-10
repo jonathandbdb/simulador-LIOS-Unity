@@ -63,6 +63,7 @@ services:
       ADMIN_DEFAULT_PASS: ${ADMIN_DEFAULT_PASS:-admin123}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-30}
     volumes:
       # El seed lee este archivo para sembrar el catalogo de lentes inicial
       # (mismos lentes que tiene embebidos el APK como fallback).

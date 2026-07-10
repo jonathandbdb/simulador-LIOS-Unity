@@ -9,7 +9,8 @@ Sprint 3 alcance:
 Sprint 8 agregara /api/admin/* con JWT + CRUD completo.
 """
 import json
-from datetime import date
+import logging
+from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -17,12 +18,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from slowapi import Limiter
 from slowapi.util import get_remote_address
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, func, select
 
+from app.config import settings
 from app.database import get_session
 from app.models import Device, LensCatalog, UpdateLog, Version
 from app.utils import utcnow
+
+logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 router = APIRouter(prefix="/api", tags=["public"])
@@ -248,6 +253,46 @@ def get_lenses(session: SessionDep) -> LensesResponse:
 
 
 # ---------------------------------------------------------------------------
+# Retencion de logs (UpdateLog) — purga los mas viejos que
+# settings.log_retention_days. Se corre en el arranque de la app (siempre) y
+# en cada POST /api/log (con throttle, ver _maybe_purge_logs) para que la
+# tabla no crezca sin limite sin depender de un cron aparte.
+# ---------------------------------------------------------------------------
+LOG_PURGE_THROTTLE = timedelta(hours=1)
+_last_log_purge_at: datetime | None = None  # timestamp en memoria; proceso unico
+
+
+def purge_old_logs(session: Session) -> int:
+    """Borra filas de UpdateLog mas viejas que log_retention_days. Devuelve
+    la cantidad de filas borradas."""
+    cutoff = utcnow() - timedelta(days=settings.log_retention_days)
+    result = session.execute(sa_delete(UpdateLog).where(UpdateLog.created_at < cutoff))
+    session.commit()
+    return result.rowcount or 0
+
+
+def _maybe_purge_logs(session: Session) -> None:
+    """Purga logs viejos, como maximo una vez por hora.
+
+    Proceso unico (un solo worker uvicorn) -> un timestamp de modulo en
+    memoria alcanza como throttle, sin necesidad de lock distribuido ni
+    tabla de estado. Se llama tanto en el arranque (siempre ejecuta, porque
+    `_last_log_purge_at` arranca en None) como en cada POST /api/log.
+    """
+    global _last_log_purge_at
+    now = utcnow()
+    if _last_log_purge_at is not None and now - _last_log_purge_at < LOG_PURGE_THROTTLE:
+        return
+    _last_log_purge_at = now
+    deleted = purge_old_logs(session)
+    if deleted:
+        logger.info(
+            "Purga de logs: %d fila(s) borrada(s) (retention=%d dias)",
+            deleted, settings.log_retention_days,
+        )
+
+
+# ---------------------------------------------------------------------------
 # POST /api/log
 # ---------------------------------------------------------------------------
 @router.post("/log")
@@ -264,4 +309,5 @@ def post_log(body: LogRequest, session: SessionDep):
             detail=ev.detail,
         ))
     session.commit()
+    _maybe_purge_logs(session)
     return {"status": "ok", "events_logged": len(body.events)}

@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Logging
     log_level: str = "info"
 
+    # Retencion de logs de UpdateLog (POST /api/log): se purgan los mas
+    # viejos que N dias en el arranque y, con throttle de 1h, en cada
+    # POST /api/log (ver app/routers.py — purge_old_logs/_maybe_purge_logs).
+    log_retention_days: int = 30
+
     @property
     def cors_origins_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

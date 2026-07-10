@@ -124,9 +124,14 @@ tr:last-child td { border-bottom: none; }
   padding: 9px 12px;
   color: var(--text);
   width: 100%;
+  min-width: 0;
   font-family: inherit;
   font-size: 14px;
 }
+/* Ancho minimo para que un <select> nunca se vea recortado dentro de una
+   celda angosta (ej. tabla/grid con muchas columnas) — el texto de la
+   opcion mas larga ("Suspendido"/"Rechazado") siempre entra comodo. */
+.select { min-width: 140px; }
 .input:focus, .select:focus, textarea:focus {
   outline: none;
   border-color: var(--accent);
@@ -137,9 +142,12 @@ tr:last-child td { border-bottom: none; }
 .field > span { display: block; font-size: 13px; color: var(--text-2); margin-bottom: 4px; }
 fieldset {
   border: 1px solid var(--border); border-radius: 10px;
-  padding: 12px 14px; margin: 0;
+  padding: 14px 16px; margin: 0;
 }
-legend { font-size: 13px; font-weight: 600; color: var(--text-2); padding: 0 6px; }
+legend {
+  font-size: 12px; font-weight: 600; color: var(--text-2); padding: 0 6px;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
 
 /* ------------------------------------------------------------------
    Botones
@@ -258,10 +266,34 @@ legend { font-size: 13px; font-weight: 600; color: var(--text-2); padding: 0 6px
 .lens-card[open] summary .chev { transform: rotate(180deg); }
 .lens-card summary .input { max-width: 320px; }
 .lens-card .lens-id { font-size: 12px; color: var(--text-3); font-family: ui-monospace, monospace; }
-.lens-card .body { padding: 4px 14px 14px; display: grid; gap: 12px; }
-.param-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 10px; }
+.lens-card .body {
+  padding: 14px; display: grid; gap: 14px;
+  background: var(--bg); border-top: 1px solid var(--border);
+}
+.param-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 18px; }
 .param-grid .field > span { font-size: 12px; }
 .param-range { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+@media (max-width: 640px) { .param-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 420px) { .param-grid { grid-template-columns: 1fr; } }
+
+/* ------------------------------------------------------------------
+   Devices (fila resumen read-only + expandir para editar, mismo
+   patron que el editor de lentes de arriba)
+   ------------------------------------------------------------------ */
+.device-list { display: grid; gap: 10px; }
+.device-summary {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px;
+  cursor: pointer;
+}
+.device-summary-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.device-summary-main .device-name { font-weight: 600; }
+.device-summary-meta { flex-basis: 100%; }
+.device-actions { display: flex; gap: 8px; margin-left: auto; cursor: default; }
+.device-summary .chev { margin-left: 8px; color: var(--text-3); transition: transform 0.15s; flex: none; }
+.device-card.open .device-summary .chev { transform: rotate(180deg); }
+.device-body {
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border);
+}
 
 /* ------------------------------------------------------------------
    Paginacion

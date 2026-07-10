@@ -464,6 +464,7 @@ def logs_list(
         logs=logs,
         filters={"device_id": device_id, "event": event, "date_from": date_from, "date_to": date_to},
         page=page, total_pages=total_pages, qs=qs,
+        log_retention_days=settings.log_retention_days,
     )
 
 

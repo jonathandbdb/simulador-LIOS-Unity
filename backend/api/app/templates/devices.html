@@ -21,65 +21,93 @@
   <p class="muted xs" style="margin-top: 8px;">{{ t('dev.disable_hint') }}</p>
 </div>
 
-<div class="card">
-  {% for d in devices %}
-    <form id="edit-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/edit"></form>
-    <form id="del-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/delete"
-          onsubmit="return confirm('{{ t('dev.delete_confirm') }}');"></form>
-    {% if d.status == 'pending' %}
-    <form id="approve-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/approve"></form>
-    <form id="reject-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/reject"></form>
-    {% endif %}
-  {% endfor %}
+{# Formularios "huerfanos" referenciados por atributo form="..." desde los
+   botones de cada fila (aprobar/rechazar/editar/borrar): la fila usa el
+   patron resumen-read-only + expandir-para-editar (como lenses.html), asi
+   que estos forms no pueden anidarse dentro del bloque colapsable. #}
+{% for d in devices %}
+  <form id="edit-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/edit"></form>
+  <form id="del-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/delete"
+        onsubmit="return confirm('{{ t('dev.delete_confirm') }}');"></form>
+  {% if d.status == 'pending' %}
+  <form id="approve-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/approve"></form>
+  <form id="reject-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/reject"></form>
+  {% endif %}
+{% endfor %}
 
-  <table>
-    <thead>
-      <tr>
-        <th>{{ t('dev.device_id') }}</th>
-        <th>{{ t('dev.name') }}</th>
-        <th>{{ t('dev.status') }}</th>
-        <th>{{ t('dev.last_seen') }}</th>
-        <th>{{ t('dev.last_ip') }}</th>
-        <th>{{ t('dev.expiry') }}</th>
-        <th class="right">{{ t('dev.actions') }}</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for d in devices %}
-      <tr>
-        <td class="mono xs">
-          {{ d.device_id }}
-          {% if d.status == 'pending' %}<span class="badge badge-warn">{{ t('dev.status.pending') }}</span>{% endif %}
-          {% if d.status == 'rejected' %}<span class="badge badge-err">{{ t('dev.status.rejected') }}</span>{% endif %}
-        </td>
-        <td><input form="edit-{{ d.id }}" class="input" name="name" value="{{ d.name }}" style="min-width: 140px;" /></td>
-        <td>
+{% if devices %}
+<div class="device-list">
+  {% for d in devices %}
+  <div class="card device-card">
+    <div class="device-summary" onclick="toggleDeviceCard(this)">
+      <div class="device-summary-main">
+        <span class="mono xs">{{ d.device_id }}</span>
+        <span class="device-name">{{ d.name }}</span>
+        {% if d.status == 'active' %}<span class="badge badge-ok">{{ t('dev.status.active') }}</span>{% endif %}
+        {% if d.status == 'pending' %}<span class="badge badge-warn">{{ t('dev.status.pending') }}</span>{% endif %}
+        {% if d.status == 'rejected' %}<span class="badge badge-err">{{ t('dev.status.rejected') }}</span>{% endif %}
+        {% if d.status == 'suspended' %}<span class="badge">{{ t('dev.status.suspended') }}</span>{% endif %}
+      </div>
+      <div class="device-summary-meta hint xs">
+        {{ t('dev.last_seen') }}: {% if d.last_seen %}{{ d.last_seen.strftime('%Y-%m-%d %H:%M') }}{% else %}{{ t('never') }}{% endif %}
+        &nbsp;·&nbsp;{{ t('dev.last_ip') }}: {{ d.last_ip or '—' }}
+        &nbsp;·&nbsp;{{ t('dev.expiry') }}: {% if d.license_expiry %}{{ d.license_expiry.isoformat() }}{% else %}{{ t('dev.expiry_hint') }}{% endif %}
+      </div>
+      <div class="device-actions" onclick="event.stopPropagation()">
+        {% if d.status == 'pending' %}
+        <button form="approve-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.approve') }}</button>
+        <button form="reject-{{ d.id }}"  class="btn btn-danger btn-sm"  type="submit">{{ t('dev.reject') }}</button>
+        {% endif %}
+        <button form="del-{{ d.id }}" class="btn btn-danger btn-sm" type="submit">{{ t('dev.delete') }}</button>
+      </div>
+      <span class="chev">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </span>
+    </div>
+    <div class="device-body hidden">
+      <div class="param-grid">
+        <label class="field">
+          <span>{{ t('dev.name') }}</span>
+          <input form="edit-{{ d.id }}" class="input" name="name" value="{{ d.name }}" required />
+        </label>
+        <label class="field">
+          <span>{{ t('dev.status') }}</span>
           <select form="edit-{{ d.id }}" class="select" name="status">
             <option value="active"    {% if d.status=='active' %}selected{% endif %}>{{ t('dev.status.active') }}</option>
             <option value="pending"   {% if d.status=='pending' %}selected{% endif %}>{{ t('dev.status.pending') }}</option>
             <option value="suspended" {% if d.status=='suspended' %}selected{% endif %}>{{ t('dev.status.suspended') }}</option>
             <option value="rejected"  {% if d.status=='rejected' %}selected{% endif %}>{{ t('dev.status.rejected') }}</option>
           </select>
-        </td>
-        <td class="muted xs nowrap">{% if d.last_seen %}{{ d.last_seen.strftime('%Y-%m-%d %H:%M') }}{% else %}{{ t('never') }}{% endif %}</td>
-        <td class="muted xs">{{ d.last_ip or '—' }}</td>
-        <td>
+        </label>
+        <label class="field">
+          <span>{{ t('dev.expiry') }}</span>
           <input form="edit-{{ d.id }}" class="input" name="license_expiry" type="date"
+                 title="{{ t('dev.expiry_hint') }}"
                  value="{{ d.license_expiry.isoformat() if d.license_expiry else '' }}" />
-        </td>
-        <td class="right nowrap">
-          {% if d.status == 'pending' %}
-          <button form="approve-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.approve') }}</button>
-          <button form="reject-{{ d.id }}"  class="btn btn-danger btn-sm"  type="submit">{{ t('dev.reject') }}</button>
-          {% endif %}
-          <button form="edit-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.save') }}</button>
-          <button form="del-{{ d.id }}"  class="btn btn-danger btn-sm"  type="submit">{{ t('dev.delete') }}</button>
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="7" class="empty-row">{{ t('dev.empty') }}</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+        </label>
+      </div>
+      <div class="row justify-end mt-4">
+        <button form="edit-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.save') }}</button>
+      </div>
+    </div>
+  </div>
+  {% endfor %}
 </div>
+{% else %}
+<div class="card"><p class="empty-row">{{ t('dev.empty') }}</p></div>
+{% endif %}
+
+<script>
+  // Expandir/colapsar la fila de un dispositivo para editar (mismo patron
+  // visual que el editor de lentes). Los botones de accion (aprobar/
+  // rechazar/borrar) viven en un contenedor con stopPropagation() para que
+  // hacer click en ellos no dispare el toggle del acordeon.
+  function toggleDeviceCard(el) {
+    var card = el.closest('.device-card');
+    var body = card.querySelector('.device-body');
+    var willOpen = body.classList.contains('hidden');
+    body.classList.toggle('hidden', !willOpen);
+    card.classList.toggle('open', willOpen);
+  }
+</script>
 {% endblock %}

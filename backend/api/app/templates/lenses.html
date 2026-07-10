@@ -46,12 +46,12 @@
 
     {# Formulario unico: el JS sincroniza el editor visual al textarea JSON antes del submit. #}
     <form method="post" action="/admin/lenses" id="lens-form" onsubmit="return syncBeforeSubmit();">
-      <div class="grid cols-3 items-end mb-4" style="gap: 12px;">
-        <label class="field">
+      <div class="row-between wrap mb-4" style="gap: 12px;">
+        <label class="field" style="max-width: 220px;">
           <span>{{ t('lens.version') }}</span>
           <input class="input" name="version" id="catalog-version" value="{{ active_version }}" required />
         </label>
-        <div class="row justify-end span-2">
+        <div class="row">
           <button type="button" class="btn btn-ghost" id="add-lens-btn">{{ t('lens.add_lens') }}</button>
           <button type="submit" class="btn btn-primary">{{ t('lens.save') }}</button>
         </div>
@@ -242,6 +242,10 @@
     // --- Cuerpo ---
     const body = el('div', 'body');
 
+    const idFs = document.createElement('fieldset');
+    const idLg = document.createElement('legend');
+    idLg.textContent = {{ t('lens.group.identificacion')|tojson }};
+    idFs.appendChild(idLg);
     const descField = el('label', 'field');
     descField.appendChild(el('span', '', {{ t('lens.lens_desc')|tojson }}));
     const desc = document.createElement('textarea');
@@ -250,7 +254,8 @@
     desc.value = lens.descripcion || '';
     desc.addEventListener('input', () => { lens.descripcion = desc.value; });
     descField.appendChild(desc);
-    body.appendChild(descField);
+    idFs.appendChild(descField);
+    body.appendChild(idFs);
 
     for (const group of GROUPS) {
       const fs = document.createElement('fieldset');

@@ -117,6 +117,7 @@ TRANSLATIONS: dict[str, dict[Lang, str]] = {
     "lens.param.halo_rings": {"es": "Dilatacion pupilar (noche)",     "en": "Pupil dilation (night)"},
     "lens.param.destello_int":   {"es": "Intensidad de starburst",    "en": "Starburst intensity"},
     "lens.param.destello_rayos": {"es": "Cantidad de rayos",          "en": "Ray count"},
+    "lens.group.identificacion": {"es": "Identificacion",             "en": "Identification"},
     "lens.group.focos":          {"es": "Focos y desenfoque",         "en": "Foci and blur"},
     "lens.group.disfotopsias":   {"es": "Disfotopsias (halos, starburst, contraste)",
                                   "en": "Dysphotopsias (halos, starburst, contrast)"},
@@ -166,6 +167,8 @@ TRANSLATIONS: dict[str, dict[Lang, str]] = {
     "log.event":            {"es": "Evento",                         "en": "Event"},
     "log.detail":           {"es": "Detalle",                        "en": "Detail"},
     "log.empty":            {"es": "No hay logs con esos filtros.",  "en": "No logs match these filters."},
+    "log.retention_note":   {"es": "Se conservan los ultimos {days} dias; los logs mas viejos se purgan automaticamente.",
+                             "en": "The last {days} days are kept; older logs are purged automatically."},
     # Generic
     "yes":                  {"es": "Si",                             "en": "Yes"},
     "no":                   {"es": "No",                             "en": "No"},

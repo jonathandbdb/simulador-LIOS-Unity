@@ -19,7 +19,7 @@ from app.admin.storage import ensure_bucket
 from app.config import settings
 from app.database import engine
 from app.migrations import run_migrations
-from app.routers import limiter, router as public_router
+from app.routers import _maybe_purge_logs, limiter, router as public_router
 from app.seed import seed
 
 logging.basicConfig(level=settings.log_level.upper())
@@ -33,6 +33,9 @@ async def lifespan(app: FastAPI):
     logger.info("Ejecutando seed inicial...")
     with Session(engine) as session:
         seed(session)
+    logger.info("Purgando logs viejos (retention=%d dias)...", settings.log_retention_days)
+    with Session(engine) as session:
+        _maybe_purge_logs(session)
     logger.info("Asegurando bucket MinIO/S3...")
     try:
         ensure_bucket()

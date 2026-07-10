@@ -2,6 +2,7 @@
 {% block subtitle %} — {{ t('log.title') }}{% endblock %}
 {% block content %}
 <h1>{{ t('log.title') }}</h1>
+<p class="hint mb-4">{{ t('log.retention_note').format(days=log_retention_days) }}</p>
 
 <div class="card mb-6">
   <form method="get" action="/admin/logs" class="grid cols-5 items-end" style="gap: 12px;">

@@ -6,7 +6,7 @@
 <div class="card mb-6">
   <h2>{{ t('ver.new') }}</h2>
   <p class="hint mb-4">{{ t('ver.upload_hint') }}</p>
-  <form method="post" action="/admin/versions" enctype="multipart/form-data" class="grid cols-3" style="gap: 12px;">
+  <form method="post" action="/admin/versions" enctype="multipart/form-data" class="grid cols-3 items-end" style="gap: 12px;">
     <label class="field">
       <span>{{ t('ver.app') }}</span>
       <select class="input" name="app" required>
