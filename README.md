@@ -338,8 +338,8 @@ un administrador lo aprueba desde el panel (`/api/verify`, ver §5 y [`docs/lice
 |---------|--------|
 | **Repositorio GitHub** | https://github.com/jonathandbdb/simulador-LIOS-Unity |
 | **Despliegue (backend + panel admin)** | https://vr.conecta.sh — panel en [`/admin`](https://vr.conecta.sh/admin) (credenciales en §6), API interactiva en [`/docs`](https://vr.conecta.sh/docs) |
-| **Presentación (slides)** | _(pendiente — URL pública del PDF)_ |
-| **Vídeo de demostración** | _(pendiente — URL pública)_ |
+| **Presentación (slides)** | https://drive.google.com/file/d/12h8i-0dFvqWGQV6KG4d-I6HtJs3I5c4A/view?usp=sharing |
+| **Vídeo de demostración** | https://youtu.be/zmguVpUjaKo |
 
 **Notas sobre el despliegue:** el backend corre en un VPS con Docker Compose y HTTPS automático vía
 Caddy (ver [`docs/builds-deploy.md`](docs/builds-deploy.md)). Las aplicaciones (visor Quest y tablet)
