@@ -316,15 +316,17 @@ Mandos OpenXR: **A** cicla la lente del ojo izquierdo, **B** la del derecho, **X
 
 ## 6. Usuario y contraseña de prueba
 
-El **panel de administración del backend** tiene login. Usuario de prueba para el panel de **producción**:
+El **panel de administración del backend** tiene login.
 
 | Entorno | URL | Usuario | Contraseña |
 |---------|-----|---------|-----------|
-| **Producción (demo del TFM)** | https://vr.conecta.sh/admin | `revisor` | `14d00edcd119fbfe` |
+| **Producción (demo del TFM)** | https://vr.conecta.sh/admin | _(entregado por canal privado)_ | _(entregado por canal privado)_ |
 | Desarrollo local (`docker compose up`) | http://localhost:8080/admin | `admin` | `admin123` |
 
 > Las credenciales locales se definen en `backend/.env` (`ADMIN_DEFAULT_USER` / `ADMIN_DEFAULT_PASS`);
-> en producción están rotadas. El usuario `revisor` existe específicamente para la corrección del TFM.
+> en producción están rotadas. Las credenciales de acceso al panel de producción para la corrección
+> del TFM **no se publican en este repositorio**: se entregan junto con la documentación de la
+> entrega, por el canal privado de la plataforma.
 
 La **aplicación VR y la tablet no tienen login de usuario**: el control de acceso del visor es por
 **licencia de dispositivo** — al arrancar se auto-registra como "pendiente" y queda bloqueado hasta que
