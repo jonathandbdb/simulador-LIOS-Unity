@@ -234,25 +234,55 @@ porque esa es la única clase de UI de la app tablet (mismo criterio que `PinScr
   `UpdateManager.MaybeShowVrPrompt` (ver Decisiones "Selección de UI por presencia de
   TabletController, no por identifier" más abajo), nunca se referencia desde una escena.
   Canvas world-space 100% por código (nada de escena, ni siquiera un prefab), child directo de
-  `Camera.main` (mismo patrón que `Vision/HudController.cs`/`DebugHUD`: `localPosition (0,0,1.5)`,
-  `localScale 0.0015`, `sizeDelta (700,420)`), SIN `GraphicRaycaster`/`EventSystem` (no hay
-  interacción por puntero — el visor no tiene mouse/touch, solo botones de mando). Fondo
-  semi-opaco + 3 `UnityEngine.UI.Text` (fuente builtin `LegacyRuntime.ttf` vía
-  `Resources.GetBuiltinResource<Font>`, igual que `HudController` para no sumar una dependencia
-  de fuente TMP nueva en Runtime): título, cuerpo (versión+changelog / progreso % / mensaje de
-  error) y leyenda de controles. Estados y leyenda: `Available` → "A: actualizar   B: ahora no"
-  (sin "B:" si `forced`); `Downloading` → sin leyenda (no hay opción de cancelar en VR, a
-  diferencia de la tablet — ver Decisiones); `Ready` → "A: instalar"; `Failed` → "A: reintentar
-  B: cerrar" (sin "B:" si `forced`). Input propio (`InputAction` para `<XRController>
-  {RightHand}/primaryButton|secondaryButton`, mismo patrón que `SimuladorInput.cs`) habilitado
-  SOLO mientras el cartel está visible; **mientras está visible deshabilita
-  `Vision.SimuladorInput`** (`FindFirstObjectByType` + `enabled = false`) para que A/B no
-  ciclen lentes de fondo mientras el clínico decide sobre el update — se restaura en
+  `Camera.main`, SIN `GraphicRaycaster`/`EventSystem` (no hay interacción por puntero — el visor
+  no tiene mouse/touch, solo botones de mando). **Distancia estéreo cómoda (`localPosition
+  (0,0,1.5)`, `localScale 0.0015`, `sizeDelta (700,420)`) + ocultamiento de la escena a nivel de
+  CÁMARA** (rediseño, ver Decisiones "De canvas opaco pegado al ojo a
+  `CameraSceneOcclusionGate`" — reemplaza el fondo opaco pegado a `0.15 m` de un fix anterior,
+  que causaba diplopia real en Quest). 3 `UnityEngine.UI.Text` (fuente builtin
+  `LegacyRuntime.ttf` vía `Resources.GetBuiltinResource<Font>`, igual que
+  `HudController`/`LicenseBlockScreenVR` para no sumar una dependencia de fuente TMP nueva en
+  Runtime): título, cuerpo (versión+changelog / progreso % / mensaje de error) y leyenda de
+  controles. Estados y leyenda: `Available` → "A: actualizar   B: ahora no" (sin "B:" si
+  `forced`); `Downloading` → sin leyenda (no hay opción de cancelar en VR, a diferencia de la
+  tablet — ver Decisiones); `Ready` → "A: instalar"; `Failed` → "A: reintentar B: cerrar" (sin
+  "B:" si `forced`). Mientras el cartel está visible (cualquier estado) el ocultamiento de la
+  escena se mantiene sin interrupción — recién se libera cuando se destruye TODO el canvas en
+  `Close()` ("Ahora no"/B en `Available`, "Cerrar"/B en `Failed`, o tras `LaunchInstall()` en
+  `Ready`); si el update es `forced` no hay opción B en ningún estado, así que no hay forma de
+  volver a ver la escena hasta terminar el flujo. Input propio (`InputAction` para
+  `<XRController>{RightHand}/primaryButton|secondaryButton`, mismo patrón que
+  `SimuladorInput.cs`) habilitado SOLO mientras el cartel está visible; **mientras está visible
+  deshabilita `Vision.SimuladorInput`** (`FindFirstObjectByType` + `enabled = false`) para que
+  A/B no ciclen lentes de fondo mientras el clínico decide sobre el update — se restaura en
   `OnDestroy()` (`RestoreGameplayInput`), que es el ÚNICO punto de limpieza: `Close()` hace
   `Destroy(_canvasGo)` + `Destroy(this)`, y es `OnDestroy()` quien desuscribe de
-  `UpdateManager`, deshabilita/dispone las `InputAction` propias y restaura
-  `SimuladorInput.enabled = true` — así la limpieza es idéntica sin importar si el cartel se
-  cierra por `Close()` explícito o porque la escena/GameObject se destruye por otra vía.
+  `UpdateManager`, deshabilita/dispone las `InputAction` propias, libera
+  `CameraSceneOcclusionGate` (si la había adquirido) y restaura `SimuladorInput.enabled = true`
+  — así la limpieza es idéntica sin importar si el cartel se cierra por `Close()` explícito o
+  porque la escena/GameObject se destruye por otra vía. El ocultamiento de escena es ORTOGONAL a
+  esa lógica de input (sin cambios ahí) y coexiste con `LicenseBlockScreenVR` vía refcount (ver
+  Decisiones).
+- **`Assets/Scripts/Runtime/Data/CameraSceneOcclusionGate.cs`** (nuevo, rediseño de esta tarea)
+  — `static class` sin `MonoBehaviour`, namespace `Simulador.Data` (mismo criterio que
+  `BackendTelemetry.cs`: infra compartida entre `Update/` y `License/`, no es específica de
+  ninguno de los dos). Oculta la escena de fondo a nivel de **cámara** en vez de con geometría:
+  mientras esté "adquirida", restringe `Camera.main.cullingMask` a la capa builtin `UI` (layer
+  5, libre en el proyecto — ninguna otra capa la usaba) y fuerza `clearFlags = SolidColor` +
+  `backgroundColor` oscuro sólido; `ApplyOverlayLayer(GameObject root)` pone recursivamente todo
+  un canvas (root + hijos) en esa capa (necesario: el `cullingMask` filtra por capa de
+  GameObject, no se hereda del padre). `Acquire()`/`Release()` llevan un **refcount estático**:
+  el primer `Acquire()` guarda el estado original de la cámara (`cullingMask`/`clearFlags`/
+  `backgroundColor`) y lo aplica; `Release()` solo restaura cuando el refcount llega a `0` (el
+  ÚLTIMO consumidor en cerrarse) — necesario porque `UpdatePromptVR` y `LicenseBlockScreenVR`
+  PUEDEN coexistir (ver `docs/licenciamiento.md`) y si el primero en cerrarse restaurara la
+  cámara, la escena reaparecería detrás del cartel que sigue visible. Reset defensivo vía
+  `[RuntimeInitializeOnLoadMethod(SubsystemRegistration)]` (limpia el refcount estático al
+  arrancar cada sesión de Play, con o sin Domain Reload). Cada consumidor adquiere en su
+  `BuildCanvas()` (solo si `Camera.main` existe) y libera en su `OnDestroy()`, 1:1 con el ciclo
+  de vida del canvas — ver el helper compartido justifica no duplicar esta lógica dos veces
+  (criterio `minimal-footprint`: es el MISMO estado global de cámara con dos consumidores, la
+  duplicación sería un bug latente).
 
 ### Telemetría (F6)
 
@@ -387,9 +417,63 @@ actual) — en ese caso no se verifica nada.
   `backendUrl` en `UpdateManager` → reusa la misma cadena de capas (override > streaming >
   default) que ya usa el sync del catálogo; una sola fuente de verdad para "cuál es el
   backend".
+- **Fondo opaco calcado de `LicenseBlockScreenVR`, sin extraer un helper compartido (fix
+  posterior a F5) — REVERTIDO en esta tarea, ver el punto siguiente**: el pedido original fue
+  que mientras el cartel de update esté visible NO se vea la simulación de fondo. El primer
+  intento (documentado acá históricamente) copió el mecanismo de `LicenseBlockScreenVR`: canvas
+  world-space MUY cerca de la cámara (`0.15 m`/`0.00015`/`2600x1900`, alpha `1`). Funcionaba
+  visualmente en el Editor (game view mono) pero **causaba diplopia real en el Quest** — ver el
+  punto siguiente y Gotchas.
+- **De canvas opaco pegado al ojo a `CameraSceneOcclusionGate` (rediseño, bug reportado en
+  dispositivo real)** → el fix de F5 (arriba) se probó SOLO en el Editor, donde el game view es
+  mono y no puede mostrar diplopia; al probarlo en un Quest real, el usuario vio un cartel
+  DUPLICADO, uno por ojo, sin fusión estéreo. Causa: un plano a `0.15-0.2 m` de la cámara exige
+  una convergencia binocular que el ojo humano no puede sostener cómodamente (la distancia
+  interpupilar, ~63 mm, genera una disparidad extrema a esa distancia — ver Gotchas para la
+  regla general). Mismo problema, sin validar todavía en dispositivo, en
+  `LicenseBlockScreenVR` (mismo mecanismo, `0.2 m`). Fix: **separar las dos responsabilidades**
+  que el mecanismo anterior mezclaba en un solo parámetro (posición del canvas) — "a qué
+  distancia se ve la UI" (debe ser cómoda para los ojos, `1.5-2 m`) y "qué tanto de la escena de
+  fondo se oculta" (debe ser TOTAL, sin depender de cuán grande sea el canvas ni de qué
+  geometría de cockpit haya más cerca). La primera se resuelve devolviendo el canvas a
+  `1.5 m`/`0.0015`/`700x420` (los valores que ya se sabía que fusionaban bien, antes del fix
+  roto). La segunda se resuelve a nivel de **cámara**, no de geometría:
+  `CameraSceneOcclusionGate` (`Assets/Scripts/Runtime/Data/`, ver arriba) restringe el
+  `cullingMask` de `Camera.main` a la capa `UI` + `clearFlags = SolidColor` mientras cualquiera
+  de los dos cartels esté visible — así NINGUNA geometría de la escena llega a rasterizarse,
+  sin importar la distancia/tamaño del canvas de UI. Este helper SÍ se extrajo compartido (a
+  diferencia de la decisión anterior de esta misma sección, que evitó extraer un helper de
+  geometría): acá el criterio es distinto — no es "la misma fórmula aplicada dos veces sobre
+  contenido distinto", es **el mismo estado global mutable (la cámara)** con dos consumidores
+  que pueden coexistir; duplicar el guardado/restaurado de `cullingMask`/`clearFlags`/
+  `backgroundColor` en dos clases sería un bug latente esperando pasar (un consumidor pisando el
+  estado guardado del otro) — la skill `minimal-footprint` señala esto explícitamente como caso
+  donde SÍ se justifica el helper compartido. `UpdatePromptVR` sigue un poco más CERCA que
+  `LicenseBlockScreenVR` (`1.5 m` vs `2.0 m`) — mismo criterio que antes del rediseño (ganar el
+  orden de dibujado en la cola transparente si ambos coexisten), solo que ahora sin el riesgo de
+  diplopia porque ninguno de los dos está pegado al ojo. Ninguno de los dos cartels destruye el
+  GameObject del otro (son independientes, cada uno limpia solo el suyo en su propio
+  `Close()`/`OnDestroy()`) ni interfiere con el guard anti-restore de
+  `LicenseBlockScreenVR.Update()` (sin cambios ahí — ver `docs/licenciamiento.md`).
 
 ## Gotchas
 
+- **NUNCA un panel de UI world-space opaco a menos de `~0.5 m` de la cámara en VR — causa
+  diplopia real, NO detectable en el Editor (bug reportado en dispositivo real, esta tarea)**:
+  un canvas world-space muy cerca del ojo (`0.15-0.2 m`, el mecanismo que tenían
+  `UpdatePromptVR`/`LicenseBlockScreenVR` antes de este rediseño) exige que ambos ojos converjan
+  en un punto extremadamente cercano — la distancia interpupilar humana (~63 mm) genera a esa
+  distancia una disparidad binocular que el cerebro no puede fusionar cómodamente: el usuario ve
+  DOS carteles superpuestos/desdoblados en vez de uno solo. El game view del Editor es MONO (una
+  sola cámara, sin renderizar los dos ojos por separado), así que este bug es **invisible en
+  toda validación por captura de pantalla en el Editor** (F5/F3 se dieron por buenas con
+  capturas que se veían perfectas) — solo aparece con un HMD real puesto. Regla general: la UI
+  world-space en VR va a distancia estéreo cómoda (`~1.5-2 m`, zona de fusión binocular normal
+  para lectura/UI); si hace falta ocultar la escena de fondo detrás de un cartel modal, NO se
+  resuelve acercando el canvas al ojo — se resuelve a nivel de cámara
+  (`Simulador.Data.CameraSceneOcclusionGate`, ver Arquitectura arriba: `cullingMask` restringido
+  + `clearFlags = SolidColor`). Cualquier cartel/HUD world-space nuevo en el visor debe revisar
+  esta regla ANTES de elegir su distancia.
 - **`503` es un caso NORMAL, no un error**: significa "no hay versión activa publicada para
   este canal todavía" (p. ej. recién desplegado el backend, sin release cargado por el
   panel). Se loguea con `Debug.Log` (no `LogWarning`/`LogError`) y termina en silencio, igual
@@ -517,6 +601,30 @@ actual) — en ese caso no se verifica nada.
      sin foco y por qué leer los campos por reflection es más confiable para verificar texto/
      estado. Confirmar que `Vision.SimuladorInput` queda `enabled = false` mientras el cartel
      está visible y vuelve a `true` tras cerrarlo (instalar/postergar/error-cerrar).
+5-bis. **`CameraSceneOcclusionGate` (smoke real hecho al cerrar el rediseño de esta tarea,
+   `Main.unity`, escenario `ruta_noche`)** — sin depender de un backend/manifest real,
+   `unity_execute_code` con `runInBackground=true` (evita el throttle del Editor sin foco, ver
+   gotcha de arriba):
+   - Instanciar `UpdatePromptVR` a mano (`gameObject.AddComponent<...>()`) y llamar
+     `Show(manifest, forced:false)`: `Camera.main.cullingMask` pasó de `-1` a `32` (`1 <<
+     LayerMask.NameToLayer("UI")`), `clearFlags`/`backgroundColor` al color sólido oscuro, y
+     `unity_graphics_game_capture` confirmó la escena TOTALMENTE oculta (ni cockpit ni halos
+     visibles) con el cartel a distancia estéreo cómoda (tarjeta normal, ya no un plano gigante
+     pegado al ojo).
+   - **Coexistencia**: con el cartel de update todavía visible, instanciar
+     `LicenseBlockScreenVR` y llamar `Show(...)` — la captura mostró AMBOS cartels superpuestos,
+     el de update (más cerca, `1.5 m`) ganando el orden de dibujado sobre el de licencia (`2.0
+     m`), confirmando la regla de distancias. Cerrar `UpdatePromptVR` primero (`Close()` por
+     reflection): la cámara quedó IGUAL de oculta (`cullingMask` seguía en `32`) porque
+     `LicenseBlockScreenVR` seguía activo — el refcount no restauró de más. Recién al destruir
+     también `LicenseBlockScreenVR` (`Destroy(componente)`, mismo patrón que
+     `LicenseManager.Unblock()`) la cámara volvió EXACTO al estado original
+     (`cullingMask=-1`, `backgroundColor` original) y la captura mostró la escena `ruta_noche`
+     restaurada al 100 % (cockpit, halos de disability glare, HUD de debug).
+   - No se validó el flujo `Forced`/descarga real completo (requeriría backend con un manifest
+     publicado; ver paso 6/7 para eso) ni la diplopia en sí misma (no reproducible en el
+     Editor, ver Gotchas) — la validación final de que el fix realmente resuelve la diplopia
+     queda para el usuario en un Quest real (ver Gotchas y la nota al pie de esta sección).
 6. **En dispositivo real (Quest o tablet, requiere build post-F5)**: instalar el APK actual,
    publicar una versión nueva en el panel del backend, abrir la app y verificar el cartel de
    update correspondiente (tablet: `UpdateScreen`; visor: `UpdatePromptVR` con input real de
@@ -553,3 +661,12 @@ actual) — en ese caso no se verifica nada.
 - **F7** — validación end-to-end en dispositivos reales (Quest + tablet) con un release
   publicado de punta a punta por el panel del backend, incluyendo confirmar en `/admin/logs`
   que los eventos de un dispositivo real (no el Editor) llegan correctamente.
+- **`CameraSceneOcclusionGate` — el rediseño en sí NO fue validado en Quest real todavía**
+  (esta tarea partió de un reporte de diplopia en dispositivo, pero el fix se validó solo en
+  Editor por reflection/captura, ver "Cómo probar" 5-bis — el Editor no puede reproducir
+  diplopia porque el game view es mono). Pendiente que el usuario confirme en la próxima build
+  que: (a) el cartel de update y el de licencia se fusionan correctamente en estéreo a las
+  nuevas distancias (`1.5 m`/`2.0 m`), y (b) la escena de fondo queda completamente oculta
+  mientras cualquiera de los dos esté visible (sin fugas de geometría por los bordes del FOV,
+  que con el mecanismo de cámara no deberían poder existir, a diferencia del canvas-plano
+  anterior que dependía de cubrir el FOV con tamaño).

@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
+using Simulador.Data;
 using Simulador.Vision;
 
 namespace Simulador.Update
@@ -22,12 +23,39 @@ namespace Simulador.Update
     /// sin opcion B en Available/Failed (Cancelar no aplica en VR, a diferencia
     /// de la tablet: no hay boton de cancelar descarga acá, ver docs/updates.md).
     ///
+    /// OCULTAMIENTO DE LA ESCENA (rediseño posterior a un bug real en Quest,
+    /// ver docs/updates.md Gotchas): un fix anterior tapaba la simulacion con
+    /// un canvas OPACO pegado a 0.15 m de la camara -- eso causaba DIPLOPIA
+    /// real en el visor (se veia un cartel por ojo, sin fusion estereo: a esa
+    /// distancia la disparidad binocular exige una convergencia imposible para
+    /// el ojo humano). Fix: el canvas volvio a una distancia estereo comoda
+    /// (1.5 m, la que ya se sabia que fusionaba bien) y el ocultamiento de la
+    /// escena de fondo se resuelve a nivel de CAMARA, no de geometria --
+    /// <see cref="CameraSceneOcclusionGate"/> (Assets/Scripts/Runtime/Data/,
+    /// compartido con <see cref="Simulador.License.LicenseBlockScreenVR"/>,
+    /// mismo criterio que <c>BackendTelemetry</c>) restringe el
+    /// <c>cullingMask</c> de <c>Camera.main</c> a la capa <c>UI</c> y fuerza
+    /// <c>clearFlags = SolidColor</c> mientras el cartel este visible,
+    /// restaurando el estado original al cerrarse. El gate usa refcount porque
+    /// este cartel y <see cref="Simulador.License.LicenseBlockScreenVR"/>
+    /// PUEDEN coexistir (los updates siguen funcionando con la licencia
+    /// bloqueada, ver docs/licenciamiento.md): la escena solo vuelve cuando el
+    /// ULTIMO consumidor se cierra. Este cartel sigue un poco mas CERCA que
+    /// License (1.5 m vs 2.0 m) para ganar el orden de dibujado en la cola
+    /// transparente si ambos coexisten (mismo criterio que antes del rediseño,
+    /// solo que ahora sin el riesgo de diplopia). El ocultamiento se adquiere
+    /// en <see cref="BuildCanvas"/> y se libera en <see cref="OnDestroy"/> --
+    /// 1:1 con el ciclo de vida del canvas.
+    ///
     /// GOTCHA critico (input): los botones A/B del mando derecho YA ciclan
     /// lentes via <see cref="SimuladorInput"/> (Assets/Scripts/Runtime/Vision/
     /// SimuladorInput.cs). Mientras este cartel esta visible se deshabilita ese
     /// componente (Find + enabled=false) para que aceptar/cerrar el update no
     /// dispare de paso un ciclo de lente de fondo -- se restaura SIEMPRE en
-    /// OnDestroy (no se edita SimuladorInput.cs, frontera de @unity-dev).
+    /// OnDestroy (no se edita SimuladorInput.cs, frontera de @unity-dev). Este
+    /// rediseño NO toca esa logica de input (ortogonal) ni la de
+    /// <see cref="Simulador.License.LicenseBlockScreenVR"/> (guard anti-restore
+    /// ahi, sin cambios).
     /// </summary>
     public class UpdatePromptVR : MonoBehaviour
     {
@@ -46,6 +74,7 @@ namespace Simulador.Update
         private InputAction _a, _b;
         private SimuladorInput _simuladorInput;
         private bool _subscribedToManager;
+        private bool _occlusionAcquired;
 
         /// <summary>Muestra (o reutiliza, si ya estaba visible) el cartel con el manifest recibido.</summary>
         public void Show(UpdateLogic.UpdateManifest manifest, bool forced)
@@ -65,6 +94,7 @@ namespace Simulador.Update
             UnsubscribeFromManager();
             DisableOwnInput();
             RestoreGameplayInput();
+            if (_occlusionAcquired) { CameraSceneOcclusionGate.Release(); _occlusionAcquired = false; }
         }
 
         // ---------------- UpdateManager -> este cartel ----------------
@@ -228,37 +258,55 @@ namespace Simulador.Update
 
             _canvasGo = new GameObject("UpdatePromptVR", typeof(RectTransform), typeof(Canvas));
             _canvasGo.transform.SetParent(cam.transform, false);
-            _canvasGo.transform.localPosition = new Vector3(0f, 0f, 1.5f); // ~1.5 m frente a la camara
+            // Distancia estereo comoda (rediseño posterior al bug de diplopia, ver
+            // docstring de la clase): 1.5 m es la distancia que ya se sabia que
+            // fusionaba bien antes del fix roto que la acerco a 0.15 m. Ya NO hace
+            // falta agrandar el canvas para tapar el campo visual completo -- eso lo
+            // resuelve CameraSceneOcclusionGate a nivel de camara -- asi que vuelve a
+            // ser una tarjeta de tamaño normal (700x420) en vez de un plano gigante.
+            _canvasGo.transform.localPosition = new Vector3(0f, 0f, 1.5f);
             _canvasGo.transform.localRotation = Quaternion.identity;
             _canvasGo.transform.localScale = new Vector3(0.0015f, 0.0015f, 0.0015f);
 
             var canvas = _canvasGo.GetComponent<Canvas>();
             canvas.renderMode = RenderMode.WorldSpace;
             var rt = _canvasGo.GetComponent<RectTransform>();
-            rt.sizeDelta = new Vector2(700, 420); // px logicos; tamaño real = sizeDelta * localScale (~1.05 x 0.63 m)
+            rt.sizeDelta = new Vector2(700, 420);
 
             var font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
 
             var panelGo = new GameObject("Panel", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
             panelGo.transform.SetParent(_canvasGo.transform, false);
             Stretch(panelGo.GetComponent<RectTransform>());
-            panelGo.GetComponent<Image>().color = new Color(0.05f, 0.06f, 0.08f, 0.88f);
+            // Panel de la tarjeta (ya no necesita ser opaco para tapar nada -- ese
+            // trabajo lo hace CameraSceneOcclusionGate sobre el fondo de la camara,
+            // que queda solido detras). Un tono apenas mas claro que ese fondo para
+            // que la tarjeta se distinga como un elemento propio.
+            panelGo.GetComponent<Image>().color = new Color(0.08f, 0.09f, 0.11f, 0.95f);
 
             var layoutGo = new GameObject("Layout", typeof(RectTransform));
             layoutGo.transform.SetParent(_canvasGo.transform, false);
             var lrt = layoutGo.GetComponent<RectTransform>();
             Stretch(lrt);
-            lrt.offsetMin = new Vector2(36, 32);
-            lrt.offsetMax = new Vector2(-36, -32);
+            lrt.offsetMin = new Vector2(36, 28);
+            lrt.offsetMax = new Vector2(-36, -28);
             var vlg = layoutGo.AddComponent<VerticalLayoutGroup>();
-            vlg.spacing = 18;
+            vlg.spacing = 16;
             vlg.childControlWidth = true; vlg.childControlHeight = true;
             vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
-            vlg.childAlignment = TextAnchor.UpperCenter;
+            vlg.childAlignment = TextAnchor.MiddleCenter;
 
-            _titleText = MakeLabel(layoutGo.transform, font, 40, FontStyle.Bold, Color.white);
-            _bodyText = MakeLabel(layoutGo.transform, font, 27, FontStyle.Normal, new Color(0.85f, 0.9f, 0.95f));
-            _legendText = MakeLabel(layoutGo.transform, font, 25, FontStyle.Italic, new Color(0.6f, 0.85f, 0.8f));
+            _titleText = MakeLabel(layoutGo.transform, font, 30, FontStyle.Bold, Color.white);
+            _bodyText = MakeLabel(layoutGo.transform, font, 21, FontStyle.Normal, new Color(0.85f, 0.9f, 0.95f));
+            _legendText = MakeLabel(layoutGo.transform, font, 19, FontStyle.Italic, new Color(0.6f, 0.85f, 0.8f));
+
+            // Ocultar la escena de fondo a nivel de camara (no de geometria, ver
+            // docstring) mientras el canvas exista -- se libera en OnDestroy, 1:1 con
+            // el ciclo de vida de este GameObject. El canvas entero (y sus hijos)
+            // necesita estar en la capa UI para sobrevivir al cullingMask del gate.
+            CameraSceneOcclusionGate.ApplyOverlayLayer(_canvasGo);
+            CameraSceneOcclusionGate.Acquire();
+            _occlusionAcquired = true;
         }
 
         private static Text MakeLabel(Transform parent, Font font, int size, FontStyle style, Color color)

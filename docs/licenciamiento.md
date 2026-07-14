@@ -88,21 +88,39 @@ POST {backend}/api/verify {device_id, current_apk_version}
     (lógica pura ya testeada, mismo contrato `POST /api/log` de `docs/updates.md` — no es
     específico de Update, es `{device_id, events[{event,detail}]}` genérico) + el nuevo
     `BackendTelemetry.PostJson` (ver abajo). Fire-and-forget: nunca bloquea el gate.
-- **`Assets/Scripts/Runtime/License/LicenseBlockScreenVR.cs`** (F3, nuevo) — molde de
+- **`Assets/Scripts/Runtime/License/LicenseBlockScreenVR.cs`** (F3, nuevo; distancia/mecanismo
+  de oclusión REDISEÑADOS posteriormente, ver "Ocultamiento de escena" abajo) — molde de
   `Simulador.Update.UpdatePromptVR`: canvas world-space por código, child de `Camera.main`, sin
   `GraphicRaycaster`/`EventSystem`. Lo crea/destruye `LicenseManager` (`AddComponent`/`Destroy`
-  en `Block()`/`Unblock()`), nunca vive en una escena. Diferencias deliberadas con
-  `UpdatePromptVR` (ver Decisiones): **sin salida** (no hay botón B/"cerrar"), fondo **opaco**
-  (no semi-transparente) posicionado **muy cerca de la cámara** (0.2 m, con la escala reducida en
-  la misma proporción — 0.0002 en vez de 0.0015 — para no agrandar el texto) para garantizar que
-  tapa la escena por completo incluso con geometría de cockpit muy cercana a la cámara. Contenido:
-  título fijo, mensaje (viene de `LicenseManager`, ya sea el genérico o el texto del server/
-  `MessageFor`), `device_id` completo en fuente chica (para que el administrador lo identifique
-  en el panel) y leyenda con cuenta regresiva del cooldown ("Reintentar en Ns..." / "A:
-  reintentar"). Input propio (botón A, patrón `UpdatePromptVR`) + guard anti-restore en `Update()`
-  que re-deshabilita `Vision.SimuladorInput` mientras `LicenseManager.IsBlocked` (cubre que
-  `UpdatePromptVR` se abra encima y, al cerrarse, restaure el input de gameplay — los updates
-  siguen funcionando con la licencia bloqueada, ver Decisiones).
+  en `Block()`/`Unblock()`), nunca vive en una escena. Diferencia deliberada con `UpdatePromptVR`:
+  **sin salida** (no hay botón B/"cerrar"). Contenido: título fijo, mensaje (viene de
+  `LicenseManager`, ya sea el genérico o el texto del server/`MessageFor`), `device_id` completo
+  en fuente chica (para que el administrador lo identifique en el panel) y leyenda con cuenta
+  regresiva del cooldown ("Reintentar en Ns..." / "A: reintentar"). Input propio (botón A, patrón
+  `UpdatePromptVR`) + guard anti-restore en `Update()` que re-deshabilita `Vision.SimuladorInput`
+  mientras `LicenseManager.IsBlocked` (cubre que `UpdatePromptVR` se abra encima y, al cerrarse,
+  restaure el input de gameplay — los updates siguen funcionando con la licencia bloqueada, ver
+  Decisiones).
+
+### Ocultamiento de escena y distancia del canvas (rediseño — bug de diplopia en Quest)
+
+El canvas de este cartel vivía **muy cerca de la cámara** (`0.2 m`, escala `0.0002`) para
+garantizar que tapaba la escena por completo — mismo mecanismo (y mismo bug, nunca evaluado en
+dispositivo hasta esta tarea) que tenía `UpdatePromptVR` antes de su fix: un plano tan cerca del
+ojo exige una convergencia binocular imposible/incómoda y el cerebro no llega a fusionar las dos
+vistas — diplopia real (un cartel por ojo), invisible en el Editor porque el game view es mono.
+Fix (cross-ref `docs/updates.md` §Decisiones/Gotchas, mismo cambio aplicado a ambos cartels en la
+misma tarea): el canvas volvió a una distancia estéreo cómoda (`2.0 m`, un poco más lejos que los
+`1.5 m` de `UpdatePromptVR` a propósito — si ambos cartels coexisten, el más cerca de la cámara
+gana el orden de dibujado en la cola transparente de Unity UI, y Update debe poder mostrarse por
+encima de un bloqueo de licencia, ver Decisiones) y el ocultamiento de la escena de fondo pasó a
+resolverse a nivel de **cámara**: `Simulador.Data.CameraSceneOcclusionGate` (compartido con
+`UpdatePromptVR`, ver `docs/updates.md` §Arquitectura) restringe `Camera.main.cullingMask` a la
+capa `UI` + `clearFlags = SolidColor` mientras el cartel exista, con **refcount** porque este
+cartel y `UpdatePromptVR` PUEDEN coexistir (ver Decisiones "Los updates... siguen funcionando con
+la licencia bloqueada" más abajo) — la escena solo reaparece cuando el ÚLTIMO consumidor se
+cierra. `BuildCanvas()` adquiere el gate (solo si encontró `Camera.main`) y `OnDestroy()` lo
+libera — 1:1 con el ciclo de vida del canvas, mismo patrón que `UpdatePromptVR`.
 - **`Assets/Scripts/Runtime/Net/NetworkController.cs`** — refactor quirúrgico: el cuerpo del
   bootstrap se extrajo a `public static void EnsureCreated()` (idempotente: no-op si `Instance`
   existe o si hay `TabletController` en escena). **Ya NO tiene un `[RuntimeInitializeOnLoadMethod]`
@@ -121,6 +139,10 @@ Request:
 ```json
 {"device_id": "<SystemInfo.deviceUniqueIdentifier>", "current_apk_version": "<Application.version>"}
 ```
+
+El servidor persiste `current_apk_version` en `devices.last_apk_version` (visible en `/admin/devices`
+como "Versión app"); si llega ausente o vacía no pisa el último valor conocido. No cambia nada del
+lado Unity — el campo se manda desde el primer día.
 
 Respuesta `200` (dispositivo activo):
 ```json
@@ -317,14 +339,20 @@ todavía arriba". Dos cambios sobre `NetworkController`/`LicenseManager`:
   componente cuyo ciclo de vida lo controle OTRO objeto (no él mismo)**: si el componente crea
   GameObjects propios que no son hijos de su propio transform, su `OnDestroy()` debe limpiarlos
   explícitamente — no alcanza con que Unity destruya el componente.
-- **Tamaño/distancia del canvas world-space para "tapar la escena por completo" no es trivial**:
-  mover el canvas más cerca de la cámara (necesario para ganarle a geometría de cockpit muy
-  cercana, ver arriba) sin achicar la ESCALA en la misma proporción agranda el texto
-  visualmente (el tamaño angular percibido depende de `worldSize / distancia`, y `worldSize =
-  sizeDelta * scale` es independiente de la distancia). Regla usada acá: si se reduce la
-  distancia por un factor k, reducir también la escala por el mismo factor k para mantener el
-  tamaño angular original del texto, y ajustar `sizeDelta` (en unidades de canvas) para que seguir
-  cubriendo el FOV requerido a la nueva distancia.
+- **NUNCA un canvas world-space opaco a menos de `~0.5 m` de la cámara en VR — causa diplopia
+  real, no detectable en el Editor (bug reportado en dispositivo real, rediseño posterior a
+  esta tarea; detalle completo en `docs/updates.md` §Gotchas)**: el enfoque original de este
+  cartel (acercar el canvas a `0.2 m` para "tapar la escena por completo con su propio tamaño")
+  parecía correcto en las capturas del Editor (game view mono, no puede mostrar diplopia) pero
+  rompía la fusión binocular en un Quest real — el usuario veía un cartel por ojo. Regla
+  general y fix: la UI world-space en VR va a distancia estéreo cómoda (`~1.5-2 m`); ocultar la
+  escena de fondo se resuelve a nivel de **cámara**
+  (`Simulador.Data.CameraSceneOcclusionGate`, ver arriba), nunca acercando un plano al ojo. La
+  regla vieja de "si se achica la distancia por un factor k, achicar también la escala por el
+  mismo k para no agrandar el texto" (`worldSize = sizeDelta * scale`, tamaño angular = `worldSize
+  / distancia`) sigue siendo válida como principio óptico, pero ya NO se usa para "tapar el FOV
+  agrandando el canvas" — el canvas ahora es una tarjeta de tamaño normal a distancia cómoda,
+  sin necesidad de subtender todo el campo visual.
 - **`Application.runInBackground == false` (default del proyecto) congela el player loop del
   Editor en Play Mode cuando la ventana no tiene foco de SO** — no es un throttle suave, es un
   freeze real (`Time.frameCount` se queda clavado en `1`, minutos de reloj real sin avanzar un
@@ -392,6 +420,16 @@ todavía arriba". Dos cambios sobre `NetworkController`/`LicenseManager`:
     apariciones de `WebSocketServer`/`DiscoveryBeacon` en toda la sesión (varios segundos de
     margen tras el segundo bloqueo) -- confirma que un dispositivo bloqueado nunca llega a tener
     la red arriba.
+11. **`CameraSceneOcclusionGate` y distancia estéreo (smoke del rediseño, ver
+    `docs/updates.md` §Cómo probar punto 5-bis para el detalle completo)**: sin backend,
+    instanciar `LicenseBlockScreenVR` a mano por `unity_execute_code` y llamar `Show(...)` —
+    confirmar que `Camera.main.cullingMask` pasa a solo la capa `UI` y que la escena queda
+    oculta por completo; instanciar también `UpdatePromptVR` para confirmar coexistencia
+    (ambos visibles, Update por encima); destruir uno y confirmar que la cámara NO se restaura
+    mientras el otro siga vivo; destruir el segundo y confirmar restauración exacta del estado
+    original de la cámara. **Pendiente**: esto NO valida la diplopia en sí (el Editor es mono,
+    ver Gotchas) — la validación final de que el fix realmente resuelve la visión doble
+    requiere el usuario probando en un Quest real con la próxima build.
 
 ## Pendientes / deuda
 
@@ -410,3 +448,8 @@ todavía arriba". Dos cambios sobre `NetworkController`/`LicenseManager`:
   confirmar que el flujo completo (pending → aprobar → activo → suspender → reactivar) se ve y
   se comporta igual que en el Editor, y que la telemetría `license_*` llega a `/admin/logs` desde
   un dispositivo real.
+- **Rediseño de distancia/oclusión (`CameraSceneOcclusionGate`) sin validar en Quest real
+  todavía** — partió de un bug de diplopia reportado en dispositivo, pero el fix en sí solo se
+  probó en Editor (el game view no puede reproducir diplopia, ver Gotchas). Pendiente que el
+  usuario confirme en la próxima build que el cartel se fusiona bien en estéreo a `2.0 m` y que
+  la escena queda completamente oculta detrás.
