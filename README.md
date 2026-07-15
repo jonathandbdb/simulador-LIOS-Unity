@@ -342,6 +342,8 @@ un administrador lo aprueba desde el panel (`/api/verify`, ver §5 y [`docs/lice
 | **Despliegue (backend + panel admin)** | https://vr.conecta.sh — panel en [`/admin`](https://vr.conecta.sh/admin) (credenciales en §6), API interactiva en [`/docs`](https://vr.conecta.sh/docs) |
 | **Presentación (slides)** | https://drive.google.com/file/d/12h8i-0dFvqWGQV6KG4d-I6HtJs3I5c4A/view?usp=sharing |
 | **Vídeo de demostración** | https://youtu.be/zmguVpUjaKo |
+| **APK de la tablet** | https://drive.google.com/file/d/1WmZp9mLgBVHh3hW9D8VTmhckMqYHVbNe/view?usp=sharing |
+| **APK del visor** | https://drive.google.com/file/d/1H7OYwwNJ-_XutN3x3vWMXS3tjn96_Lkm/view?usp=sharing |
 
 **Notas sobre el despliegue:** el backend corre en un VPS con Docker Compose y HTTPS automático vía
 Caddy (ver [`docs/builds-deploy.md`](docs/builds-deploy.md)). Las aplicaciones (visor Quest y tablet)
