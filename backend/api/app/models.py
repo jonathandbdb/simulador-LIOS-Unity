@@ -2,6 +2,7 @@
 from datetime import date, datetime
 from typing import Optional
 
+from sqlalchemy import Column, ForeignKey, Integer
 from sqlmodel import Field, SQLModel
 
 from app.utils import utcnow
@@ -22,6 +23,13 @@ class Device(SQLModel, table=True):
     last_apk_version: Optional[str] = Field(
         default=None,
         description="Ultima version de APK reportada por el visor en /api/verify (current_apk_version)",
+    )
+    # Modo de la app para este dispositivo (P7: UI simplificada vs completa).
+    # String libre sin enum, mismo patron que `status`.
+    app_mode: str = Field(default="standard", description='Modo de app: "standard" | "pro"')
+    is_admin: bool = Field(
+        default=False,
+        description="Puede crear/editar lentes GENERICAS (visibles para todos los devices)",
     )
     # NULL = licencia permanente (decision tomada en Sprint 0).
     license_expiry: Optional[date] = None
@@ -67,6 +75,45 @@ class LensCatalog(SQLModel, table=True):
     data: str = Field(description="JSON string con el catalogo completo")
     is_active: bool = Field(default=False)
     created_at: datetime = Field(default_factory=utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Lentes custom (P7): creadas por dispositivos Pro (privadas) o Admin (genericas)
+# ---------------------------------------------------------------------------
+class CustomLens(SQLModel, table=True):
+    """Lente creada desde un dispositivo, aparte del catalogo base (blob).
+
+    `owner_device_pk` referencia la FILA de Device (PK int), NO el string
+    `device_id`: asi el reemplazo de hardware (editar `device_id` de la fila
+    desde el panel) conserva las lentes sin tocar esta tabla. NULL = lente
+    GENERICA (visible para todos; sobrevive al borrado del device admin que
+    la creo, por construccion del ON DELETE CASCADE).
+    """
+    __tablename__ = "custom_lenses"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    owner_device_pk: Optional[int] = Field(
+        default=None,
+        sa_column=Column(
+            Integer,
+            ForeignKey("devices.id", ondelete="CASCADE"),
+            nullable=True,
+            index=True,
+        ),
+        description="FK a devices.id (PK int). NULL = lente GENERICA global.",
+    )
+    lens_id: str = Field(
+        unique=True,
+        index=True,
+        description='Id del contrato de lente, generado por el server: "custom_xxxxxxxx" | "generic_xxxxxxxx"',
+    )
+    nombre: str
+    descripcion: str = Field(default="")
+    params_json: str = Field(
+        description="JSON string del dict params {clave:{default,min,max}} del contrato compartido"
+    )
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
 
 
 # ---------------------------------------------------------------------------

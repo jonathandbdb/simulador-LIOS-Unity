@@ -8,8 +8,10 @@ Sprint 3 alcance:
 
 Sprint 8 agregara /api/admin/* con JWT + CRUD completo.
 """
+import hashlib
 import json
 import logging
+import secrets
 from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
 
@@ -24,7 +26,7 @@ from sqlmodel import Session, func, select
 
 from app.config import settings
 from app.database import get_session
-from app.models import Device, LensCatalog, UpdateLog, Version
+from app.models import CustomLens, Device, LensCatalog, UpdateLog, Version
 from app.utils import utcnow
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,10 @@ class VerifyResponse(BaseModel):
     status: str
     device_name: str | None = None
     license_expiry: date | None = None
+    # P7: modo de app y flag admin por dispositivo. Aditivos: un visor viejo
+    # (JsonUtility) ignora campos desconocidos sin romper.
+    app_mode: str = "standard"
+    is_admin: bool = False
     message: str
 
 
@@ -68,6 +74,21 @@ class VerifyDenied(BaseModel):
 class LensesResponse(BaseModel):
     version: str
     catalogo: list[dict]
+
+
+class CustomLensCreate(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    scope: Literal["private", "generic"] = "private"
+    nombre: str = Field(min_length=1, max_length=80)
+    descripcion: str = Field(default="", max_length=500)
+    params: dict[str, dict]
+
+
+class CustomLensUpdate(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    nombre: str = Field(min_length=1, max_length=80)
+    descripcion: str = Field(default="", max_length=500)
+    params: dict[str, dict]
 
 
 class LogEvent(BaseModel):
@@ -237,25 +258,318 @@ def verify_license(request: Request, body: VerifyRequest, session: SessionDep):
         status="ok",
         device_name=device.name,
         license_expiry=device.license_expiry,
+        app_mode=device.app_mode,
+        is_admin=device.is_admin,
         message="Licencia verificada correctamente.",
     )
+
+
+# ---------------------------------------------------------------------------
+# Helpers compartidos por /api/lenses y /api/lenses/custom (P7)
+# ---------------------------------------------------------------------------
+def _device_effectively_active(device: Device) -> bool:
+    """Un device puede usar features (customs) si esta activo Y su licencia
+    no vencio. Mismos criterios que el flujo de verify, condensados."""
+    return device.status == "active" and (
+        device.license_expiry is None or device.license_expiry >= date.today()
+    )
+
+
+def _merged_version(base_version: str, extras: list[CustomLens]) -> str:
+    """Version del catalogo mergeado. Sin extras devuelve la version base
+    LITERAL (compat total con caches existentes); con extras, un fingerprint
+    determinístico que cambia ante cualquier alta/edicion/borrado (via
+    lens_id + updated_at de cada extra incluida)."""
+    if not extras:
+        return base_version
+    h = hashlib.sha256()
+    for lens in sorted(extras, key=lambda l: l.lens_id):
+        h.update(f"{lens.lens_id}|{lens.updated_at.isoformat()}".encode())
+    return f"{base_version}+x{h.hexdigest()[:10]}"
+
+
+def _lens_to_dict(lens: CustomLens) -> dict:
+    """Serializa una CustomLens al contrato compartido de lente, con el campo
+    extra `origen` ("generic"|"custom") que Unity usa para gatear la UI (las
+    lentes del blob base van SIN el campo)."""
+    return {
+        "id": lens.lens_id,
+        "nombre": lens.nombre,
+        "descripcion": lens.descripcion,
+        "params": json.loads(lens.params_json),
+        "origen": "generic" if lens.owner_device_pk is None else "custom",
+    }
 
 
 # ---------------------------------------------------------------------------
 # GET /api/lenses
 # ---------------------------------------------------------------------------
 @router.get("/lenses", response_model=LensesResponse)
-def get_lenses(session: SessionDep) -> LensesResponse:
+def get_lenses(session: SessionDep, device_id: str | None = None) -> LensesResponse:
+    """Catalogo mergeado: base + lentes GENERICAS + (si `device_id` valido y
+    efectivamente activo) las lentes CUSTOM privadas de ese device.
+
+    `device_id` es opcional: la tablet sincroniza anonima (base + genericas).
+    Un device_id desconocido o no-activo responde como anonimo — NO 403: el
+    sync nunca bloquea, y para un device suspendido esto purga sus customs
+    del cache local en el proximo arranque (comportamiento deseado). Este
+    endpoint jamas auto-registra (eso es exclusivo de verify).
+    """
     catalog = session.exec(
         select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
     ).first()
     if catalog is None:
         raise HTTPException(status_code=503, detail="No hay catalogo de lentes activo.")
     data = json.loads(catalog.data)
+    base_lenses: list[dict] = data.get("catalogo", [])
+
+    extras = list(session.exec(
+        select(CustomLens)
+        .where(CustomLens.owner_device_pk == None)  # noqa: E711  (genericas)
+        .order_by(CustomLens.lens_id)
+    ))
+    if device_id:
+        device = session.exec(
+            select(Device).where(Device.device_id == device_id)
+        ).first()
+        if device is not None and _device_effectively_active(device):
+            extras += list(session.exec(
+                select(CustomLens)
+                .where(CustomLens.owner_device_pk == device.id)
+                .order_by(CustomLens.lens_id)
+            ))
+
+    # Colision defensiva: solo alcanzable si un admin metio a mano un id
+    # "custom_*"/"generic_*" en el blob base — el catalogo base es autoritativo.
+    seen_ids = {l.get("id") for l in base_lenses}
+    merged = list(base_lenses)
+    for lens in extras:
+        if lens.lens_id in seen_ids:
+            logger.warning(
+                "Lente extra '%s' colisiona con un id del catalogo base; salteada.",
+                lens.lens_id,
+            )
+            continue
+        seen_ids.add(lens.lens_id)
+        merged.append(_lens_to_dict(lens))
+
     return LensesResponse(
-        version=data.get("version", catalog.version),
-        catalogo=data.get("catalogo", []),
+        version=_merged_version(data.get("version", catalog.version), extras),
+        catalogo=merged,
     )
+
+
+# ---------------------------------------------------------------------------
+# CRUD /api/lenses/custom (P7) — consumido por el VISOR (comandado por la
+# tablet via WebSocket). El device_id actua como identidad de facto
+# (limitacion aceptada, documentada en docs/licenciamiento.md: TLS en prod,
+# id opaco no enumerable, rate limit, danio acotado a lentes).
+# ---------------------------------------------------------------------------
+MAX_CUSTOM_LENSES_PER_DEVICE = 50
+MAX_GENERIC_LENSES = 100
+MAX_LENS_PARAMS = 20
+
+
+def _validate_lens_params(params: dict) -> str | None:
+    """Valida el dict params del contrato de lente. Devuelve un mensaje de
+    error o None si es valido. No se valida contra la lista de params del
+    catalogo base (Unity tolera params faltantes/extra)."""
+    if not params:
+        return "params no puede estar vacio."
+    if len(params) > MAX_LENS_PARAMS:
+        return f"params admite como maximo {MAX_LENS_PARAMS} claves."
+    for key, spec in params.items():
+        if not isinstance(key, str) or not (1 <= len(key) <= 64):
+            return f"Clave de parametro invalida: {key!r}."
+        if not isinstance(spec, dict) or set(spec.keys()) != {"default", "min", "max"}:
+            return f"El parametro '{key}' debe ser un dict con exactamente default/min/max."
+        try:
+            d, lo, hi = float(spec["default"]), float(spec["min"]), float(spec["max"])
+        except (TypeError, ValueError):
+            return f"El parametro '{key}' tiene valores no numericos."
+        if not (lo <= d <= hi):
+            return f"El parametro '{key}' no cumple min <= default <= max."
+    return None
+
+
+def _authorize_lens_write(session: Session, device_id: str, need_admin: bool):
+    """Autoriza una mutacion de lentes. Devuelve el Device o un JSONResponse
+    de denegacion (mismo shape que verify: {status:"denied", reason, message}).
+
+    NO auto-registra devices desconocidos (eso es exclusivo de verify)."""
+    device = session.exec(
+        select(Device).where(Device.device_id == device_id)
+    ).first()
+    if device is None:
+        return _denied(
+            "DEVICE_NOT_FOUND",
+            "Este dispositivo no esta registrado. Contacte al administrador.",
+        )
+    if not _device_effectively_active(device):
+        return _denied(
+            "DEVICE_NOT_AUTHORIZED",
+            "Este dispositivo no esta habilitado para gestionar lentes.",
+        )
+    if need_admin and not device.is_admin:
+        return _denied(
+            "NOT_ADMIN",
+            "Solo un dispositivo administrador puede gestionar lentes genericas.",
+        )
+    if not need_admin and device.app_mode != "pro" and not device.is_admin:
+        return _denied(
+            "MODE_NOT_PRO",
+            "La creacion de lentes propias requiere el modo Pro.",
+        )
+    return device
+
+
+def _catalog_version_for(session: Session, device: Device | None) -> str:
+    """Version mergeada post-cambio para ese device (le ahorra al visor
+    adivinar si tiene que re-sincronizar)."""
+    catalog = session.exec(
+        select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+    ).first()
+    base_version = "unknown"
+    if catalog is not None:
+        base_version = json.loads(catalog.data).get("version", catalog.version)
+    extras = list(session.exec(
+        select(CustomLens).where(CustomLens.owner_device_pk == None)  # noqa: E711
+    ))
+    if device is not None:
+        extras += list(session.exec(
+            select(CustomLens).where(CustomLens.owner_device_pk == device.id)
+        ))
+    return _merged_version(base_version, extras)
+
+
+@router.post("/lenses/custom", status_code=201)
+@limiter.limit("30/minute")
+def create_custom_lens(request: Request, body: CustomLensCreate, session: SessionDep):
+    """Crea una lente custom (scope "private") o generica (scope "generic",
+    solo admin). El lens_id lo genera el server: sin colisiones con el
+    catalogo base ni entre devices, por construccion."""
+    err = _validate_lens_params(body.params)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+
+    is_generic = body.scope == "generic"
+    device = _authorize_lens_write(session, body.device_id, need_admin=is_generic)
+    if not isinstance(device, Device):
+        return device  # JSONResponse de denegacion
+
+    # Topes de storage (mismo espiritu que MAX_PENDING_DEVICES).
+    if is_generic:
+        count = session.exec(
+            select(func.count()).select_from(CustomLens)
+            .where(CustomLens.owner_device_pk == None)  # noqa: E711
+        ).one()
+        if count >= MAX_GENERIC_LENSES:
+            return JSONResponse(status_code=409, content=VerifyDenied(
+                reason="LENS_LIMIT_REACHED",
+                message=f"Tope de lentes genericas alcanzado ({MAX_GENERIC_LENSES}).",
+            ).model_dump())
+    else:
+        count = session.exec(
+            select(func.count()).select_from(CustomLens)
+            .where(CustomLens.owner_device_pk == device.id)
+        ).one()
+        if count >= MAX_CUSTOM_LENSES_PER_DEVICE:
+            return JSONResponse(status_code=409, content=VerifyDenied(
+                reason="LENS_LIMIT_REACHED",
+                message=f"Tope de lentes propias alcanzado ({MAX_CUSTOM_LENSES_PER_DEVICE}).",
+            ).model_dump())
+
+    prefix = "generic" if is_generic else "custom"
+    lens = None
+    for _ in range(3):
+        # Retry ante la (improbable) colision del token_hex: unique index en
+        # lens_id + regeneracion, mismo patron defensivo que el auto-registro.
+        candidate = CustomLens(
+            owner_device_pk=None if is_generic else device.id,
+            lens_id=f"{prefix}_{secrets.token_hex(4)}",
+            nombre=body.nombre,
+            descripcion=body.descripcion,
+            params_json=json.dumps(body.params),
+        )
+        session.add(candidate)
+        try:
+            session.commit()
+            lens = candidate
+            break
+        except IntegrityError:
+            session.rollback()
+    if lens is None:
+        raise HTTPException(status_code=500, detail="No se pudo generar un id de lente unico.")
+
+    session.refresh(lens)
+    return {
+        "status": "ok",
+        "lens": _lens_to_dict(lens),
+        "catalog_version": _catalog_version_for(session, device),
+    }
+
+
+@router.put("/lenses/custom/{lens_id}")
+@limiter.limit("30/minute")
+def update_custom_lens(request: Request, lens_id: str, body: CustomLensUpdate, session: SessionDep):
+    """Edita una lente custom propia, o una generica si el device es admin.
+    Un Pro no-admin NO puede editar genericas (requisito de producto)."""
+    err = _validate_lens_params(body.params)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+
+    lens = session.exec(
+        select(CustomLens).where(CustomLens.lens_id == lens_id)
+    ).first()
+    if lens is None:
+        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+
+    is_generic = lens.owner_device_pk is None
+    device = _authorize_lens_write(session, body.device_id, need_admin=is_generic)
+    if not isinstance(device, Device):
+        return device
+    if not is_generic and lens.owner_device_pk != device.id:
+        return _denied("NOT_OWNER", "Esta lente pertenece a otro dispositivo.")
+
+    lens.nombre = body.nombre
+    lens.descripcion = body.descripcion
+    lens.params_json = json.dumps(body.params)
+    lens.updated_at = utcnow()  # dispara el fingerprint de version
+    session.add(lens)
+    session.commit()
+    session.refresh(lens)
+    return {
+        "status": "ok",
+        "lens": _lens_to_dict(lens),
+        "catalog_version": _catalog_version_for(session, device),
+    }
+
+
+@router.delete("/lenses/custom/{lens_id}")
+@limiter.limit("30/minute")
+def delete_custom_lens(request: Request, lens_id: str, device_id: str, session: SessionDep):
+    """Borra una lente custom propia, o una generica si el device es admin.
+    `device_id` va por query param (body en DELETE es antipatico para
+    UnityWebRequest)."""
+    lens = session.exec(
+        select(CustomLens).where(CustomLens.lens_id == lens_id)
+    ).first()
+    if lens is None:
+        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+
+    is_generic = lens.owner_device_pk is None
+    device = _authorize_lens_write(session, device_id, need_admin=is_generic)
+    if not isinstance(device, Device):
+        return device
+    if not is_generic and lens.owner_device_pk != device.id:
+        return _denied("NOT_OWNER", "Esta lente pertenece a otro dispositivo.")
+
+    session.delete(lens)
+    session.commit()
+    return {
+        "status": "ok",
+        "catalog_version": _catalog_version_for(session, device),
+    }
 
 
 # ---------------------------------------------------------------------------

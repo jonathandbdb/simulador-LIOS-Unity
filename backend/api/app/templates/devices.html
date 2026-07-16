@@ -16,6 +16,14 @@
     </select>
     <input class="input" name="license_expiry" type="date" title="{{ t('dev.expiry_hint') }}" />
     <button class="btn btn-primary" type="submit">{{ t('dev.save') }}</button>
+    <select class="select" name="app_mode" title="{{ t('dev.app_mode') }}">
+      <option value="standard">{{ t('dev.app_mode.standard') }}</option>
+      <option value="pro">{{ t('dev.app_mode.pro') }}</option>
+    </select>
+    <label class="field row" style="align-items:center; gap:6px;">
+      <input type="checkbox" name="is_admin" />
+      <span>{{ t('dev.is_admin') }}</span>
+    </label>
     <input class="input span-full" name="notes" placeholder="{{ t('dev.notes') }}" />
   </form>
   <p class="muted xs" style="margin-top: 8px;">{{ t('dev.disable_hint') }}</p>
@@ -28,7 +36,9 @@
 {% for d in devices %}
   <form id="edit-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/edit"></form>
   <form id="del-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/delete"
-        onsubmit="return confirm('{{ t('dev.delete_confirm') }}');"></form>
+        onsubmit="return confirm('{{ t('dev.delete_confirm') }}{% if lens_counts.get(d.id) %} {{ t('dev.delete_lens_warn') }} ({{ lens_counts.get(d.id) }}){% endif %}');"></form>
+  <form id="replace-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/replace"
+        onsubmit="return confirm('{{ t('dev.replace_confirm') }}');"></form>
   {% if d.status == 'pending' %}
   <form id="approve-{{ d.id }}" method="post" action="/admin/devices/{{ d.id }}/approve"></form>
   <form id="reject-{{ d.id }}"  method="post" action="/admin/devices/{{ d.id }}/reject"></form>
@@ -47,6 +57,9 @@
         {% if d.status == 'pending' %}<span class="badge badge-warn">{{ t('dev.status.pending') }}</span>{% endif %}
         {% if d.status == 'rejected' %}<span class="badge badge-err">{{ t('dev.status.rejected') }}</span>{% endif %}
         {% if d.status == 'suspended' %}<span class="badge">{{ t('dev.status.suspended') }}</span>{% endif %}
+        {% if d.app_mode == 'pro' %}<span class="badge badge-ok">{{ t('dev.app_mode.pro') }}</span>{% endif %}
+        {% if d.is_admin %}<span class="badge badge-warn">{{ t('dev.is_admin') }}</span>{% endif %}
+        {% if lens_counts.get(d.id) %}<span class="badge">{{ lens_counts.get(d.id) }} {{ t('dev.custom_lens_count') }}</span>{% endif %}
       </div>
       <div class="device-summary-meta hint xs">
         {{ t('dev.last_seen') }}: {% if d.last_seen %}{{ d.last_seen.strftime('%Y-%m-%d %H:%M') }}{% else %}{{ t('never') }}{% endif %}
@@ -86,10 +99,33 @@
                  title="{{ t('dev.expiry_hint') }}"
                  value="{{ d.license_expiry.isoformat() if d.license_expiry else '' }}" />
         </label>
+        <label class="field">
+          <span>{{ t('dev.app_mode') }}</span>
+          <select form="edit-{{ d.id }}" class="select" name="app_mode">
+            <option value="standard" {% if d.app_mode=='standard' %}selected{% endif %}>{{ t('dev.app_mode.standard') }}</option>
+            <option value="pro"      {% if d.app_mode=='pro' %}selected{% endif %}>{{ t('dev.app_mode.pro') }}</option>
+          </select>
+        </label>
+        <label class="field row" style="align-items:center; gap:6px;">
+          <input form="edit-{{ d.id }}" type="checkbox" name="is_admin" {% if d.is_admin %}checked{% endif %} />
+          <span>{{ t('dev.is_admin') }}</span>
+        </label>
       </div>
       <div class="row justify-end mt-4">
         <button form="edit-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.save') }}</button>
       </div>
+      <hr style="margin: 14px 0; opacity: 0.25;" />
+      <div class="param-grid">
+        <label class="field">
+          <span>{{ t('dev.replace') }}</span>
+          <input form="replace-{{ d.id }}" class="input" name="new_device_id"
+                 list="pending-ids" placeholder="{{ t('dev.device_id') }}" required />
+        </label>
+        <div class="field" style="justify-content: flex-end;">
+          <button form="replace-{{ d.id }}" class="btn btn-sm" type="submit">{{ t('dev.replace') }}</button>
+        </div>
+      </div>
+      <p class="muted xs" style="margin-top: 6px;">{{ t('dev.replace_hint') }}</p>
     </div>
   </div>
   {% endfor %}
@@ -97,6 +133,14 @@
 {% else %}
 <div class="card"><p class="empty-row">{{ t('dev.empty') }}</p></div>
 {% endif %}
+
+{# Sugerencias para "Reemplazar hardware": los device_id actualmente pending
+   (candidatos naturales: el visor nuevo ya se auto-registro). #}
+<datalist id="pending-ids">
+  {% for d in devices if d.status == 'pending' %}
+  <option value="{{ d.device_id }}">{{ d.name }}</option>
+  {% endfor %}
+</datalist>
 
 <script>
   // Expandir/colapsar la fila de un dispositivo para editar (mismo patron

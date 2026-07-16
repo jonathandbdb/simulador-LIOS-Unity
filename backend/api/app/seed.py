@@ -55,7 +55,14 @@ _KNOWN_SEED_VERSIONS = {
     "0.4.0-clinical",
     "0.4.0-fallback",
     "0.5.0-clinical",
+    "0.5.1-clinical",
+    "0.6.0-clinical",
 }
+
+
+# NOTA (P7): este seed jamas toca `custom_lenses` — su logica de promocion
+# opera solo sobre `lens_catalogs` (el blob base). Las lentes creadas por
+# dispositivos sobreviven cualquier re-seed, por construccion.
 
 
 def _seed_lens_catalog(session: Session) -> None:
@@ -176,6 +183,8 @@ def _seed_test_device(session: Session) -> None:
         device_id="DEV_TEST_001",
         name="Visor de desarrollo",
         status="active",
+        app_mode="pro",   # P7: pro+admin para probar todo el flujo de lentes con curl
+        is_admin=True,
         license_expiry=None,  # permanente
         notes="Device de testing creado por el seed. Eliminar en produccion.",
     )

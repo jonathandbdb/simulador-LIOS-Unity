@@ -141,6 +141,44 @@ python -m pytest -v
 - Contra Unity: poner la IP de la máquina que corre Docker en `backendUrl` de `DataManager.cs`, entrar a Play y buscar en consola `DataManager: catalogo v... sincronizado desde backend`.
 - Producción (VPS): DNS A record → IP del VPS, puertos 80/443 abiertos, `.env` con `DOMAIN`, `SCHEME=` vacío, `PORT=443`, `PUBLIC_BASE_URL=https://...` y secrets regenerados (`openssl rand -hex 32`); levantar con el override `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d` (necesario para que Caddy publique el 80 además del 443 — el compose base solo mapea `${PORT}:${PORT}`, ver `backend/docker-compose.prod.yml`) y verificar `curl https://<dominio>/healthz` (Caddy tarda ~30 s en emitir el certificado).
 
+## P7: modos Standard/Pro, lentes custom y administradores
+
+- **`Device` suma `app_mode`** (`"standard"|"pro"`, default standard) **e `is_admin`** (bool):
+  editables en `/admin/devices` (select + checkbox, badges en el resumen). El verify OK los
+  devuelve (`app_mode`/`is_admin`) — contrato en `docs/licenciamiento.md`.
+- **Tabla `custom_lenses`** (migración `0004`): lentes creadas desde dispositivos.
+  `owner_device_pk` es FK a `devices.id` (el PK int, NO el string `device_id`); **NULL = lente
+  GENÉRICA** (visible para todos, solo admin). `lens_id` (`custom_xxxxxxxx`/`generic_xxxxxxxx`,
+  generado por el server con `secrets.token_hex(4)`) tiene UNIQUE global: sin colisiones con el
+  blob base por construcción. `updated_at` alimenta el fingerprint de versión.
+- **`GET /api/lenses?device_id=`** (query param opcional): merge = blob base + genéricas +
+  customs del device (solo si existe y está efectivamente activo — status active y licencia
+  vigente; si no, responde como anónimo, lo que purga sus customs del cache del visor). La
+  tablet sigue anónima (base + genéricas). Versionado del merge:
+  `"{base}+x{sha256(lens_id|updated_at)[:10]}"`; **sin extras devuelve la versión base literal**
+  (compat con caches). Las extras llevan campo `"origen": "generic"|"custom"`; las base no.
+- **CRUD `/api/lenses/custom`** (30/min/IP): `POST` (body `{device_id, scope, nombre,
+  descripcion, params}`, 201 con `{lens, catalog_version}`), `PUT /{lens_id}`,
+  `DELETE /{lens_id}?device_id=`. Autorización: device efectivamente activo; privadas exigen
+  `app_mode=pro` (o admin); genéricas exigen `is_admin`; editar/borrar exige ser dueño
+  (`NOT_OWNER`) o admin para genéricas (`NOT_ADMIN` — un Pro NO puede tocar genéricas).
+  Rechazos con shape de verify (`{status:"denied", reason, message}`): `DEVICE_NOT_FOUND`,
+  `DEVICE_NOT_AUTHORIZED`, `MODE_NOT_PRO`, `NOT_ADMIN`, `NOT_OWNER`, `LENS_LIMIT_REACHED`
+  (topes 50/device, 100 genéricas, 409). Validación de params: ≤20 claves,
+  `min<=default<=max` numéricos.
+- **Panel**: página nueva `/admin/custom-lenses` (listar/filtrar/borrar, params read-only);
+  `devices_delete` borra las customs del device (cascade app-level + ON DELETE CASCADE; las
+  genéricas nunca). **Reemplazo de hardware**: `POST /admin/devices/{pk}/replace` re-apunta
+  `device_id` de la fila (licencia/modo/lentes se conservan solas por colgar del PK); si el
+  visor nuevo ya se auto-registró como pending sin lentes, ese placeholder se borra; un destino
+  real (activo o con lentes) se rechaza. Resetea `last_seen/last_ip/last_apk_version` y audita
+  en `notes`. El flush del delete va ANTES del update (unique de device_id — gotcha SQLAlchemy).
+- **Seed**: no toca `custom_lenses` jamás (opera solo sobre `lens_catalogs`). `DEV_TEST_001`
+  ahora es pro+admin. `_KNOWN_SEED_VERSIONS` incluye 0.5.1/0.6.0-clinical.
+- **Seguridad (limitación aceptada)**: el `device_id` es el secreto de facto para el CRUD —
+  mitigado por TLS en prod, id opaco no enumerable, rate limit y daño acotado (solo lentes).
+  Mejora futura: token por device emitido en verify (ver Pendientes).
+
 ## Pendientes / deuda
 
 - `/api/verify` no tiene `response_model` (por diseño, ver Decisiones) — su 403/200 no aparecen tipados en el OpenAPI generado; documentado ahí, no se resuelve sin tocar el contrato con el futuro `LicenseManager` de Unity.

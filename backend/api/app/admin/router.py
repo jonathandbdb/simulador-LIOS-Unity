@@ -28,7 +28,7 @@ from app.admin.storage import delete_object, upload_file_streaming
 from app.admin.templating import LANG_COOKIE, get_lang, render
 from app.config import settings
 from app.database import get_session
-from app.models import AdminUser, Device, LensCatalog, UpdateLog, Version
+from app.models import AdminUser, CustomLens, Device, LensCatalog, UpdateLog, Version
 from app.utils import utcnow
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -169,9 +169,15 @@ def devices_list(request: Request, admin: AdminDep, session: SessionDep):
         )
     ).all()
     pending_count = sum(1 for d in devices if d.status == "pending")
+    # P7: contador de lentes custom por device (una sola query agregada).
+    lens_counts = dict(session.exec(
+        select(CustomLens.owner_device_pk, func.count())
+        .where(CustomLens.owner_device_pk != None)  # noqa: E711
+        .group_by(CustomLens.owner_device_pk)
+    ).all())
     return render(
         request, "devices.html", admin_user=admin,
-        devices=devices, pending_count=pending_count,
+        devices=devices, pending_count=pending_count, lens_counts=lens_counts,
     )
 
 
@@ -181,6 +187,8 @@ def devices_create(
     device_id: Annotated[str, Form()],
     name: Annotated[str, Form()],
     status: Annotated[str, Form()] = "active",
+    app_mode: Annotated[str, Form()] = "standard",
+    is_admin: Annotated[str, Form()] = "",
     license_expiry: Annotated[str, Form()] = "",
     notes: Annotated[str, Form()] = "",
 ):
@@ -192,6 +200,8 @@ def devices_create(
         device_id=device_id.strip(),
         name=name.strip(),
         status=status,
+        app_mode=app_mode if app_mode in ("standard", "pro") else "standard",
+        is_admin=bool(is_admin),  # checkbox: "on" si esta tildado, ausente si no
         license_expiry=_parse_date(license_expiry),
         notes=notes.strip() or None,
         created_at=now,
@@ -207,6 +217,8 @@ def devices_edit(
     admin: AdminDep, session: SessionDep, device_pk: int,
     name: Annotated[str, Form()],
     status: Annotated[str, Form()],
+    app_mode: Annotated[str, Form()] = "standard",
+    is_admin: Annotated[str, Form()] = "",
     license_expiry: Annotated[str, Form()] = "",
 ):
     d = session.get(Device, device_pk)
@@ -214,6 +226,8 @@ def devices_edit(
         raise HTTPException(404)
     d.name = name.strip()
     d.status = status
+    d.app_mode = app_mode if app_mode in ("standard", "pro") else "standard"
+    d.is_admin = bool(is_admin)
     d.license_expiry = _parse_date(license_expiry)
     d.updated_at = utcnow()
     session.add(d)
@@ -249,8 +263,69 @@ def devices_reject(admin: AdminDep, session: SessionDep, device_pk: int):
 def devices_delete(admin: AdminDep, session: SessionDep, device_pk: int):
     d = session.get(Device, device_pk)
     if d is not None:
+        # Cascade app-level de sus lentes custom (ademas del ON DELETE CASCADE
+        # de Postgres: en los tests SQLite el pragma de FKs esta off por
+        # default, esta capa garantiza el mismo comportamiento). Las lentes
+        # GENERICAS (owner NULL) jamas se ven afectadas, por construccion.
+        own_lenses = session.exec(
+            select(CustomLens).where(CustomLens.owner_device_pk == d.id)
+        ).all()
+        for lens in own_lenses:
+            session.delete(lens)
         session.delete(d)
         session.commit()
+    return _flash_redirect("/admin/devices", "OK")
+
+
+@router.post("/devices/{device_pk}/replace")
+def devices_replace(
+    admin: AdminDep, session: SessionDep, device_pk: int,
+    new_device_id: Annotated[str, Form()],
+):
+    """Reemplazo de hardware (P7): re-apunta la fila del device al device_id
+    del visor nuevo. Licencia, modo, flag admin y lentes custom (que cuelgan
+    del PK int, no del string) se conservan solas.
+
+    Si el visor nuevo ya se auto-registro (fila placeholder "pending"/
+    "rejected" sin lentes), se elimina ese placeholder. Si el destino es un
+    device real (activo/suspendido o con lentes), se rechaza: nunca merge
+    silencioso.
+    """
+    d = session.get(Device, device_pk)
+    if d is None:
+        raise HTTPException(404)
+    new_id = new_device_id.strip()
+    if not new_id or new_id == d.device_id:
+        return _flash_redirect("/admin/devices", "new device_id invalido", "error")
+
+    other = session.exec(select(Device).where(Device.device_id == new_id)).first()
+    if other is not None:
+        other_lens_count = session.exec(
+            select(func.count()).select_from(CustomLens)
+            .where(CustomLens.owner_device_pk == other.id)
+        ).one()
+        if other.status not in ("pending", "rejected") or other_lens_count > 0:
+            return _flash_redirect(
+                "/admin/devices",
+                "El device_id destino pertenece a otro dispositivo real",
+                "error",
+            )
+        session.delete(other)  # placeholder del auto-registro: se descarta
+        # Flush explicito: sin esto SQLAlchemy puede ordenar el UPDATE del
+        # device_id ANTES del DELETE del placeholder y pisar el unique.
+        session.flush()
+
+    old_id = d.device_id
+    d.device_id = new_id
+    # Datos del hardware viejo: se resetean (eran de otro aparato).
+    d.last_seen = None
+    d.last_ip = None
+    d.last_apk_version = None
+    d.updated_at = utcnow()
+    stamp = f"[reemplazo] {old_id} -> {new_id} ({date.today().isoformat()})"
+    d.notes = f"{d.notes}\n{stamp}" if d.notes else stamp
+    session.add(d)
+    session.commit()
     return _flash_redirect("/admin/devices", "OK")
 
 
@@ -338,6 +413,51 @@ def lenses_activate(admin: AdminDep, session: SessionDep, catalog_pk: int):
     session.add(target)
     session.commit()
     return _flash_redirect("/admin/lenses", "OK")
+
+
+# ---------------------------------------------------------------------------
+# Custom lenses (P7) — ver/borrar; la creacion/edicion es de los devices
+# ---------------------------------------------------------------------------
+@router.get("/custom-lenses")
+def custom_lenses_list(
+    request: Request, admin: AdminDep, session: SessionDep,
+    scope: str = "all", device_pk: int | None = None,
+):
+    query = select(CustomLens).order_by(desc(CustomLens.updated_at))
+    if scope == "generic":
+        query = query.where(CustomLens.owner_device_pk == None)  # noqa: E711
+    elif scope == "private":
+        query = query.where(CustomLens.owner_device_pk != None)  # noqa: E711
+    if device_pk is not None:
+        query = query.where(CustomLens.owner_device_pk == device_pk)
+    lenses = session.exec(query).all()
+
+    # Datos del dueño para mostrar (nombre + device_id corto).
+    devices_by_pk = {
+        d.id: d for d in session.exec(select(Device)).all()
+    }
+    rows = []
+    for lens in lenses:
+        owner = devices_by_pk.get(lens.owner_device_pk) if lens.owner_device_pk else None
+        try:
+            params_pretty = json.dumps(json.loads(lens.params_json), indent=2, ensure_ascii=False)
+        except json.JSONDecodeError:
+            params_pretty = lens.params_json
+        rows.append({"lens": lens, "owner": owner, "params_pretty": params_pretty})
+    return render(
+        request, "custom_lenses.html", admin_user=admin,
+        rows=rows, scope=scope, device_pk=device_pk,
+        devices=sorted(devices_by_pk.values(), key=lambda d: d.name.lower()),
+    )
+
+
+@router.post("/custom-lenses/{lens_pk}/delete")
+def custom_lenses_delete(admin: AdminDep, session: SessionDep, lens_pk: int):
+    lens = session.get(CustomLens, lens_pk)
+    if lens is not None:
+        session.delete(lens)
+        session.commit()
+    return _flash_redirect("/admin/custom-lenses", "OK")
 
 
 # ---------------------------------------------------------------------------
