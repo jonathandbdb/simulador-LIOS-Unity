@@ -486,6 +486,28 @@ TabletController.Start()
   conexión, inicial o P2.5) para no arrastrar el toggle de una sesión anterior — ver Gotchas
   abajo para el mismatch conocido si otra tablet ocultó el HUD antes.
 
+## P7: modos Standard/Pro (UI por modo del visor)
+
+- El `hello` trae `mode` (`"standard"|"pro"`) e `is_admin`; `TabletSession.Mode/IsAdmin` los
+  exponen. **Sin campo (visor viejo) ⇒ default `"pro"`** (UI completa, no-breaking). El routing
+  vive en `OnSessionHello`: standard ⇒ `ShowStandardScreen()`, resto ⇒ `ShowMainScreen()`.
+- **Pantalla Standard** (`BuildStandardScreen`): stream a pantalla completa (panes OD-primero,
+  mismas Texture2D del stream normal), barra superior (escenarios + botón **Lente** + **Salir**)
+  y **carrusel de 5 íconos circulares** (`TabletUiKit.CircleIcon` + glifos por código:
+  astigmatismo, halos, dilatación, destellos, rayos — `ParamMeta.STANDARD_PARAMS`). Tocar un
+  ícono abre UN slider grande (astigmatismo suma el slider del eje); los sliders emiten
+  `override_params` (misma vía persistente que "Ajuste fino": sobreviven updates). El botón
+  Lente abre un overlay con la lista de lentes y **elección de ojo (Ambos/OD/OI)** antes de
+  `apply_lens` (`ApplyLensTo(lensId, eye)`, extraído de `OnLensSelected`).
+- **Modo Pro** (UI actual) suma: **gating por procedencia** — en lentes que NO son propias
+  (base/genéricas) el "Ajuste fino" solo muestra `ParamMeta.STANDARD_PARAMS`; en lentes propias
+  (`origen=="custom"`) muestra todo + botones "Guardar en la lente" (`update_lens` con los
+  valores actuales como defaults) y "Eliminar lente" (doble tap de confirmación). Card nueva
+  **"Crear lente"**: duplica la lente en edición con los ajustes aplicados como defaults
+  (`BuildParamsSnapshot`); si el visor es admin aparece el toggle "Genérica". Feedback por
+  `lens_saved`/`lens_error` (mapeo de reasons en `OnLensError`).
+- Las cards de lente muestran badge "Propia"/"Genérica" según `origen` (`LensCardView`).
+
 ## Gotchas
 - **El botón "Ocultar/Mostrar HUD" no refleja el estado real del HUD, solo el de ESTA tablet en
   ESTA sesión de red:** `_hudVisible` se resetea a `true` en cada conexión nueva

@@ -34,6 +34,23 @@ namespace Simulador.Tests
         }
 
         [Test]
+        public void BuildSyncUrl_ConDeviceId_AgregaQueryEscapada()
+        {
+            // P7: el visor se identifica para recibir sus lentes custom mergeadas.
+            string url = DataManagerLogic.BuildSyncUrl("http://host:8080", "/api/lenses", "abc 123/+x");
+            Assert.AreEqual("http://host:8080/api/lenses?device_id=abc%20123%2F%2Bx", url);
+        }
+
+        [Test]
+        public void BuildSyncUrl_DeviceIdNullOVacio_DegradaAAnonima()
+        {
+            Assert.AreEqual("http://host:8080/api/lenses",
+                DataManagerLogic.BuildSyncUrl("http://host:8080", "/api/lenses", null));
+            Assert.AreEqual("http://host:8080/api/lenses",
+                DataManagerLogic.BuildSyncUrl("http://host:8080", "/api/lenses", ""));
+        }
+
+        [Test]
         public void BuildSyncUrl_EndpointMissingLeadingSlash_GetsOneAdded()
         {
             string url = DataManagerLogic.BuildSyncUrl("http://host:8080", "api/lenses");

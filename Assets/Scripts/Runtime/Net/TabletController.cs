@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
@@ -96,6 +97,43 @@ namespace Simulador.Tablet
         private readonly Dictionary<string, ParamRowView> _paramRows = new();
         private readonly Dictionary<string, float> _paramDefaults = new();
 
+        // --- Lentes custom (P7, solo modo Pro) ---
+        private TabletButton _saveLensButton, _deleteLensButton;
+        private bool _deleteArmed;                 // doble tap para confirmar Eliminar
+        private TMP_InputField _createNameEdit, _createDescEdit;
+        private TabletButton _createGenericToggle; // solo visible si el visor es admin
+        private GameObject _createGenericRow;
+        private TMP_Text _createStatus;
+
+        // --- Modo Standard (P7): stream fullscreen + carrusel de 5 parametros ---
+        private GameObject _standardScreen;
+        private RectTransform _stdScenarioList;
+        private readonly Dictionary<string, TabletButton> _stdScenarioButtons = new();
+        private GameObject _stdRightPane;
+        private RawImage _stdStreamLeft, _stdStreamRight;
+        private TMP_Text _stdLeftLabel, _stdRightLabel;
+        private readonly Dictionary<string, (TabletButton btn, Image ring)> _stdIcons = new();
+        private string _stdSelectedKey = "";
+        private GameObject _stdSliderPanel;
+        private TMP_Text _stdSliderTitle, _stdSliderValue, _stdAxisValue;
+        private Slider _stdSlider, _stdAxisSlider;
+        private GameObject _stdAxisRow;
+        private GameObject _stdLensOverlay;
+        private RectTransform _stdLensListBox;
+        private GameObject _stdEyePickRow;
+        private string _stdPendingLensId = "";
+
+        // Carrusel Standard: (clave de catalogo, etiqueta corta). El astigmatismo
+        // abre ademas el slider secundario del eje (astig_axis_deg).
+        private static readonly (string key, string label)[] StandardCarousel =
+        {
+            ("astig_magnitude", "Astigmatismo"),
+            ("halo_intensity", "Halos"),
+            ("halo_extra_rings", "Dilatación"),
+            ("destello_intensity", "Destellos"),
+            ("destello_rayos", "Rayos"),
+        };
+
         // --- Astigmatismo ---
         private RectTransform _astigContent;
         private TabletButton _astigEnabled;
@@ -186,6 +224,8 @@ namespace Simulador.Tablet
             _session.HelloReceived += OnSessionHello;
             _session.VisionStateChanged += OnSessionVisionStateChanged;
             _session.FrameReceived += OnSessionFrame;
+            _session.LensSaved += OnLensSaved;
+            _session.LensError += OnLensError;
             _session.Begin();
 
             ShowConnectScreen("Buscando visores en la red...");
@@ -237,13 +277,27 @@ namespace Simulador.Tablet
             RebuildLensList(lenses);
             RebuildScenarioList();
             RefreshVisionUI();
-            ShowMainScreen();
+            // P7: el toggle "generica" del alta de lentes solo aparece si el visor
+            // conectado es admin (el modo puede cambiar entre hellos: re-verify).
+            if (_createGenericRow != null) _createGenericRow.SetActive(_session.IsAdmin);
+            // P7: routing por modo del visor (hello). "standard" -> UI simplificada;
+            // cualquier otro valor (o visor viejo sin campo) -> UI Pro completa.
+            if (_session.Mode == "standard")
+            {
+                RebuildStandardLensList();
+                ShowStandardScreen();
+            }
+            else
+            {
+                ShowMainScreen();
+            }
         }
 
         private void OnSessionVisionStateChanged()
         {
             RefreshVisionUI();
             SyncParamRowsFromState();
+            RefreshStandardSliders();
         }
 
         private void OnSessionFrame(char eye, byte[] jpg)
@@ -257,6 +311,7 @@ namespace Simulador.Tablet
                 {
                     _streamRight.texture = _texRight; _streamRight.color = Color.white;
                     _fsStreamRight.texture = _texRight; _fsStreamRight.color = Color.white;
+                    if (_stdStreamRight != null) { _stdStreamRight.texture = _texRight; _stdStreamRight.color = Color.white; }
                 }
             }
             else if (eye == 'L')
@@ -265,6 +320,7 @@ namespace Simulador.Tablet
                 {
                     _streamLeft.texture = _texLeft; _streamLeft.color = Color.white;
                     _fsStreamLeft.texture = _texLeft; _fsStreamLeft.color = Color.white;
+                    if (_stdStreamLeft != null) { _stdStreamLeft.texture = _texLeft; _stdStreamLeft.color = Color.white; }
                 }
             }
             else // 'B' o desconocido -> mismo frame en ambos paneles
@@ -273,10 +329,12 @@ namespace Simulador.Tablet
                 {
                     _streamLeft.texture = _texLeft; _streamLeft.color = Color.white;
                     _fsStreamLeft.texture = _texLeft; _fsStreamLeft.color = Color.white;
+                    if (_stdStreamLeft != null) { _stdStreamLeft.texture = _texLeft; _stdStreamLeft.color = Color.white; }
                     if (ImageConversion.LoadImage(_texRight, jpg))
                     {
                         _streamRight.texture = _texRight; _streamRight.color = Color.white;
                         _fsStreamRight.texture = _texRight; _fsStreamRight.color = Color.white;
+                        if (_stdStreamRight != null) { _stdStreamRight.texture = _texRight; _stdStreamRight.color = Color.white; }
                     }
                 }
             }
@@ -331,6 +389,7 @@ namespace Simulador.Tablet
             _pinScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
             _mainScreen.SetActive(false);
+            _standardScreen.SetActive(false);
             SetConnectStatus(message, isError);
             RefreshNetworkInfo();
             RequestLocationPermissionOnce();
@@ -341,8 +400,20 @@ namespace Simulador.Tablet
             _connectScreen.SetActive(false);
             _pinScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
+            _standardScreen.SetActive(false);
             _mainScreen.SetActive(true);
             SetBadge(_kit.P.Ok, ConnectedBadgeText());
+        }
+
+        // P7: pantalla del modo Standard (stream fullscreen + carrusel).
+        private void ShowStandardScreen()
+        {
+            _connectScreen.SetActive(false);
+            _pinScreen.SetActive(false);
+            _reconnectScreen.SetActive(false);
+            _mainScreen.SetActive(false);
+            CloseFullscreenStream(); // el standard ya ES fullscreen
+            _standardScreen.SetActive(true);
         }
 
         // Pantalla de PIN: se intercala entre ConnectScreen y MainScreen cuando hace
@@ -354,6 +425,7 @@ namespace Simulador.Tablet
             _pinPendingHost = host;
             _connectScreen.SetActive(false);
             _mainScreen.SetActive(false);
+            _standardScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
             _pinScreen.SetActive(true);
             _pinHostLabel.text = "Visor: " + host;
@@ -371,6 +443,7 @@ namespace Simulador.Tablet
             _connectScreen.SetActive(false);
             _pinScreen.SetActive(false);
             _mainScreen.SetActive(false);
+            _standardScreen.SetActive(false);
             _reconnectScreen.SetActive(true);
             _reconnectHostLabel.text = "Visor: " + host;
             SetReconnectStatus(message);
@@ -577,19 +650,23 @@ namespace Simulador.Tablet
                 if (!(l is JObject lo)) continue;
                 string id = (string)lo["id"] ?? "?";
                 var card = LensCardView.Create(_kit, _lensList, id, (string)lo["nombre"],
-                    (string)lo["descripcion"], OnLensSelected);
+                    (string)lo["descripcion"], OnLensSelected, (string)lo["origen"]);
                 _lensCards[id] = card;
             }
         }
 
-        private void OnLensSelected(string lensId)
+        private void OnLensSelected(string lensId) => ApplyLensTo(lensId, _selectedEye);
+
+        // P7: extraido de OnLensSelected con el ojo explicito -- el modo Standard
+        // elige el ojo POR lente (overlay de seleccion), no con la card "Ojo a tratar".
+        private void ApplyLensTo(string lensId, string eye)
         {
             if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
-            _session.SendCommand(new JObject { ["cmd"] = "apply_lens", ["lens_id"] = lensId, ["eye"] = _selectedEye });
+            _session.SendCommand(new JObject { ["cmd"] = "apply_lens", ["lens_id"] = lensId, ["eye"] = eye });
             // Actualizacion optimista del estado local (vision_state compartido con la sesion).
-            if (_selectedEye == "left" || _selectedEye == "both")
+            if (eye == "left" || eye == "both")
                 _session.VisionState["left"] = new JObject { ["lens_id"] = lensId };
-            if (_selectedEye == "right" || _selectedEye == "both")
+            if (eye == "right" || eye == "both")
                 _session.VisionState["right"] = new JObject { ["lens_id"] = lensId };
             RefreshVisionUI();
             BuildParamsEditor(lensId);
@@ -622,6 +699,7 @@ namespace Simulador.Tablet
                     ? "Ambos ojos" : "Ambos ojos · " + LensDisplayName(leftId);
             }
             RefreshFullscreenUI(isBlend, leftId, rightId); // mantiene el overlay al dia con cualquier cambio de vision_state
+            RefreshStandardUI(isBlend, leftId, rightId);   // idem para la pantalla del modo Standard (P7)
         }
 
         // ============================================================
@@ -676,6 +754,13 @@ namespace Simulador.Tablet
             foreach (var k in ParamMeta.ORDER) if (paramsDef[k] != null) ordered.Add(k);
             foreach (var prop in paramsDef.Properties()) if (!ordered.Contains(prop.Name)) ordered.Add(prop.Name);
 
+            // P7: sobre lentes que NO son propias (catalogo base o genericas de un
+            // admin), un Pro solo ajusta los parametros del modo Standard. La lista
+            // completa queda reservada a sus lentes custom ("Crear lente" duplica la
+            // actual para editarla entera).
+            bool ownCustom = (string)lens["origen"] == "custom";
+            if (!ownCustom) ordered.RemoveAll(k => !ParamMeta.IsStandardParam(k));
+
             int added = 0;
             foreach (var key in ordered)
             {
@@ -693,7 +778,18 @@ namespace Simulador.Tablet
             _resetButton.interactable = added > 0;
             _editingLensLabel.text = added == 0
                 ? "Esta lente no tiene parámetros editables."
-                : "Los ajustes se aplican al ojo que tiene esta lente.";
+                : ownCustom
+                    ? "Lente propia: todos los parámetros son editables. \"Guardar en la lente\" persiste los valores actuales."
+                    : "Los ajustes se aplican al ojo que tiene esta lente. Para editar todos los parámetros, creá una lente propia desde \"Crear lente\".";
+
+            // Botones de lente propia (guardar cambios / eliminar), solo en customs.
+            _deleteArmed = false;
+            if (_saveLensButton != null)
+            {
+                _saveLensButton.gameObject.SetActive(ownCustom);
+                _deleteLensButton.gameObject.SetActive(ownCustom);
+                if (ownCustom && _deleteLensButton.Label != null) _deleteLensButton.Label.text = "Eliminar lente";
+            }
         }
 
         private float CurrentParamValue(string key, float def)
@@ -773,6 +869,7 @@ namespace Simulador.Tablet
                 btn.OnClick = () => OnScenarioPressed(id);
                 _scenarioButtons[id] = btn;
             }
+            RebuildStandardScenarioList(); // P7: espejo en la barra del modo Standard
         }
 
         // Fallback defensivo si algun id llega sin label en el "hello" (no deberia
@@ -790,6 +887,8 @@ namespace Simulador.Tablet
             // P2.3: seleccion por id (clave del diccionario), no por comparar el texto
             // del label del boton -- dos escenarios con el mismo label ya no rompen esto.
             foreach (var kv in _scenarioButtons)
+                kv.Value.SetOn(kv.Key == scenarioId, false);
+            foreach (var kv in _stdScenarioButtons)
                 kv.Value.SetOn(kv.Key == scenarioId, false);
             _session.SendCommand(new JObject { ["cmd"] = "load_scenario", ["id"] = scenarioId });
         }
@@ -1003,6 +1102,7 @@ namespace Simulador.Tablet
             BuildPinScreen(canvasGo.transform);
             BuildReconnectScreen(canvasGo.transform);
             BuildMainScreen(canvasGo.transform);
+            BuildStandardScreen(canvasGo.transform); // P7: UI simplificada (modo standard del visor)
             BuildFullscreenStream(canvasGo.transform);
             BuildUpdateScreen(canvasGo.transform); // ULTIMO: debe quedar arriba de TODAS las demas pantallas/overlays
         }
@@ -1310,6 +1410,7 @@ namespace Simulador.Tablet
             BuildParamsCard(content);
             BuildAstigCard(content);
             BuildPresetsCard(content);
+            BuildCreateLensCard(content);
         }
 
         private void BuildEyeCard(Transform parent)
@@ -1353,6 +1454,17 @@ namespace Simulador.Tablet
             _resetButton = _kit.Button(_paramsContent, "Restaurar valores", BtnStyle.Ghost, false, 44, 15);
             _resetButton.OnClick = OnResetParamsPressed;
             _resetButton.interactable = false;
+
+            // P7: acciones sobre la lente custom PROPIA en edicion (ocultas para
+            // lentes base/genericas; ver BuildParamsEditor).
+            var ownRow = _kit.Box(_paramsContent, "OwnLensRow", false, 8, null, expandW: true);
+            _saveLensButton = _kit.Button(ownRow, "Guardar en la lente", BtnStyle.Accent, false, 44, 15);
+            _saveLensButton.OnClick = OnSaveLensPressed;
+            _deleteLensButton = _kit.Button(ownRow, "Eliminar lente", BtnStyle.Neutral, false, 44, 15);
+            _deleteLensButton.OnClick = OnDeleteLensPressed;
+            _saveLensButton.gameObject.SetActive(false);
+            _deleteLensButton.gameObject.SetActive(false);
+
             _paramsContent.gameObject.SetActive(false);
             paramsToggle.OnToggled += on => _paramsContent.gameObject.SetActive(on);
         }
@@ -1425,6 +1537,143 @@ namespace Simulador.Tablet
             presetsToggle.OnToggled += on => presetsContent.gameObject.SetActive(on);
         }
 
+        // ============================================================
+        // Lentes custom (P7, modo Pro)
+        // ============================================================
+        // Card "Crear lente": duplica la lente en edicion con los valores ACTUALES
+        // (defaults del catalogo + overrides aplicados) como defaults de la lente
+        // nueva; min/max se heredan del spec de origen. La lente se persiste en el
+        // backend (privada del visor; "generica" para todos si el visor es admin y
+        // activa el toggle) -- el visor hace el HTTP y contesta lens_saved/lens_error.
+        private void BuildCreateLensCard(Transform parent)
+        {
+            var card = _kit.Card(parent, "CreateLensCard");
+            var toggle = _kit.Button(card, "Crear lente", BtnStyle.Ghost, true, 48, 16);
+            var content = _kit.Box(card, "CreateLensContent", true, 8, null, expandW: true);
+
+            _kit.Label(content, "Crea una lente propia a partir de la lente en edición, con los ajustes actuales como valores base.",
+                LabelKind.Hint, TextAlignmentOptions.Left);
+            _createNameEdit = _kit.LineEdit(content, "Nombre de la lente nueva");
+            _createDescEdit = _kit.LineEdit(content, "Descripción (opcional)");
+
+            // Toggle "generica" -- solo visible si el visor conectado es admin
+            // (se decide en cada hello, ver OnSessionHello).
+            _createGenericRow = _kit.Box(content, "GenericRow", false, 8, null, expandW: true).gameObject;
+            _kit.CheckToggle(_createGenericRow.transform, "Genérica (visible para todos los dispositivos)", out _createGenericToggle);
+            _createGenericRow.SetActive(false);
+
+            var createBtn = _kit.Button(content, "Crear desde la lente en edición", BtnStyle.Accent, false, 44, 15);
+            createBtn.OnClick = OnCreateLensPressed;
+            _createStatus = _kit.Label(content, "", LabelKind.Hint, TextAlignmentOptions.Left);
+
+            content.gameObject.SetActive(false);
+            toggle.OnToggled += on => content.gameObject.SetActive(on);
+        }
+
+        /// <summary>Params de la lente en edicion con los valores ACTUALES como default (min/max del spec).</summary>
+        private JObject BuildParamsSnapshot()
+        {
+            if (!_session.LensesById.TryGetValue(_editingLensId, out var lens) || !(lens["params"] is JObject paramsDef))
+                return null;
+            var result = new JObject();
+            foreach (var prop in paramsDef.Properties())
+            {
+                if (!(prop.Value is JObject e) || e["default"] == null || e["min"] == null || e["max"] == null)
+                    continue;
+                float def = (float)e["default"];
+                result[prop.Name] = new JObject
+                {
+                    ["default"] = CurrentParamValue(prop.Name, def),
+                    ["min"] = (float)e["min"],
+                    ["max"] = (float)e["max"],
+                };
+            }
+            return result.HasValues ? result : null;
+        }
+
+        private void OnCreateLensPressed()
+        {
+            if (!_session.IsWsOpen) { _createStatus.text = "Sin conexión con el visor."; return; }
+            string nombre = (_createNameEdit.text ?? "").Trim();
+            if (nombre.Length == 0) { _createStatus.text = "Poné un nombre para la lente."; return; }
+            var snapshot = BuildParamsSnapshot();
+            if (snapshot == null) { _createStatus.text = "Aplicá una lente primero (la nueva se crea a partir de ella)."; return; }
+
+            bool generic = _session.IsAdmin && _createGenericToggle != null && _createGenericToggle.IsOn;
+            _session.SendCommand(new JObject
+            {
+                ["cmd"] = "create_lens",
+                ["scope"] = generic ? "generic" : "private",
+                ["nombre"] = nombre,
+                ["descripcion"] = (_createDescEdit.text ?? "").Trim(),
+                ["params"] = snapshot,
+            });
+            _createStatus.text = "Creando lente...";
+        }
+
+        private void OnSaveLensPressed()
+        {
+            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.LensesById.TryGetValue(_editingLensId, out var lens)) return;
+            var snapshot = BuildParamsSnapshot();
+            if (snapshot == null) return;
+            _session.SendCommand(new JObject
+            {
+                ["cmd"] = "update_lens",
+                ["lens_id"] = _editingLensId,
+                ["nombre"] = (string)lens["nombre"] ?? _editingLensId,
+                ["descripcion"] = (string)lens["descripcion"] ?? "",
+                ["params"] = snapshot,
+            });
+            SetBadge(_kit.P.Ok, "Guardando lente...");
+        }
+
+        private void OnDeleteLensPressed()
+        {
+            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            // Doble tap para confirmar (sin dialogo modal): el primer tap arma, el
+            // segundo ejecuta. Cambiar de lente (BuildParamsEditor) desarma.
+            if (!_deleteArmed)
+            {
+                _deleteArmed = true;
+                if (_deleteLensButton.Label != null) _deleteLensButton.Label.text = "¿Confirmar eliminación?";
+                return;
+            }
+            _deleteArmed = false;
+            _session.SendCommand(new JObject { ["cmd"] = "delete_lens", ["lens_id"] = _editingLensId });
+            SetBadge(_kit.P.Warn, "Eliminando lente...");
+        }
+
+        private void OnLensSaved(string op, string lensId)
+        {
+            SetBadge(_kit.P.Ok, op == "delete_lens" ? "Lente eliminada" : "Lente guardada");
+            if (op == "create_lens")
+            {
+                _createStatus.text = "Lente creada. Va a aparecer en la lista al actualizar el catálogo.";
+                _createNameEdit.text = "";
+                _createDescEdit.text = "";
+            }
+            // El catalogo actualizado llega solo: el visor re-sincroniza y
+            // re-broadcastea el hello (RebuildLensList via OnSessionHello).
+        }
+
+        private void OnLensError(string op, string reason)
+        {
+            string msg = reason switch
+            {
+                "offline" => "El visor no pudo contactar al backend (sin internet).",
+                "MODE_NOT_PRO" => "Este visor no tiene el modo Pro habilitado.",
+                "NOT_ADMIN" => "Solo un dispositivo administrador puede tocar lentes genéricas.",
+                "NOT_OWNER" => "Esta lente pertenece a otro dispositivo.",
+                "DEVICE_NOT_AUTHORIZED" => "El visor no está habilitado (licencia).",
+                "LENS_LIMIT_REACHED" => "Se alcanzó el tope de lentes.",
+                _ => $"No se pudo guardar la lente ({reason}).",
+            };
+            SetBadge(_kit.P.Warn, "Error al guardar lente");
+            if (op == "create_lens" && _createStatus != null) _createStatus.text = msg;
+            else Debug.LogWarning($"[Tablet] {op}: {msg}");
+        }
+
         private void BuildFooter(Transform parent)
         {
             var footer = _kit.Box(parent, "Footer", false, 0, new RectOffset(16, 16, 2, 6), expandW: true);
@@ -1491,6 +1740,331 @@ namespace Simulador.Tablet
             var closeBtn = _kit.Button(_fullscreenStream.transform, "Cerrar", BtnStyle.Overlay, false, 40, 14);
             PinTopRight(closeBtn.GetComponent<RectTransform>(), closeBtn.GetComponent<LayoutElement>(), 16, 16);
             closeBtn.OnClick = CloseFullscreenStream;
+        }
+
+        // ============================================================
+        // Modo Standard (P7): stream a pantalla completa + barra superior
+        // (escenarios / lente->ojo / salir) + carrusel de 5 parametros
+        // ============================================================
+        private void BuildStandardScreen(Transform parent)
+        {
+            _standardScreen = new GameObject("StandardScreen", typeof(RectTransform));
+            _standardScreen.transform.SetParent(parent, false);
+            Stretch(_standardScreen.GetComponent<RectTransform>());
+            _standardScreen.SetActive(false);
+
+            // Fondo lightbox (mismo criterio que FullscreenStream: no tematizado).
+            var bg = new GameObject("StdBg", typeof(RectTransform), typeof(Image));
+            bg.transform.SetParent(_standardScreen.transform, false);
+            Stretch(bg.GetComponent<RectTransform>());
+            bg.GetComponent<Image>().color = Color.black;
+
+            var col = _kit.Box(_standardScreen.transform, "StdCol", true, 10,
+                new RectOffset(16, 16, 12, 12), expandW: true, expandH: true);
+            Stretch(col);
+
+            // ---- Barra superior: escenarios | lente | salir ----
+            var topBar = _kit.Box(col, "StdTopBar", false, 8, null, expandW: true);
+            _kit.Size(topBar, minH: 56, flexH: 0);
+            topBar.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
+            _stdScenarioList = _kit.Box(topBar, "StdScenarios", false, 6, null, expandW: false);
+            _kit.Spacer(topBar, 0, true);
+            var lensBtn = _kit.Button(topBar, "Lente", BtnStyle.Accent, false, 48, 15);
+            _kit.Size(lensBtn.GetComponent<RectTransform>(), minW: 140, prefW: 140, flexW: 0);
+            lensBtn.OnClick = OpenStandardLensOverlay;
+            var exitBtn = _kit.Button(topBar, "Salir", BtnStyle.Neutral, false, 48, 15);
+            _kit.Size(exitBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
+            exitBtn.OnClick = Application.Quit;
+
+            // ---- Stream (OD-primero, misma convencion que FullscreenStream) ----
+            var streamRow = _kit.Box(col, "StdStreamRow", false, 14, null, expandW: true, expandH: true);
+            _kit.Size(streamRow, flexH: 1);
+            _stdRightPane = _kit.Box(streamRow, "StdRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
+            _kit.Size(_stdRightPane.GetComponent<RectTransform>(), flexW: 1);
+            _stdRightLabel = _kit.Label(_stdRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _kit.Size(_stdRightLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
+            _stdStreamRight = MakeStreamView(_stdRightPane.transform);
+            _stdRightPane.SetActive(false);
+            var stdLeftPane = _kit.Box(streamRow, "StdLeftPane", true, 6, null, expandW: true, expandH: false);
+            _kit.Size(stdLeftPane, flexW: 1);
+            _stdLeftLabel = _kit.Label(stdLeftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _kit.Size(_stdLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
+            _stdStreamLeft = MakeStreamView(stdLeftPane);
+
+            // ---- Panel del slider (visible al seleccionar un icono) ----
+            var sliderPanel = _kit.Panel(col, "StdSliderPanel", p => p.Surface, 14, true, 4, new RectOffset(0, 0, 0, 0));
+            _stdSliderPanel = sliderPanel.gameObject;
+            var spCol = _kit.Box(sliderPanel, "StdSliderCol", true, 4, new RectOffset(18, 18, 10, 10), expandW: true);
+            Stretch(spCol);
+            var spHeader = _kit.Box(spCol, "StdSliderHeader", false, 8, null, expandW: true);
+            spHeader.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
+            _stdSliderTitle = _kit.Label(spHeader, "", LabelKind.Section, TextAlignmentOptions.Left);
+            _kit.Size(_stdSliderTitle.rectTransform, flexW: 1);
+            _stdSliderValue = _kit.Label(spHeader, "", LabelKind.Value, TextAlignmentOptions.Right);
+            _stdSlider = _kit.Slider(spCol);
+            _stdSlider.onValueChanged.AddListener(OnStandardSliderChanged);
+            // Fila secundaria del eje (solo astigmatismo).
+            _stdAxisRow = _kit.Box(spCol, "StdAxisRow", true, 2, null, expandW: true).gameObject;
+            var axHeader = _kit.Box(_stdAxisRow.transform, "StdAxisHeader", false, 8, null, expandW: true);
+            axHeader.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
+            var axLabel = _kit.Label(axHeader, "Eje", LabelKind.Body, TextAlignmentOptions.Left);
+            _kit.Size(axLabel.rectTransform, flexW: 1);
+            _stdAxisValue = _kit.Label(axHeader, "", LabelKind.Value, TextAlignmentOptions.Right);
+            _stdAxisSlider = _kit.Slider(_stdAxisRow.transform);
+            _stdAxisSlider.onValueChanged.AddListener(OnStandardAxisChanged);
+            _kit.Size(sliderPanel, minH: 96, flexH: 0);
+            _stdSliderPanel.SetActive(false);
+
+            // ---- Carrusel de iconos circulares ----
+            var carousel = _kit.Box(col, "StdCarousel", false, 16, null, expandW: true);
+            _kit.Size(carousel, minH: 106, flexH: 0);
+            carousel.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleCenter;
+            _stdIcons.Clear();
+            foreach (var (key, label) in StandardCarousel)
+            {
+                string k = key;
+                var btn = _kit.CircleIcon(carousel, "Icon_" + key, out var ring, out var glyph);
+                BuildStandardGlyph(k, glyph);
+                btn.OnClick = () => OnStandardIconPressed(k);
+                _stdIcons[k] = (btn, ring);
+            }
+
+            BuildStandardLensOverlay();
+        }
+
+        // Glifos por codigo (sin PNGs, tematizados via kit.Tint): aproximaciones
+        // geometricas simples de cada parametro clinico.
+        private void BuildStandardGlyph(string key, RectTransform area)
+        {
+            Func<TabletPalette, Color> icon = p => p.Icon;
+            Func<TabletPalette, Color> hole = p => p.SurfaceRaised;
+            switch (key)
+            {
+                case "astig_magnitude": // anillo + eje inclinado
+                    _kit.GlyphCircle(area, 36, Vector2.zero, icon);
+                    _kit.GlyphCircle(area, 27, Vector2.zero, hole);
+                    _kit.GlyphBar(area, 44, 4, -35f, icon);
+                    break;
+                case "halo_intensity": // anillos concentricos
+                    _kit.GlyphCircle(area, 42, Vector2.zero, icon);
+                    _kit.GlyphCircle(area, 33, Vector2.zero, hole);
+                    _kit.GlyphCircle(area, 22, Vector2.zero, icon);
+                    _kit.GlyphCircle(area, 12, Vector2.zero, hole);
+                    break;
+                case "halo_extra_rings": // pupila dilatada
+                    _kit.GlyphCircle(area, 42, Vector2.zero, icon);
+                    _kit.GlyphCircle(area, 34, Vector2.zero, hole);
+                    _kit.GlyphCircle(area, 22, Vector2.zero, icon);
+                    break;
+                case "destello_intensity": // estrella de 4 puntas
+                    _kit.GlyphBar(area, 46, 5, 0f, icon);
+                    _kit.GlyphBar(area, 46, 5, 90f, icon);
+                    _kit.GlyphCircle(area, 12, Vector2.zero, icon);
+                    break;
+                case "destello_rayos": // spokes radiales
+                    _kit.GlyphBar(area, 46, 4, 0f, icon);
+                    _kit.GlyphBar(area, 46, 4, 45f, icon);
+                    _kit.GlyphBar(area, 46, 4, 90f, icon);
+                    _kit.GlyphBar(area, 46, 4, 135f, icon);
+                    _kit.GlyphCircle(area, 10, Vector2.zero, hole);
+                    break;
+            }
+        }
+
+        // Espejo de RefreshFullscreenUI para la pantalla Standard.
+        private void RefreshStandardUI(bool isBlend, string leftId, string rightId)
+        {
+            if (_stdLeftLabel == null) return;
+            if (isBlend)
+            {
+                _stdRightPane.SetActive(true);
+                _stdLeftLabel.text = "OI — " + LensDisplayName(leftId);
+                _stdRightLabel.text = "OD — " + LensDisplayName(rightId);
+            }
+            else
+            {
+                _stdRightPane.SetActive(false);
+                _stdLeftLabel.text = string.IsNullOrEmpty(leftId)
+                    ? "Ambos ojos — sin lente (tocá \"Lente\")" : "Ambos ojos — " + LensDisplayName(leftId);
+            }
+        }
+
+        private void RebuildStandardScenarioList()
+        {
+            if (_stdScenarioList == null) return;
+            for (int i = _stdScenarioList.childCount - 1; i >= 0; i--) Destroy(_stdScenarioList.GetChild(i).gameObject);
+            _stdScenarioButtons.Clear();
+            foreach (var sid in _session.Scenarios)
+            {
+                string id = sid;
+                var btn = _kit.Button(_stdScenarioList, ScenarioLabel(id), BtnStyle.Segment, true, 46, 14);
+                _kit.Size(btn.GetComponent<RectTransform>(), minW: 116, prefW: 116, flexW: 0);
+                btn.SetOn(id == _session.CurrentScenario, false);
+                btn.OnClick = () => OnScenarioPressed(id);
+                _stdScenarioButtons[id] = btn;
+            }
+        }
+
+        // Lente cuyo estado edita el carrusel: la aplicada (OI primero, OD si no).
+        private string StandardEditingLensId()
+        {
+            string leftId = (string)(_session.VisionState["left"]?["lens_id"]) ?? "";
+            string rightId = (string)(_session.VisionState["right"]?["lens_id"]) ?? "";
+            return !string.IsNullOrEmpty(leftId) ? leftId : rightId;
+        }
+
+        private void OnStandardIconPressed(string key)
+        {
+            // Segundo tap sobre el mismo icono: cerrar el panel.
+            if (_stdSelectedKey == key && _stdSliderPanel.activeSelf)
+            {
+                _stdSelectedKey = "";
+                _stdSliderPanel.SetActive(false);
+                foreach (var kv in _stdIcons) kv.Value.ring.enabled = false;
+                return;
+            }
+
+            string lensId = StandardEditingLensId();
+            if (string.IsNullOrEmpty(lensId)) { OpenStandardLensOverlay(); return; }
+            if (!_session.LensesById.TryGetValue(lensId, out var lens) ||
+                !(lens["params"]?[key] is JObject spec) ||
+                spec["default"] == null || spec["min"] == null || spec["max"] == null)
+            {
+                SetStandardSliderHeader(key, null);
+                _stdSliderPanel.SetActive(true);
+                _stdSliderTitle.text = ParamMeta.LabelFor(key) + " — no disponible en esta lente";
+                return;
+            }
+
+            _editingLensId = lensId; // CurrentParamValue/SendParamOverride siguen a esta lente
+            _stdSelectedKey = key;
+            foreach (var kv in _stdIcons) kv.Value.ring.enabled = kv.Key == key;
+
+            float def = (float)spec["default"];
+            _stdSlider.minValue = (float)spec["min"];
+            _stdSlider.maxValue = (float)spec["max"];
+            _stdSlider.wholeNumbers = ParamMeta.IsInteger(key);
+            _stdSlider.SetValueWithoutNotify(CurrentParamValue(key, def));
+            SetStandardSliderHeader(key, _stdSlider.value);
+
+            // Eje del astigmatismo: slider secundario solo para ese icono.
+            bool axis = key == "astig_magnitude";
+            _stdAxisRow.SetActive(axis);
+            if (axis && lens["params"]?["astig_axis_deg"] is JObject axSpec &&
+                axSpec["default"] != null && axSpec["min"] != null && axSpec["max"] != null)
+            {
+                _stdAxisSlider.minValue = (float)axSpec["min"];
+                _stdAxisSlider.maxValue = (float)axSpec["max"];
+                _stdAxisSlider.wholeNumbers = ParamMeta.IsInteger("astig_axis_deg");
+                _stdAxisSlider.SetValueWithoutNotify(CurrentParamValue("astig_axis_deg", (float)axSpec["default"]));
+                _stdAxisValue.text = ParamMeta.FormatValue("astig_axis_deg", _stdAxisSlider.value);
+            }
+            _stdSliderPanel.SetActive(true);
+        }
+
+        private void SetStandardSliderHeader(string key, float? value)
+        {
+            _stdSliderTitle.text = ParamMeta.LabelFor(key);
+            _stdSliderValue.text = value.HasValue ? ParamMeta.FormatValue(key, value.Value) : "";
+        }
+
+        private void OnStandardSliderChanged(float v)
+        {
+            if (_stdSelectedKey == "") return;
+            _stdSliderValue.text = ParamMeta.FormatValue(_stdSelectedKey, v);
+            SendParamOverride(_stdSelectedKey, v);
+        }
+
+        private void OnStandardAxisChanged(float v)
+        {
+            _stdAxisValue.text = ParamMeta.FormatValue("astig_axis_deg", v);
+            SendParamOverride("astig_axis_deg", v);
+        }
+
+        // Sincroniza los sliders visibles con un vision_state entrante (el visor
+        // confirma/corrige) sin re-emitir override_params (SetValueWithoutNotify).
+        private void RefreshStandardSliders()
+        {
+            if (_stdSliderPanel == null || !_stdSliderPanel.activeSelf || _stdSelectedKey == "") return;
+            _stdSlider.SetValueWithoutNotify(CurrentParamValue(_stdSelectedKey, _stdSlider.value));
+            _stdSliderValue.text = ParamMeta.FormatValue(_stdSelectedKey, _stdSlider.value);
+            if (_stdAxisRow.activeSelf)
+            {
+                _stdAxisSlider.SetValueWithoutNotify(CurrentParamValue("astig_axis_deg", _stdAxisSlider.value));
+                _stdAxisValue.text = ParamMeta.FormatValue("astig_axis_deg", _stdAxisSlider.value);
+            }
+        }
+
+        // ---- Overlay de seleccion de lente (con eleccion de ojo) ----
+        private void BuildStandardLensOverlay()
+        {
+            _stdLensOverlay = new GameObject("StdLensOverlay", typeof(RectTransform));
+            _stdLensOverlay.transform.SetParent(_standardScreen.transform, false);
+            Stretch(_stdLensOverlay.GetComponent<RectTransform>());
+            _stdLensOverlay.SetActive(false);
+
+            var scrim = new GameObject("StdLensScrim", typeof(RectTransform), typeof(Image), typeof(Button));
+            scrim.transform.SetParent(_stdLensOverlay.transform, false);
+            Stretch(scrim.GetComponent<RectTransform>());
+            scrim.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f);
+            var scrimBtn = scrim.GetComponent<Button>();
+            scrimBtn.transition = Selectable.Transition.None;
+            scrimBtn.onClick.AddListener(CloseStandardLensOverlay);
+
+            var card = _kit.Card(_stdLensOverlay.transform, "StdLensCard");
+            card.anchorMin = card.anchorMax = new Vector2(0.5f, 0.5f);
+            card.pivot = new Vector2(0.5f, 0.5f);
+            card.sizeDelta = new Vector2(560, 560);
+
+            _kit.Label(card, "Elegí una lente", LabelKind.Title, TextAlignmentOptions.Center);
+            var scroll = _kit.ScrollColumn(card, out _stdLensListBox);
+            _kit.Size(scroll.GetComponent<RectTransform>(), flexH: 1);
+
+            _stdEyePickRow = _kit.Box(card, "StdEyePick", true, 6, null, expandW: true).gameObject;
+            _kit.Label(_stdEyePickRow.transform, "¿A qué ojo se aplica?", LabelKind.Section, TextAlignmentOptions.Center);
+            var eyeRow = _kit.Box(_stdEyePickRow.transform, "StdEyeButtons", false, 8, null, expandW: true);
+            var bBoth = _kit.Button(eyeRow, "Ambos", BtnStyle.Segment, false, 46, 15);
+            var bOd = _kit.Button(eyeRow, "OD (derecho)", BtnStyle.Segment, false, 46, 15);
+            var bOi = _kit.Button(eyeRow, "OI (izquierdo)", BtnStyle.Segment, false, 46, 15);
+            _kit.Size(bBoth.GetComponent<RectTransform>(), flexW: 1);
+            _kit.Size(bOd.GetComponent<RectTransform>(), flexW: 1);
+            _kit.Size(bOi.GetComponent<RectTransform>(), flexW: 1);
+            bBoth.OnClick = () => OnStandardEyePicked("both");
+            bOd.OnClick = () => OnStandardEyePicked("right");
+            bOi.OnClick = () => OnStandardEyePicked("left");
+            _stdEyePickRow.SetActive(false);
+
+            var closeBtn = _kit.Button(card, "Cerrar", BtnStyle.Ghost, false, 42, 14);
+            closeBtn.OnClick = CloseStandardLensOverlay;
+        }
+
+        private void RebuildStandardLensList()
+        {
+            if (_stdLensListBox == null) return;
+            for (int i = _stdLensListBox.childCount - 1; i >= 0; i--) Destroy(_stdLensListBox.GetChild(i).gameObject);
+            foreach (var kv in _session.LensesById)
+            {
+                string id = kv.Key;
+                string nombre = (string)kv.Value["nombre"] ?? id;
+                var btn = _kit.Button(_stdLensListBox, nombre, BtnStyle.Card, false, 56, 16);
+                btn.OnClick = () => { _stdPendingLensId = id; _stdEyePickRow.SetActive(true); };
+            }
+        }
+
+        private void OpenStandardLensOverlay()
+        {
+            _stdPendingLensId = "";
+            _stdEyePickRow.SetActive(false);
+            _stdLensOverlay.SetActive(true);
+        }
+
+        private void CloseStandardLensOverlay() => _stdLensOverlay?.SetActive(false);
+
+        private void OnStandardEyePicked(string eye)
+        {
+            if (string.IsNullOrEmpty(_stdPendingLensId)) return;
+            ApplyLensTo(_stdPendingLensId, eye);
+            CloseStandardLensOverlay();
         }
 
         // ============================================================

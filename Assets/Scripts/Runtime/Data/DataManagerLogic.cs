@@ -30,6 +30,18 @@ namespace Simulador.Data
         }
 
         /// <summary>
+        /// Variante con identidad de device (P7): agrega <c>?device_id=</c> escapado
+        /// para que el backend mergee las lentes custom PROPIAS en el catalogo.
+        /// deviceId null/vacio degrada a la URL anonima (la tablet sincroniza asi).
+        /// </summary>
+        public static string BuildSyncUrl(string backendUrl, string endpoint, string deviceId)
+        {
+            string url = BuildSyncUrl(backendUrl, endpoint);
+            if (string.IsNullOrEmpty(deviceId)) return url;
+            return url + "?device_id=" + Uri.EscapeDataString(deviceId);
+        }
+
+        /// <summary>
         /// Serializa el diccionario de overrides (lens_id -> {param -> valor}) tal como
         /// lo persiste DataManager en lens_overrides.json (mismo formato/Formatting que
         /// se usaba inline antes de esta extraccion).

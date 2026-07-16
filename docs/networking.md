@@ -230,6 +230,20 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
 `WebSocketServer.AuthenticatedClientCount`, reemplazó a `OpenClientCount` en el `LateUpdate` de
 `StreamingCapture`).
 
+### P7: comandos de lentes custom + modo en el hello
+
+- `hello` suma `"mode"` (`"standard"|"pro"`, de `LicenseManager.AppMode`) e `"is_admin"`.
+  Las lentes del hello serializan `origen` (`null`/`"generic"`/`"custom"`).
+- Comandos tablet→visor nuevos: `create_lens {scope, nombre, descripcion, params}`,
+  `update_lens {lens_id, nombre, descripcion, params}`, `delete_lens {lens_id}`. El visor
+  agrega SU `device_id` y hace el HTTP (`Data/CustomLensClient.cs`, timeout 8 s, gate de
+  inalcanzable por `responseCode==0` igual que el verify) contra `/api/lenses/custom`.
+- Respuestas visor→tablet: `{"type":"lens_saved","op","lens_id"}` o
+  `{"type":"lens_error","op","reason"}` (`reason`: `"offline"` o el reason del backend —
+  `MODE_NOT_PRO`/`NOT_ADMIN`/`NOT_OWNER`/etc.). Al éxito el visor llama
+  `DataManager.RefreshFromBackend()` y el catálogo nuevo llega en un **re-broadcast de hello**
+  (suscripción a `CatalogSyncedWithBackend` en `Start`, des-suscripta en `OnDestroy`).
+
 ## Modelo de threading
 - **Server:** un thread `WSAccept` acepta clientes + un thread `WSRead{id}` por cliente + un thread
   `WSPing{id}` por cliente (keep-alive: ping cada 5 s, cierra si no hay actividad en 15 s; el mismo

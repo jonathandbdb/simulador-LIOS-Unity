@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -167,7 +168,21 @@ namespace Simulador.Net
             if (cam != null) _capture.headToFollow = cam.transform;
 
             _dm = DataManager.Instance;
-            if (_dm != null) _dm.VisionStateChanged += OnVisionStateChanged;
+            if (_dm != null)
+            {
+                _dm.VisionStateChanged += OnVisionStateChanged;
+                // P7: cuando una re-sync trae catalogo nuevo (p.ej. tras un
+                // create/update/delete_lens), re-broadcastear el hello para que
+                // todas las tablets autenticadas reciban la lista actualizada.
+                _dm.CatalogSyncedWithBackend += OnCatalogSynced;
+            }
+        }
+
+        private void OnCatalogSynced(string version)
+        {
+            if (_server == null || _server.AuthenticatedClientCount == 0) return;
+            Debug.Log($"Net: catalogo v{version} re-sincronizado; re-broadcast de hello.");
+            _server.BroadcastText(BuildHello());
         }
 
         private void Update()
@@ -198,6 +213,11 @@ namespace Simulador.Net
 
         private void OnDestroy()
         {
+            if (_dm != null)
+            {
+                _dm.VisionStateChanged -= OnVisionStateChanged;
+                _dm.CatalogSyncedWithBackend -= OnCatalogSynced;
+            }
             _server?.Stop();
             _beacon?.Stop();
         }
@@ -246,6 +266,11 @@ namespace Simulador.Net
                 ["vision_state"] = BuildVisionState(),
                 ["scenario"] = _scenarios != null ? _scenarios.Current : "ruta_noche",
                 ["scenarios"] = BuildScenarioList(),
+                // P7: modo de app del visor (del verify de licencia) -- la tablet
+                // decide su UI (Standard/Pro) con esto. Una tablet vieja ignora
+                // los campos; un visor viejo no los manda (la tablet asume "pro").
+                ["mode"] = License.LicenseManager.AppMode,
+                ["is_admin"] = License.LicenseManager.IsAdmin,
             };
             return hello.ToString(Newtonsoft.Json.Formatting.None);
         }
@@ -527,10 +552,118 @@ namespace Simulador.Net
                     if (targetHud != null) targetHud.gameObject.SetActive(setHudVisible);
                     else Debug.LogWarning("Net: set_hud recibido pero no se encontro HudController en la escena.");
                     break;
+                case "create_lens":
+                case "update_lens":
+                case "delete_lens":
+                    // P7: CRUD de lentes custom. La tablet manda la definicion; el
+                    // visor hace el HTTP al backend con SU device_id (unica identidad
+                    // autenticable) y le contesta lens_saved/lens_error al cliente.
+                    StartCoroutine(RunLensCommand(id, type, cmd));
+                    break;
                 default:
                     Debug.LogWarning("Net: comando desconocido: " + type);
                     break;
             }
+        }
+
+        // ---------------- Lentes custom (P7) ----------------
+
+        /// <summary>
+        /// Ejecuta un comando create/update/delete_lens contra el backend y responde
+        /// al cliente. Al exito ademas re-sincroniza el catalogo (RefreshFromBackend);
+        /// el hello con el catalogo nuevo se re-broadcastea cuando la sync termina
+        /// (suscripcion a CatalogSyncedWithBackend en Start).
+        /// </summary>
+        private IEnumerator RunLensCommand(int clientId, string type, JObject cmd)
+        {
+            var dm = DataManager.Instance;
+            if (dm == null)
+            {
+                _server?.SendTextTo(clientId, BuildLensError("no_data_manager"));
+                yield break;
+            }
+
+            string deviceId = SystemInfo.deviceUniqueIdentifier;
+            long code = 0;
+            string body = null;
+            void OnDone(long c, string b) { code = c; body = b; }
+
+            if (type == "create_lens")
+            {
+                var payload = new JObject
+                {
+                    ["device_id"] = deviceId,
+                    ["scope"] = (string)cmd["scope"] ?? "private",
+                    ["nombre"] = (string)cmd["nombre"] ?? "",
+                    ["descripcion"] = (string)cmd["descripcion"] ?? "",
+                    ["params"] = cmd["params"] as JObject ?? new JObject(),
+                };
+                yield return CustomLensClient.Create(dm.BackendUrl, payload.ToString(Newtonsoft.Json.Formatting.None), OnDone);
+            }
+            else if (type == "update_lens")
+            {
+                var payload = new JObject
+                {
+                    ["device_id"] = deviceId,
+                    ["nombre"] = (string)cmd["nombre"] ?? "",
+                    ["descripcion"] = (string)cmd["descripcion"] ?? "",
+                    ["params"] = cmd["params"] as JObject ?? new JObject(),
+                };
+                yield return CustomLensClient.Update(dm.BackendUrl, (string)cmd["lens_id"] ?? "",
+                    payload.ToString(Newtonsoft.Json.Formatting.None), OnDone);
+            }
+            else // delete_lens
+            {
+                yield return CustomLensClient.Delete(dm.BackendUrl, (string)cmd["lens_id"] ?? "", deviceId, OnDone);
+            }
+
+            if (code == 200 || code == 201)
+            {
+                string lensId = null;
+                try
+                {
+                    var resp = JObject.Parse(body ?? "{}");
+                    lensId = (string)resp.SelectToken("lens.id") ?? (string)cmd["lens_id"];
+                }
+                catch (Exception) { lensId = (string)cmd["lens_id"]; }
+                Debug.Log($"Net: {type} OK (lente {lensId ?? "?"}).");
+                _server?.SendTextTo(clientId, new JObject
+                {
+                    ["type"] = "lens_saved",
+                    ["op"] = type,
+                    ["lens_id"] = lensId ?? "",
+                }.ToString(Newtonsoft.Json.Formatting.None));
+                // Catalogo nuevo (con la lente creada/editada/borrada): re-sync; el
+                // hello se re-broadcastea al terminar (CatalogSyncedWithBackend).
+                dm.RefreshFromBackend();
+            }
+            else
+            {
+                // Rechazo (403/404/409/422 con reason) o backend inalcanzable (code 0).
+                string reason = "offline";
+                if (code != 0)
+                {
+                    reason = $"http_{code}";
+                    try
+                    {
+                        var resp = JObject.Parse(body ?? "{}");
+                        reason = (string)resp["reason"] ?? (string)resp["detail"] ?? reason;
+                    }
+                    catch (Exception) { /* body no-JSON: queda http_<code> */ }
+                }
+                Debug.LogWarning($"Net: {type} fallo ({reason}).");
+                _server?.SendTextTo(clientId, BuildLensError(reason, type));
+            }
+        }
+
+        private static string BuildLensError(string reason, string op = "")
+        {
+            return new JObject
+            {
+                ["type"] = "lens_error",
+                ["op"] = op,
+                ["reason"] = reason ?? "unknown",
+            }.ToString(Newtonsoft.Json.Formatting.None);
         }
     }
 }

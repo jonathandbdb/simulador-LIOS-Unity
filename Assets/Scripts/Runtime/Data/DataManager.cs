@@ -192,7 +192,14 @@ namespace Simulador.Data
             // P6.5: armado de URL extraido a DataManagerLogic.BuildSyncUrl (logica pura,
             // testeable) -- normaliza el "/" entre backendUrl y el endpoint (evita un
             // "//" si backendUrl viene con trailing slash desde config.json).
-            string url = DataManagerLogic.BuildSyncUrl(backendUrl, CatalogEndpoint);
+            // P7: el VISOR se identifica con ?device_id= para recibir sus lentes custom
+            // mergeadas; la TABLET sincroniza anonima (base + genericas). Mismo guard
+            // que LicenseManager.Bootstrap/NetworkController.EnsureCreated: presencia
+            // de TabletController en escena => app tablet.
+            bool isTablet = FindFirstObjectByType<Simulador.Tablet.TabletController>() != null;
+            string url = DataManagerLogic.BuildSyncUrl(
+                backendUrl, CatalogEndpoint,
+                isTablet ? null : SystemInfo.deviceUniqueIdentifier);
             Debug.Log($"DataManager: sync con backend -> {url}");
             using var req = UnityWebRequest.Get(url);
             req.timeout = SyncTimeoutSeconds;

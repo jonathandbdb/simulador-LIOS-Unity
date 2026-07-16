@@ -78,7 +78,7 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
   override > streaming > default; `source` ∈ `"default"|"streaming"|"override"`, para que
   `DataManager` loguee sin duplicar el parseo). `DataManager` llama a estas mismas funciones — no
   hay una reimplementación paralela para los tests.
-- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.5.0-clinical`,
+- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.6.0-clinical`,
   3 lentes: `monofocal`, `panoptix`, `vivity`).
 - `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de `CatalogParser`/`LensEngine`
   + un test de integración sobre el JSON real.
@@ -110,14 +110,14 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 
 | Clave | Unidad / rango | Significado |
 |---|---|---|
-| `foco_lejos_m` | m, 3–9 (0 ⇒ foco no usado, ver P6.9 abajo) | distancia del foco lejano |
-| `foco_intermedio_m` | m, 1–3 (0 ⇒ sin foco intermedio) | foco intermedio (1.0 panoptix/vivity, ver P6.9) |
-| `foco_cerca_m` | m, 0.15–1 (0 ⇒ sin foco cercano) | foco cercano (0.4 panoptix) |
-| `profundidad_foco_m` | m, 0.1–5 | ancho de zona nítida (el shader la mapea ×0.5 a D) |
-| `desenfoque_max` | 0–1 | blur máximo fuera de foco |
+| `foco_lejos_m` | m, 2–9 (0 ⇒ foco no usado, ver P6.9 abajo) | distancia del foco lejano |
+| `foco_intermedio_m` | m, 0–2 (0 ⇒ sin foco intermedio) | foco intermedio (1.0 panoptix/vivity, ver P6.9) |
+| `foco_cerca_m` | m, 0–0.6 (0 ⇒ sin foco cercano) | foco cercano (0.4 panoptix) |
+| `profundidad_foco_m` | m, 0–4 | ancho de zona nítida (el shader la mapea ×0.5 a D) |
+| `desenfoque_max` | 0–2 (>1: la rampa de blur satura antes; el blur final igual se satura a 1 en el shader) | blur máximo fuera de foco |
 | `halo_intensity` | 0–1 | glow + anillos difractivos |
-| `halo_extra_rings` | 0–1 | prominencia de anillos (pupila del billboard) |
-| `contrast_loss` | 0–0.6 | compresión de contraste |
+| `halo_extra_rings` | **mm de pupila, 1–6** (v0.6.0 — `GlareController` normaliza `(v-1)/5` a 0–1 antes de publicar `glare_pupil_*`; el shader sigue consumiendo 0–1) | diámetro pupilar (prominencia de anillos / pupila del billboard) |
+| `contrast_loss` | 0–1 | compresión de contraste |
 | `destello_intensity` | 0–1 | intensidad del starburst |
 | `destello_rayos` | 0–16 (cantidad) | número de rayos del starburst |
 | `straylight` | 0–1 | escala del velo de disability glare por ojo |
@@ -148,6 +148,19 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 > aceptado: el handle del slider se dibuja en el extremo izquierdo (posición del `min`, p. ej.
 > 0.15) mientras el label sigue mostrando "off" (`ParamMeta.FormatValue` formatea el valor crudo,
 > no el clampeado del widget) — no hay ambigüedad real porque el texto es la fuente de verdad.
+
+> **Rangos clínicos ampliados + pupila en mm (v0.6.0):** ventanas pedidas por el usuario clínico:
+> `foco_lejos_m` **2–9** m, `foco_intermedio_m` **0–2** m, `foco_cerca_m` **0–0.6** m,
+> `profundidad_foco_m` **0–4**, `desenfoque_max` **0–2**, `contrast_loss` **0–1**, `straylight`
+> **0–1** (sin cambio). `halo_extra_rings` cambia de UNIDAD: ahora es **diámetro pupilar en mm
+> (1–6, rango fisiológico)** — defaults remapeados `mm = 1 + old×5` (monofocal 1.0, panoptix 5.0,
+> vivity 2.0), visual idéntico al de v0.5.1. La normalización a 0–1 vive en UN solo punto:
+> `GlareController.SetEyeGlobals` (`Mathf.Clamp01((v-1)/5)`) antes de publicar `glare_pupil_*` —
+> los shaders (`GlareBillboard`, `WindowPortal`) saturan a 0–1 y NO se tocaron. Gotcha de
+> migración: un catálogo viejo (0–1) cacheado en el device normaliza a ~0 (pupila mínima) hasta
+> que el sync con el backend actualice la cache — autocorregible, no rompe. `ParamMeta` muestra
+> la unidad ("mm", F1). El fallback inline de `backend/api/app/seed.py` sigue driftado (rangos
+> 0–20 pre-P6.9, solo se usa con DB vacía y sin seed montado) — deuda conocida, no se tocó.
 > **Gotcha nuevo, irreversible desde la tablet:** con `min > 0`, una vez que el clínico mueve el
 > slider de un foco que estaba en "off", **ya no hay forma de volver a 0 desde la tablet** (el
 > slider no baja de su `min`). Para volver a "off" hay que reaplicar la lente (`apply_lens`,
@@ -320,6 +333,28 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
    usar el default serializado (`https://vr.conecta.sh`). En Quest: subir/quitar el override con
    `adb push`/`adb shell rm` (ver gotcha de `adb push` arriba) y reabrir la app para ver el cambio
    sin rebuildear.
+
+## P7: catálogo mergeado por device (lentes custom/genéricas)
+
+- El backend ahora sirve `GET /api/lenses?device_id=` con **merge**: blob base + lentes
+  genéricas (admin) + lentes custom del device solicitante. `DataManager` del **visor** manda
+  `?device_id=` (`DataManagerLogic.BuildSyncUrl(url, ep, deviceId)`, guard: presencia de
+  `TabletController` en escena ⇒ app tablet ⇒ sync anónima con base+genéricas).
+- **Versión mergeada**: `"{base}+x{hash}"` solo si hay extras; sin extras el string es la
+  versión base literal (los caches existentes no se invalidan gratis). Cualquier
+  alta/edición/borrado de lentes cambia el hash ⇒ el próximo sync reemplaza cache.
+- **`LensDef.Origen`** (`origen` en JSON): `null` = blob base, `"generic"` = de admin (global),
+  `"custom"` = propia de ESTE visor. La tablet gatea la UI con esto (badge en la card, gating
+  del Ajuste fino, botones guardar/eliminar — ver docs/tablet.md).
+- El flujo de creación/edición va por WS (`create/update/delete_lens`, ver docs/networking.md):
+  el visor hace el HTTP (`Data/CustomLensClient.cs`), re-sincroniza
+  (`DataManager.RefreshFromBackend()`, que ahora SÍ tiene caller) y el hello re-broadcasteado
+  lleva el catálogo nuevo.
+- Gotcha: los `lens_overrides.json` de una lente custom borrada quedan huérfanos (keyed por un
+  id que ya no existe) — inofensivos; si la lente se recrea, el id nuevo es otro
+  (`custom_<hex>` regenerado).
+- Gotcha: un device suspendido/vencido sincroniza como anónimo ⇒ sus customs desaparecen del
+  cache local hasta reactivarlo (decisión deliberada, no bug).
 
 ## Pendientes / deuda
 

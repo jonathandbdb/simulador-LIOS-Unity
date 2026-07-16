@@ -59,6 +59,55 @@ namespace Simulador.Tests
             Assert.AreEqual("2026-12-31", result.LicenseExpiry);
         }
 
+        // ---------------- P7: app_mode / is_admin ----------------
+
+        [Test]
+        public void TryParseVerifyOk_ConModoYAdmin_ParseaCampos()
+        {
+            string json = @"{""status"":""ok"",""device_name"":""V"",""license_expiry"":null,""app_mode"":""pro"",""is_admin"":true,""message"":""ok""}";
+            Assert.IsTrue(LicenseLogic.TryParseVerifyOk(json, out var result));
+            Assert.AreEqual("pro", result.AppMode);
+            Assert.IsTrue(result.IsAdmin);
+        }
+
+        [Test]
+        public void TryParseVerifyOk_BackendViejoSinModo_DefaultsPro()
+        {
+            // Un backend pre-P7 no manda app_mode/is_admin: default "pro"/false --
+            // ausencia de informacion preserva la UI completa actual.
+            string json = @"{""status"":""ok"",""device_name"":""V"",""license_expiry"":null,""message"":""ok""}";
+            Assert.IsTrue(LicenseLogic.TryParseVerifyOk(json, out var result));
+            Assert.AreEqual("pro", result.AppMode);
+            Assert.IsFalse(result.IsAdmin);
+        }
+
+        [Test]
+        public void BuildCacheJson_RoundTripConservaModoYAdmin()
+        {
+            var ok = new LicenseLogic.VerifyOkDto
+            {
+                Status = "ok", DeviceName = "V", LicenseExpiry = null,
+                AppMode = "pro", IsAdmin = true, Message = "ok",
+            };
+            string cache = LicenseLogic.BuildCacheJson(ok, new System.DateTime(2026, 7, 15, 12, 0, 0, System.DateTimeKind.Utc));
+            var (mode, admin) = LicenseLogic.ReadModeFromCache(cache);
+            Assert.AreEqual("pro", mode);
+            Assert.IsTrue(admin);
+        }
+
+        [Test]
+        public void ReadModeFromCache_CachePreP7ONuloOCorrupto_DefaultsPro()
+        {
+            // Cache escrito antes de P7 (sin app_mode/is_admin): default "pro".
+            string old = @"{""device_name"":""V"",""license_expiry"":null,""verified_at"":""2026-07-01T00:00:00Z""}";
+            var (mode, admin) = LicenseLogic.ReadModeFromCache(old);
+            Assert.AreEqual("pro", mode);
+            Assert.IsFalse(admin);
+
+            Assert.AreEqual(("pro", false), LicenseLogic.ReadModeFromCache(null));
+            Assert.AreEqual(("pro", false), LicenseLogic.ReadModeFromCache("no soy json"));
+        }
+
         [Test]
         public void TryParseVerifyOk_StatusDistinto_DevuelveFalse()
         {

@@ -19,7 +19,7 @@ namespace Simulador.Tablet
         private bool _active;
 
         public static LensCardView Create(TabletUiKit kit, Transform parent, string id, string nombre,
-            string descripcion, Action<string> onSelected)
+            string descripcion, Action<string> onSelected, string origen = null)
         {
             var root = new GameObject("LensCard", typeof(RectTransform));
             root.transform.SetParent(parent, false);
@@ -47,6 +47,16 @@ namespace Simulador.Tablet
             var name = kit.Label(top, string.IsNullOrEmpty(nombre) ? id : nombre, LabelKind.Section, TextAlignmentOptions.Left);
             name.raycastTarget = false;
             kit.Size(name.rectTransform, flexW: 1);
+            // P7: procedencia de la lente ("custom" = propia de este visor,
+            // "generic" = creada por un admin para todos; null = catalogo base,
+            // sin badge). Texto plano estilo hint, sin pildora: no compite con
+            // los chips OD/OI de estado.
+            if (origen == "custom" || origen == "generic")
+            {
+                var badge = kit.Label(top, origen == "custom" ? "Propia" : "Genérica",
+                    LabelKind.Hint, TextAlignmentOptions.Right);
+                badge.raycastTarget = false;
+            }
             view._chipOd = Chip(kit, top, "OD", LabelKind.ChipOD);
             view._chipOi = Chip(kit, top, "OI", LabelKind.ChipOI);
 

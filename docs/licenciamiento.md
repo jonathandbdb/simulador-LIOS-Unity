@@ -166,6 +166,28 @@ Respuesta `403` (dispositivo bloqueado), con uno de estos 5 `reason`:
 
 `429` — rate limit (10/min/IP, ver backend): transitorio, no es un `reason` de negocio.
 
+### P7: `app_mode` / `is_admin` en el verify OK
+
+Desde P7 el 200 OK suma dos campos aditivos (los 403 no cambian):
+
+```json
+{ "status": "ok", "device_name": "...", "license_expiry": null,
+  "app_mode": "standard" | "pro", "is_admin": false, "message": "..." }
+```
+
+- Unity: `LicenseLogic.VerifyOkDto` los parsea (**default `"pro"`/false si el backend es
+  viejo** — ausencia de información preserva la UI completa; "standard" solo explícito);
+  `BuildCacheJson` los persiste en `license_cache.json` y la **gracia offline conserva
+  el modo** (`ReadModeFromCache`, mismo default ante cache pre-P7). `LicenseManager.AppMode`
+  / `IsAdmin` exponen el estado; `NetworkController.BuildHello` se los pasa a la tablet
+  (`mode`/`is_admin`) que decide su UI (Standard/Pro, ver docs/tablet.md).
+- **Reemplazo de Quest**: desde `/admin/devices` → "Reemplazar hardware" (ver docs/backend.md).
+  El visor viejo, si reaparece, se auto-registra pending → rechazarlo. Mientras el nuevo no se
+  migre, vive del auto-registro pending; el viejo sigue funcionando hasta agotar la gracia
+  offline (10 días) — planificar el reemplazo con eso en mente.
+- **Limitación aceptada**: el `device_id` actúa como identidad/secreto de facto también para el
+  CRUD de lentes custom (`/api/lenses/custom`, ver docs/backend.md §P7).
+
 ## Flujo de estados del visor (diagrama de decisión)
 
 ```

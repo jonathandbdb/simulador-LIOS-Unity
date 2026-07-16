@@ -59,8 +59,8 @@ namespace Simulador.Tablet
             ["halo_extra_rings"] = new Entry
             {
                 Label = "Dilatacion pupilar (noche)",
-                Hint = "Pupila mesopica/escotopica. Agranda el halo y agrega tinte azulado (efecto Purkinje). Subir en escena nocturna.",
-                Unit = "", Fmt = "F2",
+                Hint = "Diametro pupilar en mm (1 = miosis, 6 = midriasis mesopica/escotopica). Agranda el halo y agrega tinte azulado (efecto Purkinje). Subir en escena nocturna.",
+                Unit = "mm", Fmt = "F1",
             },
             ["contrast_loss"] = new Entry
             {
@@ -103,6 +103,19 @@ namespace Simulador.Tablet
                 Unit = "°", Fmt = "F0",
             },
         };
+
+        // P7: whitelist del modo STANDARD — los unicos parametros visibles/editables
+        // en la UI simplificada (carrusel) y en el "Ajuste fino" Pro sobre lentes
+        // que no son propias (base/genericas). Fuente unica compartida.
+        public static readonly string[] STANDARD_PARAMS =
+        {
+            "astig_magnitude", "astig_axis_deg",
+            "halo_intensity", "halo_extra_rings",
+            "destello_intensity", "destello_rayos",
+        };
+
+        /// <summary>True si el parametro esta permitido en el modo Standard (P7).</summary>
+        public static bool IsStandardParam(string p) => System.Array.IndexOf(STANDARD_PARAMS, p) >= 0;
 
         // Orden clinico de presentacion: focos -> blur/astigmatismo (ambos son error
         // refractivo, a diferencia de los halos/destellos que son artefactos difractivos)

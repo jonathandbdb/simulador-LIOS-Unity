@@ -43,6 +43,14 @@ namespace Simulador.License
         /// <summary>True mientras el dispositivo esta bloqueado (gate cerrado).</summary>
         public static bool IsBlocked { get; private set; }
 
+        /// <summary>Modo de app del dispositivo ("standard" | "pro"), del ultimo verify OK
+        /// o del cache en gracia offline (P7). La tablet lo recibe via hello. Default
+        /// "pro" (UI completa) hasta tener informacion explicita del backend.</summary>
+        public static string AppMode { get; private set; } = "pro";
+
+        /// <summary>True si el dispositivo puede crear/editar lentes GENERICAS (P7).</summary>
+        public static bool IsAdmin { get; private set; }
+
         /// <summary>Se dispara cada vez que el gate (re)bloquea, con el resultado y el mensaje a mostrar.</summary>
         public event Action<LicenseLogic.LicenseGateResult, string> OnBlocked;
         /// <summary>Se dispara al desbloquear (verify OK tras haber estado bloqueado).</summary>
@@ -92,6 +100,9 @@ namespace Simulador.License
             if (offlineResult == LicenseLogic.LicenseGateResult.AllowOfflineGrace)
             {
                 Debug.Log("License: cache local dentro de la gracia offline, arrancando normal; verificando en background.");
+                // P7: en gracia offline el modo/admin valen los del ultimo verify OK
+                // cacheado (defaults seguros si el cache es pre-P7).
+                (AppMode, IsAdmin) = LicenseLogic.ReadModeFromCache(cacheJson);
                 // Fail-closed (ver docs/licenciamiento.md): la red del visor (WS/beacon)
                 // ya NO se auto-crea al cargar la escena -- solo el gate de licencia
                 // decide cuando levantarla. La lectura del cache es sincrona, asi que
@@ -199,7 +210,10 @@ namespace Simulador.License
         private void HandleOk(LicenseLogic.VerifyOkDto ok)
         {
             WriteCache(LicenseLogic.BuildCacheJson(ok, DateTime.UtcNow));
-            Debug.Log($"License: verify OK ({ok.DeviceName ?? "?"}, vence {ok.LicenseExpiry ?? "sin vencimiento"}).");
+            // P7: modo/admin del dispositivo, propagados a la tablet via hello.
+            AppMode = string.IsNullOrEmpty(ok.AppMode) ? "pro" : ok.AppMode;
+            IsAdmin = ok.IsAdmin;
+            Debug.Log($"License: verify OK ({ok.DeviceName ?? "?"}, vence {ok.LicenseExpiry ?? "sin vencimiento"}, modo {AppMode}{(IsAdmin ? "+admin" : "")}).");
             bool wasBlocked = IsBlocked;
             if (wasBlocked)
             {

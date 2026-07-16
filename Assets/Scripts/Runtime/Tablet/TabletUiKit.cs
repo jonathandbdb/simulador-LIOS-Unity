@@ -422,6 +422,96 @@ namespace Simulador.Tablet
         }
 
         // ============================================================
+        // CircleIcon (P7, carrusel del modo Standard)
+        // ============================================================
+        /// <summary>
+        /// Boton circular con anillo de seleccion (estilo carrusel Meta Quest): un
+        /// circulo de fondo + un anillo acento (visible solo seleccionado, via
+        /// <paramref name="ring"/>) + el glifo que el caller dibuje como hijos del
+        /// RectTransform devuelto en <paramref name="glyphArea"/>. Todo generado por
+        /// codigo (patron Rounded), sin PNGs.
+        /// </summary>
+        public TabletButton CircleIcon(Transform parent, string name, out Image ring,
+            out RectTransform glyphArea, float size = 84f)
+        {
+            // Root un poco mas grande que el circulo: deja lugar al anillo.
+            var root = new GameObject(name, typeof(RectTransform));
+            root.transform.SetParent(parent, false);
+            var rootRt = root.GetComponent<RectTransform>();
+            Size(rootRt, minW: size + 10, prefW: size + 10, minH: size + 10, prefH: size + 10, flexW: 0, flexH: 0);
+
+            // Anillo acento (circulo mayor por detras; visible = seleccionado).
+            var ringGo = new GameObject("Ring", typeof(RectTransform), typeof(Image));
+            ringGo.transform.SetParent(root.transform, false);
+            var ringRt = ringGo.GetComponent<RectTransform>();
+            ringRt.anchorMin = Vector2.zero; ringRt.anchorMax = Vector2.one;
+            ringRt.offsetMin = Vector2.zero; ringRt.offsetMax = Vector2.zero;
+            ring = ringGo.GetComponent<Image>();
+            ring.sprite = Rounded(999); ring.type = Image.Type.Sliced;
+            ring.raycastTarget = false;
+            Tint(ring, p => p.Accent);
+            ring.enabled = false;
+
+            // Circulo de fondo (superficie), centrado, tamano fijo.
+            var bgGo = new GameObject("Circle", typeof(RectTransform), typeof(Image));
+            bgGo.transform.SetParent(root.transform, false);
+            var bgRt = bgGo.GetComponent<RectTransform>();
+            bgRt.anchorMin = bgRt.anchorMax = new Vector2(0.5f, 0.5f);
+            bgRt.pivot = new Vector2(0.5f, 0.5f);
+            bgRt.sizeDelta = new Vector2(size, size);
+            var bg = bgGo.GetComponent<Image>();
+            bg.sprite = Rounded(999); bg.type = Image.Type.Sliced;
+            Tint(bg, p => p.SurfaceRaised);
+
+            var btn = root.AddComponent<TabletButton>();
+            btn.transition = Selectable.Transition.None;
+            btn.Fill = bg; btn.targetGraphic = bg;
+
+            // Area del glifo (dentro del circulo, con margen).
+            var glyphGo = new GameObject("Glyph", typeof(RectTransform));
+            glyphGo.transform.SetParent(bgGo.transform, false);
+            glyphArea = glyphGo.GetComponent<RectTransform>();
+            glyphArea.anchorMin = glyphArea.anchorMax = new Vector2(0.5f, 0.5f);
+            glyphArea.pivot = new Vector2(0.5f, 0.5f);
+            glyphArea.sizeDelta = new Vector2(size * 0.55f, size * 0.55f);
+
+            return btn;
+        }
+
+        /// <summary>Circulo relleno para glifos (hijo simple, sin layout). Tamano y offset en px locales.</summary>
+        public Image GlyphCircle(RectTransform parent, float diameter, Vector2 offset, Func<TabletPalette, Color> color)
+        {
+            var go = new GameObject("gc", typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(diameter, diameter);
+            rt.anchoredPosition = offset;
+            var img = go.GetComponent<Image>();
+            img.sprite = Rounded(999); img.type = Image.Type.Sliced;
+            img.raycastTarget = false;
+            Tint(img, color);
+            return img;
+        }
+
+        /// <summary>Rectangulo rotado para glifos (rayos, ejes). Angulo en grados.</summary>
+        public Image GlyphBar(RectTransform parent, float w, float h, float angleDeg, Func<TabletPalette, Color> color)
+        {
+            var go = new GameObject("gb", typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var rt = go.GetComponent<RectTransform>();
+            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
+            rt.pivot = new Vector2(0.5f, 0.5f);
+            rt.sizeDelta = new Vector2(w, h);
+            rt.localRotation = Quaternion.Euler(0, 0, angleDeg);
+            var img = go.GetComponent<Image>();
+            img.raycastTarget = false;
+            Tint(img, color);
+            return img;
+        }
+
+        // ============================================================
         // RawImage (stream)
         // ============================================================
         public RawImage RawImage(Transform parent)

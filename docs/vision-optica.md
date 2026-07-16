@@ -65,7 +65,7 @@ Render por frame (URP RenderGraph):
   (`applyDemoBlendOnStart`: monofocal OI / panoptix OD).
 - `Assets/Scripts/Runtime/Vision/GlareController.cs` — DataManager→shader globals de los billboards
   (hereda `VisionStateBinder`; `ApplyEyeState` delega en `SetEyeGlobals`):
-  `halo_intensity→glare_halo_l/r`, `halo_extra_rings→glare_pupil_l/r`,
+  `halo_intensity→glare_halo_l/r`, `halo_extra_rings→glare_pupil_l/r` (en mm 1–6 desde v0.6.0; se normaliza `(v-1)/5` a 0–1 acá antes de publicar — ver `docs/catalogo-lentes.md`),
   `destello_intensity→glare_star_l/r`, `destello_rayos→glare_rays_l/r`. Escala por escenario:
   halos × `haloScale`, destellos × `starScale`, `destello_rayos` (cantidad) nunca se escala.
   **Astigmatismo del catálogo (P4.4):** `SetEyeGlobals` también lee `astig_magnitude` (0..1) y

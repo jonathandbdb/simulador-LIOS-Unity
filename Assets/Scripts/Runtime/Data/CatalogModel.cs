@@ -21,6 +21,12 @@ namespace Simulador.Data
         [JsonProperty("nombre")] public string Nombre;
         [JsonProperty("descripcion")] public string Descripcion;
 
+        // P7: procedencia de la lente en el merge del backend. null = catalogo
+        // base (el blob no manda el campo); "generic" = creada por un admin
+        // (visible para todos); "custom" = privada de ESTE device. La tablet
+        // gatea la UI de edicion con esto (via hello).
+        [JsonProperty("origen")] public string Origen;
+
         // Claves dinamicas (foco_lejos_m, halo_intensity, ...) -> {default,min,max}.
         // Dictionary para tolerar params nuevos que agregue el backend sin recompilar.
         [JsonProperty("params")] public Dictionary<string, ParamSpec> Params = new();

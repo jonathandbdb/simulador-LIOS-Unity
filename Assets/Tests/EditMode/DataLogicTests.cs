@@ -49,6 +49,22 @@ namespace Simulador.Tests
         }
 
         [Test]
+        public void Parse_LensConOrigen_MapeaProcedencia()
+        {
+            // P7: el merge del backend marca las lentes extra con "origen"
+            // ("generic"|"custom"); las del catalogo base no traen el campo (null).
+            string json = @"{ ""version"": ""x"", ""catalogo"": [
+                { ""id"": ""custom_ab12"", ""nombre"": ""Propia"", ""descripcion"": """", ""origen"": ""custom"",
+                  ""params"": { ""halo_intensity"": { ""default"": 0.5, ""min"": 0.0, ""max"": 1.0 } } },
+                { ""id"": ""monofocal"", ""nombre"": ""Base"", ""descripcion"": """",
+                  ""params"": { ""halo_intensity"": { ""default"": 0.1, ""min"": 0.0, ""max"": 1.0 } } } ] }";
+            var cat = CatalogParser.Parse(json);
+            Assert.IsNotNull(cat);
+            Assert.AreEqual("custom", cat.Catalogo[0].Origen);
+            Assert.IsNull(cat.Catalogo[1].Origen);
+        }
+
+        [Test]
         public void Parse_Invalid_ReturnsNull()
         {
             Assert.IsNull(CatalogParser.Parse(""));
@@ -202,7 +218,7 @@ namespace Simulador.Tests
             Assert.IsTrue(File.Exists(path), $"Falta {path}");
             var cat = CatalogParser.Parse(File.ReadAllText(path));
             Assert.IsNotNull(cat);
-            Assert.AreEqual("0.5.1-clinical", cat.Version);
+            Assert.AreEqual("0.6.0-clinical", cat.Version);
             Assert.AreEqual(3, cat.Catalogo.Count);
 
             var pan = cat.Catalogo.Find(l => l.Id == "panoptix");
@@ -210,18 +226,34 @@ namespace Simulador.Tests
             Assert.AreEqual(0.6f, pan.Params["halo_intensity"].Default, 1e-4f);
             Assert.AreEqual(9.0f, pan.Params["destello_rayos"].Default, 1e-4f);
 
-            // P6.9: ventana clinica de los 3 focos (antes 0-20 sin discriminar). El
-            // rango de cada foco ahora acota la ventana real donde ese foco tiene sentido
-            // clinico; ver docs/catalogo-lentes.md "Rangos clinicos de los focos (P6.9)".
+            // v0.6.0: ventanas clinicas pedidas por el usuario clinico (P6.9 introdujo
+            // ventanas por foco; v0.6.0 las re-acota y suma el resto de los params);
+            // ver docs/catalogo-lentes.md "Rangos clinicos ampliados + pupila en mm (v0.6.0)".
             foreach (var l in cat.Catalogo)
             {
-                Assert.AreEqual(3.0f, l.Params["foco_lejos_m"].Min, 1e-4f, $"{l.Id}.foco_lejos_m min");
+                Assert.AreEqual(2.0f, l.Params["foco_lejos_m"].Min, 1e-4f, $"{l.Id}.foco_lejos_m min");
                 Assert.AreEqual(9.0f, l.Params["foco_lejos_m"].Max, 1e-4f, $"{l.Id}.foco_lejos_m max");
-                Assert.AreEqual(1.0f, l.Params["foco_intermedio_m"].Min, 1e-4f, $"{l.Id}.foco_intermedio_m min");
-                Assert.AreEqual(3.0f, l.Params["foco_intermedio_m"].Max, 1e-4f, $"{l.Id}.foco_intermedio_m max");
-                Assert.AreEqual(0.15f, l.Params["foco_cerca_m"].Min, 1e-4f, $"{l.Id}.foco_cerca_m min");
-                Assert.AreEqual(1.0f, l.Params["foco_cerca_m"].Max, 1e-4f, $"{l.Id}.foco_cerca_m max");
+                Assert.AreEqual(0.0f, l.Params["foco_intermedio_m"].Min, 1e-4f, $"{l.Id}.foco_intermedio_m min");
+                Assert.AreEqual(2.0f, l.Params["foco_intermedio_m"].Max, 1e-4f, $"{l.Id}.foco_intermedio_m max");
+                Assert.AreEqual(0.0f, l.Params["foco_cerca_m"].Min, 1e-4f, $"{l.Id}.foco_cerca_m min");
+                Assert.AreEqual(0.6f, l.Params["foco_cerca_m"].Max, 1e-4f, $"{l.Id}.foco_cerca_m max");
+                Assert.AreEqual(0.0f, l.Params["profundidad_foco_m"].Min, 1e-4f, $"{l.Id}.profundidad_foco_m min");
+                Assert.AreEqual(4.0f, l.Params["profundidad_foco_m"].Max, 1e-4f, $"{l.Id}.profundidad_foco_m max");
+                Assert.AreEqual(0.0f, l.Params["desenfoque_max"].Min, 1e-4f, $"{l.Id}.desenfoque_max min");
+                Assert.AreEqual(2.0f, l.Params["desenfoque_max"].Max, 1e-4f, $"{l.Id}.desenfoque_max max");
+                Assert.AreEqual(0.0f, l.Params["contrast_loss"].Min, 1e-4f, $"{l.Id}.contrast_loss min");
+                Assert.AreEqual(1.0f, l.Params["contrast_loss"].Max, 1e-4f, $"{l.Id}.contrast_loss max");
+                Assert.AreEqual(0.0f, l.Params["straylight"].Min, 1e-4f, $"{l.Id}.straylight min");
+                Assert.AreEqual(1.0f, l.Params["straylight"].Max, 1e-4f, $"{l.Id}.straylight max");
+                // halo_extra_rings ahora es DIAMETRO PUPILAR EN MM (1-6, rango fisiologico);
+                // GlareController normaliza (v-1)/5 antes de publicar glare_pupil_* (0-1).
+                Assert.AreEqual(1.0f, l.Params["halo_extra_rings"].Min, 1e-4f, $"{l.Id}.halo_extra_rings min");
+                Assert.AreEqual(6.0f, l.Params["halo_extra_rings"].Max, 1e-4f, $"{l.Id}.halo_extra_rings max");
             }
+            // Defaults de pupila remapeados mm = 1 + old*5 (visual identico post-normalizacion):
+            Assert.AreEqual(1.0f, cat.Catalogo.Find(l => l.Id == "monofocal").Params["halo_extra_rings"].Default, 1e-4f);
+            Assert.AreEqual(5.0f, pan.Params["halo_extra_rings"].Default, 1e-4f);
+            Assert.AreEqual(2.0f, cat.Catalogo.Find(l => l.Id == "vivity").Params["halo_extra_rings"].Default, 1e-4f);
             // Defaults "off" (0) fuera del nuevo rango se conservan intactos (semantica
             // 0 = foco desactivado, ver ParamMeta.FormatValue) -- BuildEyeState nunca
             // clampea los defaults del catalogo, solo los overrides (LensEngine.cs).

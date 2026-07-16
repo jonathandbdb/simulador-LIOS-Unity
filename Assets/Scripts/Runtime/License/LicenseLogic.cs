@@ -34,6 +34,11 @@ namespace Simulador.License
             [JsonProperty("status")] public string Status;
             [JsonProperty("device_name")] public string DeviceName;
             [JsonProperty("license_expiry")] public string LicenseExpiry;
+            // P7: modo de app + flag admin por dispositivo. Un backend viejo (pre-P7)
+            // no manda estos campos -> default "pro": ausencia de informacion preserva
+            // la UI completa actual; "standard" SOLO si el backend lo dice explicito.
+            [JsonProperty("app_mode")] public string AppMode = "pro";
+            [JsonProperty("is_admin")] public bool IsAdmin;
             [JsonProperty("message")] public string Message;
         }
 
@@ -53,6 +58,10 @@ namespace Simulador.License
         {
             [JsonProperty("device_name")] public string DeviceName;
             [JsonProperty("license_expiry")] public string LicenseExpiry;
+            // P7: la gracia offline conserva el modo/admin del ultimo verify OK
+            // (un cache pre-P7 no los trae -> default "pro", mismo criterio que el DTO).
+            [JsonProperty("app_mode")] public string AppMode = "pro";
+            [JsonProperty("is_admin")] public bool IsAdmin;
             [JsonProperty("verified_at")] public string VerifiedAt;
         }
 
@@ -215,9 +224,24 @@ namespace Simulador.License
             {
                 DeviceName = ok?.DeviceName,
                 LicenseExpiry = ok?.LicenseExpiry,
+                AppMode = string.IsNullOrEmpty(ok?.AppMode) ? "pro" : ok.AppMode,
+                IsAdmin = ok?.IsAdmin ?? false,
                 VerifiedAt = utcNow.ToString("o", CultureInfo.InvariantCulture),
             };
             return JsonConvert.SerializeObject(cache);
+        }
+
+        /// <summary>
+        /// Extrae (modo, admin) de un cache local, con defaults ("pro"/false) ante
+        /// cache null/corrupto/pre-P7 -- ausencia de informacion preserva la UI
+        /// completa (mismo criterio que VerifyOkDto). Para la gracia offline: el
+        /// modo del ultimo verify OK sigue valiendo sin backend.
+        /// </summary>
+        public static (string appMode, bool isAdmin) ReadModeFromCache(string cacheJson)
+        {
+            if (!TryParseCache(cacheJson, out var cache)) return ("pro", false);
+            string mode = string.IsNullOrEmpty(cache.AppMode) ? "pro" : cache.AppMode;
+            return (mode, cache.IsAdmin);
         }
     }
 }

@@ -65,6 +65,12 @@ namespace Simulador.Vision
             {
                 if (state.Params.TryGetValue(kv.Key, out float v))
                 {
+                    // halo_extra_rings llega en mm de pupila (rango clinico 1-6, v0.6.0);
+                    // el shader del billboard consume 0-1 (satura glare_pupil_*): normalizar
+                    // ACA, en la frontera con el shader. Valores <1 (catalogos viejos 0-1
+                    // cacheados) normalizan a 0 hasta que el sync actualice la cache.
+                    if (kv.Key == "halo_extra_rings")
+                        v = Mathf.Clamp01((v - 1f) / 5f);
                     // Halos (anillos) y destellos (rayos) se escalan distinto por escenario.
                     // destello_rayos es CANTIDAD de rayos: no se escala (la intensidad la da destello_intensity).
                     float scale = kv.Key == "destello_intensity" ? starScale

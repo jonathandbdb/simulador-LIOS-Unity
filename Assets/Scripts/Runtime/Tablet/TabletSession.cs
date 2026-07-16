@@ -107,6 +107,13 @@ namespace Simulador.Tablet
         /// </summary>
         public string CurrentScenario { get; set; } = "";
 
+        /// <summary>Modo de app del visor conectado ("standard" | "pro"), del hello (P7).
+        /// Default "pro" hasta el primer hello (y para visores viejos sin el campo).</summary>
+        public string Mode { get; private set; } = "pro";
+
+        /// <summary>True si el visor conectado es administrador (puede crear lentes genericas, P7).</summary>
+        public bool IsAdmin { get; private set; }
+
         // ============================================================
         // Eventos hacia la UI
         // ============================================================
@@ -128,6 +135,10 @@ namespace Simulador.Tablet
         public event Action VisionStateChanged;
         /// <summary>Frame de stream recibido: header ('B'/'L'/'R') ya separado del JPG.</summary>
         public event Action<char, byte[]> FrameReceived;
+        /// <summary>Ack de create/update/delete_lens (P7). Payload: (op, lens_id).</summary>
+        public event Action<string, string> LensSaved;
+        /// <summary>Fallo de create/update/delete_lens (P7). Payload: (op, reason — "offline" | reason del backend).</summary>
+        public event Action<string, string> LensError;
 
         // ============================================================
         public void Begin()
@@ -495,6 +506,10 @@ namespace Simulador.Tablet
                     _scenarioLabels[sid] = (string)so["label"] ?? sid;
                 }
                 CurrentScenario = (string)o["scenario"] ?? "";
+                // P7: modo de app del visor conectado. Un visor viejo no manda el
+                // campo -> default "pro" (UI completa actual, no-breaking).
+                Mode = (string)o["mode"] ?? "pro";
+                IsAdmin = (bool?)o["is_admin"] ?? false;
                 _sessionActive = true;
                 _reconnecting = false; // P2.5: hello == reconexion exitosa (si venia de ahi)
                 HelloReceived?.Invoke(lenses);
@@ -503,6 +518,16 @@ namespace Simulador.Tablet
             {
                 _visionState = o["vision_state"] as JObject ?? new JObject();
                 VisionStateChanged?.Invoke();
+            }
+            else if (type == "lens_saved")
+            {
+                // P7: ack de create/update/delete_lens. El catalogo actualizado llega
+                // aparte, en el re-broadcast de hello que dispara la re-sync del visor.
+                LensSaved?.Invoke((string)o["op"] ?? "", (string)o["lens_id"] ?? "");
+            }
+            else if (type == "lens_error")
+            {
+                LensError?.Invoke((string)o["op"] ?? "", (string)o["reason"] ?? "unknown");
             }
         }
 
