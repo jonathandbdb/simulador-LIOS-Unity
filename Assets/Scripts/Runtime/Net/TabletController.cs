@@ -765,9 +765,14 @@ namespace Simulador.Tablet
             // P7: sobre lentes que NO son propias (catalogo base o genericas de un
             // admin), un Pro solo ajusta los parametros del modo Standard. La lista
             // completa queda reservada a sus lentes custom ("Crear lente" duplica la
-            // actual para editarla entera).
-            bool ownCustom = (string)lens["origen"] == "custom";
-            if (!ownCustom) ordered.RemoveAll(k => !ParamMeta.IsStandardParam(k));
+            // actual para editarla entera). P7.1: si el visor conectado es ADMIN, el
+            // Ajuste fino completo se habilita tambien sobre base/genericas (con
+            // guardado al backend, igual que una propia) -- ver docs/tablet.md.
+            string origen = (string)lens["origen"];
+            bool ownCustom = origen == "custom";
+            bool isAdmin = _session.IsAdmin;
+            bool fullEdit = ownCustom || isAdmin;
+            if (!fullEdit) ordered.RemoveAll(k => !ParamMeta.IsStandardParam(k));
 
             int added = 0;
             foreach (var key in ordered)
@@ -788,15 +793,24 @@ namespace Simulador.Tablet
                 ? "Esta lente no tiene parámetros editables."
                 : ownCustom
                     ? "Lente propia: todos los parámetros son editables. \"Guardar en la lente\" persiste los valores actuales."
-                    : "Los ajustes se aplican al ojo que tiene esta lente. Para editar todos los parámetros, creá una lente propia desde \"Crear lente\".";
+                    : isAdmin
+                        ? (origen == "generic"
+                            ? "Modo administrador: todos los parámetros son editables. Podés guardarlos o eliminar esta lente genérica."
+                            : "Modo administrador: todos los parámetros son editables. Podés guardarlos en esta lente base (no se puede eliminar).")
+                        : "Los ajustes se aplican al ojo que tiene esta lente. Para editar todos los parámetros, creá una lente propia desde \"Crear lente\".";
 
-            // Botones de lente propia (guardar cambios / eliminar), solo en customs.
+            // Botones de lente propia (guardar cambios / eliminar): las propias
+            // siempre las tienen; P7.1: un visor ADMIN suma "Guardar en la lente"
+            // tambien sobre base/genericas, pero "Eliminar lente" NUNCA sobre una
+            // base (origen null) -- solo sobre genericas o propias.
             _deleteArmed = false;
             if (_saveLensButton != null)
             {
-                _saveLensButton.gameObject.SetActive(ownCustom);
-                _deleteLensButton.gameObject.SetActive(ownCustom);
-                if (ownCustom && _deleteLensButton.Label != null) _deleteLensButton.Label.text = "Eliminar lente";
+                bool canSave = ownCustom || isAdmin;
+                bool canDelete = ownCustom || (isAdmin && origen == "generic");
+                _saveLensButton.gameObject.SetActive(canSave);
+                _deleteLensButton.gameObject.SetActive(canDelete);
+                if (canDelete && _deleteLensButton.Label != null) _deleteLensButton.Label.text = "Eliminar lente";
             }
         }
 
@@ -1673,6 +1687,7 @@ namespace Simulador.Tablet
                 "MODE_NOT_PRO" => "Este visor no tiene el modo Pro habilitado.",
                 "NOT_ADMIN" => "Solo un dispositivo administrador puede tocar lentes genéricas.",
                 "NOT_OWNER" => "Esta lente pertenece a otro dispositivo.",
+                "BASE_LENS" => "Las lentes base no se pueden eliminar.",
                 "DEVICE_NOT_AUTHORIZED" => "El visor no está habilitado (licencia).",
                 "LENS_LIMIT_REACHED" => "Se alcanzó el tope de lentes.",
                 _ => $"No se pudo guardar la lente ({reason}).",

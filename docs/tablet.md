@@ -567,6 +567,29 @@ TabletController.Start()
   **"Crear lente"**: duplica la lente en edición con los ajustes aplicados como defaults
   (`BuildParamsSnapshot`); si el visor es admin aparece el toggle "Genérica". Feedback por
   `lens_saved`/`lens_error` (mapeo de reasons en `OnLensError`).
+- **P7.1 — gating por procedencia × admin, matriz completa** (`BuildParamsEditor`,
+  `TabletController.cs`): lo de arriba describe el caso NO-admin. Un visor conectado ADMIN
+  (`TabletSession.IsAdmin`) amplía el "Ajuste fino" también sobre lentes que no son propias
+  (decisión de producto: un admin gestiona el catálogo entero desde la tablet), pero el botón
+  "Eliminar lente" nunca aparece sobre una BASE — las lentes base no se pueden borrar nunca:
+
+  | Lente (`origen`) | No-admin | Admin |
+  |---|---|---|
+  | Base (`null`) | Solo `STANDARD_PARAMS`, sin botones | Ajuste fino completo + "Guardar en la lente" (`update_lens`); **sin** "Eliminar lente" |
+  | Genérica (`"generic"`) | Solo `STANDARD_PARAMS`, sin botones | Ajuste fino completo + "Guardar en la lente" + "Eliminar lente" |
+  | Propia (`"custom"`) | Ajuste fino completo + "Guardar en la lente" + "Eliminar lente" | igual que no-admin (ser dueño de una custom ya habilitaba todo; el modo admin no le suma ni le saca nada) |
+
+  Implementación: `fullEdit = ownCustom || isAdmin` decide si `ordered` se recorta a
+  `STANDARD_PARAMS`; `canSave = ownCustom || isAdmin` y `canDelete = ownCustom || (isAdmin &&
+  origen == "generic")` deciden la visibilidad de los botones — una base nunca entra en
+  `canDelete`, sin importar el modo. El backend sigue siendo la autoridad real (implementado en
+  paralelo a esta tarea): `update_lens` sobre una base la guarda igual que hoy si el visor es
+  admin (si no, responde `NOT_ADMIN`, ya mapeado); `delete_lens` sobre una base devuelve el
+  reason nuevo `BASE_LENS` ("Las lentes base no se pueden eliminar.", mapeado en `OnLensError`)
+  — la UI ya no ofrece ese botón para una base, pero el mensaje queda como red de seguridad ante
+  un estado de sesión desactualizado (p.ej. `IsAdmin` cambió entre el `hello` y el tap). No se
+  agregó un badge nuevo para "Base": sigue sin badge, igual que antes de P7.1 (`LensCardView`
+  solo distingue "Propia"/"Genérica").
 - Las cards de lente muestran badge "Propia"/"Genérica" según `origen` (`LensCardView`).
 
 ## Gotchas
