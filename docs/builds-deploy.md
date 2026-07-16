@@ -8,7 +8,8 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 
 | Archivo | Rol |
 |---------|-----|
-| `Assets/Scripts/Editor/TabletBuild.cs` | Build script dedicado de la tablet: apaga el loader OpenXR, buildea `Tablet.unity` y restaura el loader al terminar. |
+| `Assets/Scripts/Editor/TabletBuild.cs` | Build script dedicado de la tablet: apaga el loader OpenXR, buildea `Tablet.unity` y restaura el loader al terminar. Expone `IsTabletBuildInProgress` (gate para `TabletBootConfigPatcher`, ver fila siguiente). |
+| `Assets/Scripts/Editor/TabletBootConfigPatcher.cs` | `IPostGenerateGradleAndroidProject` (`callbackOrder = 9999`, corre último): borra del `boot.config` ya generado toda línea `xr-*` que el hook de OpenXR haya escrito, SOLO si `TabletBuild.IsTabletBuildInProgress` — fix determinista del gotcha del teclado (ver Gotchas). |
 | `Assets/XR/XRGeneralSettingsPerBuildTarget.asset` | Config XR por build target. El bloque "Android Providers" tiene `m_Loaders` apuntando al loader OpenXR (guid `0613ddada2fe14947a9b75e90912b7ba`). |
 | `Assets/XR/Loaders/OpenXRLoader.asset` | El loader OpenXR que se activa/desactiva. |
 | `Assets/XR/Settings/OpenXR Package Settings.asset` | Configuración del paquete OpenXR (features, interaction profiles). |
@@ -23,7 +24,9 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 | | **Visor (Quest)** | **Tablet (Android)** |
 |---|---|---|
 | Escena incluida | `Assets/Scenes/Main.unity` (única en EditorBuildSettings) | `Assets/Scenes/Tablet.unity` (pasada explícitamente por el script; NO está en EditorBuildSettings) |
-| Loader OpenXR | **ON** (estado normal del proyecto) | **OFF** solo durante el build; restaurado después |
+| Loader OpenXR | **ON** (estado normal del proyecto) | **OFF** solo durante el build (`.asset` vía `SetLoaders` **y** cache runtime vía `TrySetLoaders`); restaurado después |
+| Flags `xr-*` en `boot.config` | Presentes (el visor los necesita: late latching, keyboard overlay, etc.) | Borrados post-build por `TabletBootConfigPatcher` — ver Gotchas del teclado (fix determinista, no un toggle en memoria) |
+| GraphicsAPI (Android) | **Vulkan** (`m_APIs: 15000000`, requerido por el visor Quest) | **OpenGLES3** solo durante el build (driver Vulkan roto en tablets Unisoc/Mali, ver Gotchas); restaurado después |
 | Método de build | Build normal de Unity para Android (*File → Build Profiles / Build Settings*) | **SOLO** menú `Simulador → Build Tablet (Android)` o `-executeMethod Simulador.EditorTools.TabletBuild.BuildTablet` (batchmode) |
 | Ruta de salida | La que elija el usuario (localmente existen `builds/Simulador_VR.apk` y `build/Simulador.apk`, ambas carpetas gitignoradas) | `Builds/Android/Simulador.apk` (constante `OutputPath` en `TabletBuild.cs`) |
 | Package | `com.simulador.vr` | `com.simulador.tablet` (P6.7, CERRADO — antes compartía `com.simulador.vr` con el visor; ver Decisiones/Gotchas) |
@@ -37,16 +40,26 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 ¿target activo == Android? --no--> LogError + return null (no toca nada, ni loaders ni identifier)
         | sí
 GetAndroidXrManager()  ← lee XRGeneralSettingsPerBuildTarget vía EditorBuildSettings
-guardar loaders actuales (SerializedObject "m_Loaders")
+guardar loaders actuales (SerializedObject "m_Loaders") + como List<XRLoader> para TrySetLoaders
+guardar GraphicsAPIs(Android) + UseDefaultGraphicsAPIs(Android)
 guardar applicationIdentifier (NamedBuildTarget.Android) + productName actuales   (P6.7)
 guardar platform icons de Android por kind (GetPlatformIcons(Android, Legacy/Round/Adaptive))
 try:
-    SetLoaders(manager, lista vacía)        ← XR OFF
+    IsTabletBuildInProgress = true          ← gate de TabletBootConfigPatcher (ver más abajo)
+    SetLoaders(manager, lista vacía)        ← XR OFF en el .asset
+    manager.TrySetLoaders(lista vacía)      ← XR OFF en la cache runtime (activeLoaders) — sin esto queda stale
+    SetGraphicsAPIs(Android, [OpenGLES3]) + SetUseDefaultGraphicsAPIs(Android, false)   ← driver Vulkan roto en Unisoc/Mali, ver Gotchas
     SetApplicationIdentifier(Android, "com.simulador.tablet") + productName = "Simulador Tablet"
     SetPlatformIcons(Android, Legacy/Round/Adaptive, icon_tablet.png en todas las capas)  ← icono propio (NO IconKind.Application, ver Gotchas — esa API generica no tiene efecto en Android)
     BuildPipeline.BuildPlayer(Tablet.unity → Builds/Android/Simulador.apk)
+        └─ durante la generación del proyecto Gradle, Unity llama a TODOS los
+           IPostGenerateGradleAndroidProject registrados, en orden de callbackOrder;
+           TabletBootConfigPatcher (callbackOrder 9999, corre último) borra del
+           boot.config ya escrito toda línea "xr-*" — ver Gotchas del teclado
 finally:
-    SetLoaders(manager, loaders guardados)                 ← XR ON de nuevo, SIEMPRE
+    IsTabletBuildInProgress = false
+    SetLoaders(manager, loaders guardados) + manager.TrySetLoaders(loaders guardados)   ← XR ON de nuevo (.asset y cache), SIEMPRE
+    SetGraphicsAPIs(Android, guardado) + SetUseDefaultGraphicsAPIs(Android, guardado)   ← Vulkan de nuevo, SIEMPRE
     SetApplicationIdentifier(Android, guardado) + productName = guardado   ← SIEMPRE (P6.7)
     SetPlatformIcons(Android, Legacy/Round/Adaptive, icons guardados)      ← SIEMPRE (icono del visor de nuevo, heredado del default)
     (+ SaveAssets: el .asset de XR queda persistido como estaba)
@@ -212,6 +225,15 @@ producción, el activo más irreemplazable del proyecto.
   sea `TabletBuild` el único que hace un override temporal (igual que ya hacía con XR/identifier).
   Carga del `Texture2D` por `AssetDatabase.LoadAssetAtPath` (NO `Resources.Load` — restricción del
   repo, ver `AGENTS.md` §Reglas de assets Unity).
+- **`TabletBootConfigPatcher` borra flags `xr-*` del `boot.config` YA GENERADO en vez de evitar que
+  el hook de OpenXR los escriba** → un intento previo togglear `MetaQuestFeature.enabled` en
+  memoria durante el `BuildPipeline` (detalle completo en el Gotcha del teclado) no fue confiable:
+  el paquete OpenXR relee/persiste su propio estado en momentos fuera del control de `TabletBuild`,
+  y el toggle además dirteaba a disco un asset compartido con el visor
+  (`OpenXR Package Settings.asset`). Post-procesar el artefacto ya escrito (vía
+  `IPostGenerateGradleAndroidProject`, `callbackOrder` alto para correr último) es determinista
+  porque no depende de ganarle una carrera al estado interno de un paquete de terceros — solo lee y
+  reescribe un archivo de texto plano después de que todos los escritores ya corrieron.
 
 ## Gotchas
 
@@ -385,6 +407,82 @@ producción, el activo más irreemplazable del proyecto.
   también verificados sobre el mismo APK. Bug cerrado del todo: código corregido + verificado a
   nivel API (por @unity-dev) + verificado end-to-end en el artefacto compilado real
   (por @build-deploy).
+- **El teclado Android no abre en la tablet (el clínico no puede tipear el PIN) — BUG REAL,
+  RESUELTO (fix determinista en ronda 2, ver abajo).** Síntoma en el dispositivo:
+  `TouchScreenKeyboard.Open` no abre nada; el log muestra `"Oculus overlay keyboard is disabled,
+  add 'oculus.software.overlay_keyboard' feature request to your Android manifest"` — la app
+  intenta el teclado overlay de Oculus (que no existe en una tablet plana sin runtime VR) en vez
+  del teclado Android normal. No determinista: un build podía salir sano y el siguiente no, sin
+  cambios de repo entre medio. **Causa raíz confirmada** inspeccionando el paquete OpenXR
+  instalado (`Library/PackageCache/com.unity.xr.openxr@.../Editor/MetaQuest/BuildTargetSupport/
+  MetaQuestFeatureBuildHooks.cs:72`): `OnProcessBootConfigExt` escribe
+  `xr-keyboard-overlay-enabled=1` (y ~11 flags `xr-*` más — late latching, low latency audio,
+  pipeline cache, etc., ver la lista completa en esa misma función) en
+  `assets/bin/Data/boot.config` del APK. El ÚNICO gate propio del hook es `IsExtensionEnabled`
+  (`Editor/FeatureSupport/OpenXRFeatureBuildHooks.cs:29`), que exige
+  `BuildHelperUtils.HasActiveLoader(group, typeof(OpenXRLoaderBase))` **&&** `feature.enabled` del
+  feature Meta Quest Support. El problema: `TabletBuild.SetLoaders` vacía `m_Loaders` **por
+  `SerializedObject`**, que solo persiste el `.asset` (`XRGeneralSettingsPerBuildTarget.asset`) —
+  pero `HasActiveLoader` lee `activeLoaders`, una **cache runtime en memoria** del
+  `XRManagerSettings` que ese camino NUNCA refresca. Según en qué estado quedó esa cache de una
+  sesión anterior del Editor (Play Mode, otro build, etc.), el hook corría o no — de ahí lo no
+  determinista.
+  **Intento 1 (ronda 1 — FALLÓ, revertido en ronda 2).** Dos capas en memoria: (a)
+  `TabletBuild.BuildTablet()` llama además `manager.TrySetLoaders(new List<XRLoader>())` — la API
+  pública de XR Management que SÍ sincroniza `activeLoaders` — restaurado con
+  `TrySetLoaders(savedXrLoaders)` en el `finally`; **esta parte SÍ es correcta y se conserva** (ver
+  Decisiones). (b) Encima, `TabletBuild` resolvía
+  `OpenXRSettings.GetSettingsForBuildTargetGroup(BuildTargetGroup.Android).GetFeature<MetaQuestFeature>()`
+  y ponía `enabled = false` durante el build (restaurado en el `finally`), para anular
+  `IsExtensionEnabled` aunque la cache del loader quedara stale por cualquier otro motivo. **Esta
+  parte (b) se retiró: verificado en build real (@build-deploy) que el APK seguía saliendo con
+  `xr-keyboard-overlay-enabled=1` en `boot.config` pese al toggle** — el paquete OpenXR relee/
+  persiste su propio estado (`MetaQuestFeatureBuildHooks.ApplySettingsOverride` →
+  `AssetDatabase.SaveAssetIfDirty`) en momentos que este script no controla dentro del
+  `BuildPipeline`. Peor: ese mismo hook, al correr con el feature en `enabled = false`, persistió
+  `m_enabled: 0` **a disco** en `Assets/XR/Settings/OpenXR Package Settings.asset` — un asset
+  **compartido con el visor** — dejando el working tree sucio con un cambio que, si se commiteara
+  por error, apagaría Meta Quest Support también para el build del visor. @build-deploy lo revirtió
+  con `git checkout -- "Assets/XR/Settings/OpenXR Package Settings.asset"`. **Lección: pelear
+  contra el estado interno de un paquete de terceros durante el `BuildPipeline` (togglear un
+  `ScriptableObject` que el propio paquete relee/persiste en su propio momento) es frágil — y en
+  este caso, riesgoso para el visor.** Si `git status` muestra ese `.asset` modificado después de
+  un build de tablet, es señal de que este bug volvió: revertir el archivo y revisar
+  `TabletBuild.cs`/`TabletBootConfigPatcher.cs`.
+  **Fix real (ronda 2 — determinista).** En vez de evitar que el hook escriba los flags, se los
+  borra del `boot.config` YA GENERADO: `Assets/Scripts/Editor/TabletBootConfigPatcher.cs`
+  implementa `IPostGenerateGradleAndroidProject` (`callbackOrder = 9999`, para correr después de
+  cualquier otro postprocesador, incluido el propio hook de OpenXR) y, gateado por
+  `TabletBuild.IsTabletBuildInProgress` (`true` solo dentro del `try` de `BuildTablet()`), abre
+  `<path>/src/main/assets/bin/Data/boot.config` (con fallback a
+  `<path>/../unityLibrary/src/main/assets/bin/Data/boot.config` si el `path` recibido es el del
+  módulo `launcher` en vez de `unityLibrary`), borra toda línea cuyo key empiece con `xr-` y
+  reescribe el archivo, logueando `[TabletBuild] boot.config: N flags xr-* eliminados`. Si el flag
+  está armado y el archivo no se encuentra en ninguna de las dos rutas, `Debug.LogError` (no falla
+  en silencio). En un build del visor `IsTabletBuildInProgress` es `false` y el patcher no toca
+  nada — los flags `xr-*` quedan intactos, que es lo correcto para Quest. No requiere referencias
+  nuevas a `Unity.XR.OpenXR`/`Unity.XR.OpenXR.Features.MetaQuestSupport` en
+  `Simulador.Editor.asmdef` (esas se agregaron en el intento 1 para resolver `MetaQuestFeature` y
+  se retiraron al revertirlo — el patcher solo necesita `UnityEditor.Android`, ya disponible sin
+  referencia extra, igual que `AndroidPlatformIconKind` más arriba).
+- **Pantalla negra en la tablet PHILCO (Unisoc/Mali) con el fix del loader XR ya aplicado — BUG
+  REAL, RESUELTO.** Con el loader OpenXR apagado correctamente (loader del gotcha anterior
+  descartado como causa), la app seguía sin presentar ningún frame en esa tablet específica.
+  Diagnóstico verificado empíricamente (build experimental, 2026-07-16): el driver Vulkan del
+  Unisoc/Mali de esa tablet no presenta frames — el swapchain queda mudo en silencio
+  (`queued-frames=0`, sin excepción ni error visible), pero el mismo APK con GraphicsAPI
+  OpenGLES3 renderiza perfecto. El proyecto tiene Android en Vulkan-only
+  (`ProjectSettings/ProjectSettings.asset`, `m_APIs: 15000000`) porque el visor Quest lo necesita
+  — no se puede cambiar ese default global sin romper el visor. **Fix:** `TabletBuild.BuildTablet()`
+  guarda `PlayerSettings.GetGraphicsAPIs(BuildTarget.Android)` +
+  `GetUseDefaultGraphicsAPIs(BuildTarget.Android)` ANTES de tocarlos (mismo momento que el resto
+  del estado), en el `try` fuerza `SetUseDefaultGraphicsAPIs(Android, false)` +
+  `SetGraphicsAPIs(Android, new[] { GraphicsDeviceType.OpenGLES3 })`, y restaura ambos SIEMPRE en
+  el `finally` — mismo patrón try/finally que loader/identifier/icono. Vulkan queda intacto para
+  el visor (build normal, fuera de `TabletBuild`). **Alcance:** esto es un workaround por
+  hardware, no una preferencia general de GLES3 sobre Vulkan — si aparece OTRA tablet de destino
+  con un driver Vulkan sano, seguiría buildeando en GLES3 igual (el swap no distingue modelos);
+  reevaluar si algún día hace falta lo contrario.
 
 ## Cómo probar
 
@@ -407,12 +505,25 @@ producción, el activo más irreemplazable del proyecto.
    contra `icon_tablet.png` (ver el gotcha resuelto más abajo para el comando exacto) —
    `aapt dump badging Builds/Android/Simulador.apk | grep application-icon` sin extraer el PNG NO
    alcanza para confirmar cuál ícono quedó embebido, solo que hay uno.
+2.c. **Verificar el patch de `boot.config` (gotcha del teclado):** durante el build, el log de
+   Unity (`unity_console_log` o la consola del Editor) debe mostrar
+   `[TabletBuild] boot.config: N flags xr-* eliminados (...)` con `N > 0` (si el hook de OpenXR no
+   escribió nada esa vez, `N` puede salir en `0` — no es un fallo, solo no había nada que limpiar).
+   Si en cambio aparece `[TabletBuild] No se encontro boot.config para parchear...`, el patch NO
+   corrió y el bug del teclado puede haber vuelto — investigar antes de instalar. Verificación
+   directa del artefacto: el proyecto Gradle generado queda en
+   `Library/Bee/Android/Prj/IL2CPP/Gradle/` — buscar `unityLibrary/src/main/assets/bin/Data/
+   boot.config` ahí y confirmar que NO tiene ninguna línea que empiece con `xr-`
+   (`grep "^xr-" boot.config` no debe devolver nada).
 3. **Instalar y arrancar:**
    ```bash
    adb install -r Builds/Android/Simulador.apk
    adb shell monkey -p com.simulador.tablet 1
    adb logcat -s Unity   # debe verse "DataManager: catalogo v... cargado desde ..."
    ```
+   **Prueba del teclado (gotcha de arriba):** en la pantalla que pide el PIN/login, tocar el campo
+   de texto y confirmar que abre el teclado Android normal (no debe aparecer el log
+   `"Oculus overlay keyboard is disabled..."` en `adb logcat`, ni quedar la pantalla sin teclado).
    La tablet debe mostrar UI (no pantalla negra) y descubrir el visor por UDP si hay uno en la misma Wi-Fi.
    Confirmar el package instalado: `adb shell pm list packages | grep simulador` debe mostrar
    `com.simulador.tablet` (y, si el visor también está instalado en el mismo dispositivo de

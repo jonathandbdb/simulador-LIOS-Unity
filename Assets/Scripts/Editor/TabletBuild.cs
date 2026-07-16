@@ -1,11 +1,13 @@
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.Android;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEditor.XR.Management;
 using UnityEngine;
+using UnityEngine.Rendering;
 using UnityEngine.XR.Management;
 
 namespace Simulador.EditorTools
@@ -37,6 +39,24 @@ namespace Simulador.EditorTools
     /// del visor (BUG REAL detectado en el release 0.2.0, ver docs/builds-deploy.md
     /// Gotchas). Este script pisa los TRES platform icon kinds de Android con
     /// Assets/Textures/Icons/icon_tablet.png SOLO durante el build y los restaura siempre.
+    ///
+    /// Dos gotchas mas (detalle en docs/builds-deploy.md Gotchas): (1) vaciar m_Loaders por
+    /// SerializedObject apaga el loader en el .asset pero NO refresca la cache runtime
+    /// (activeLoaders) que lee BuildHelperUtils.HasActiveLoader -- con esa cache stale (o
+    /// incluso sin ella) el hook interno del paquete OpenXR (MetaQuestFeatureBuildHooks)
+    /// puede seguir escribiendo xr-keyboard-overlay-enabled=1 (y otros flags xr-*) en
+    /// boot.config, y el teclado Android no abre en el dispositivo. Se probo primero
+    /// deshabilitar MetaQuestFeature.enabled en memoria durante el build (cinturon y
+    /// tiradores) pero NO fue confiable: el paquete relee/persiste su propio estado en
+    /// momentos que este script no controla, y el APK real seguia saliendo con el flag --
+    /// peor, el intento dirteaba "Assets/XR/Settings/OpenXR Package Settings.asset" a disco.
+    /// Via determinista adoptada: TabletBootConfigPatcher (IPostGenerateGradleAndroidProject,
+    /// ver ese archivo) borra los flags xr-* del boot.config YA GENERADO, despues de
+    /// cualquier escritor, gateado por IsTabletBuildInProgress. (2) el driver Vulkan de
+    /// tablets Unisoc/Mali baratas (ej. PHILCO) no presenta frames (pantalla negra
+    /// silenciosa); el proyecto es Vulkan-only en Android porque el visor Quest lo necesita,
+    /// asi que este script fuerza GraphicsAPI OpenGLES3 SOLO para el build de la tablet y
+    /// restaura Vulkan siempre despues.
     ///
     /// Uso:
     ///   - Menu: Simulador > Build Tablet (Android)
@@ -75,6 +95,11 @@ namespace Simulador.EditorTools
             AndroidPlatformIconKind.Adaptive,
         };
 
+        // Gate para TabletBootConfigPatcher (IPostGenerateGradleAndroidProject): true SOLO
+        // durante el try de BuildTablet(), para que el patcher no toque nada en un build del
+        // visor (loader OpenXR ON a proposito). Ver TabletBootConfigPatcher.cs.
+        internal static bool IsTabletBuildInProgress;
+
         [MenuItem("Simulador/Build Tablet (Android)")]
         public static void BuildTabletMenu()
         {
@@ -102,6 +127,20 @@ namespace Simulador.EditorTools
 
             var manager = GetAndroidXrManager();
             var savedLoaders = manager != null ? GetLoaders(manager) : null;
+            // TrySetLoaders (API publica de XR Management) SI sincroniza la cache runtime
+            // (activeLoaders) que lee BuildHelperUtils.HasActiveLoader -- a diferencia de
+            // SetLoaders (SerializedObject), que solo toca el .asset. Se necesita como
+            // List<XRLoader> para esa API (los saved loaders de arriba son Object).
+            var savedXrLoaders = savedLoaders?.Select(o => o as XRLoader).ToList();
+
+            // GraphicsAPI de Android SOLO para este build: el driver Vulkan de tablets
+            // Unisoc/Mali baratas (ej. PHILCO) no presenta frames (swapchain muerto en
+            // silencio -> pantalla negra), verificado empiricamente con un build
+            // experimental en OpenGLES3 (renderiza bien). El proyecto es Vulkan-only en
+            // Android porque el visor Quest lo necesita -- no se puede tocar ese default
+            // global, solo pisarlo durante el build de la tablet y restaurarlo siempre.
+            bool savedUseDefaultGraphicsApis = PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android);
+            GraphicsDeviceType[] savedGraphicsApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
 
             // P6.7: guardar el identifier/nombre ANTES de tocarlos (mismo momento que
             // los loaders XR) para poder restaurarlos pase lo que pase.
@@ -118,9 +157,28 @@ namespace Simulador.EditorTools
 
             try
             {
-                // Apagar XR para Android: vaciar la lista de loaders.
+                // Gate de TabletBootConfigPatcher: solo actua mientras este build de
+                // tablet esta en curso (ver ese archivo y el campo mas arriba).
+                IsTabletBuildInProgress = true;
+
+                // Apagar XR para Android: vaciar la lista de loaders. SetLoaders es lo que
+                // gatea el empaquetado de libs; TrySetLoaders ademas sincroniza la cache
+                // runtime para que el gate IsExtensionEnabled no la lea stale (gotcha del
+                // teclado, ver <summary> y docs/builds-deploy.md). El borrado determinista
+                // de los flags xr-* remanentes en boot.config lo hace TabletBootConfigPatcher
+                // despues de generado el proyecto Gradle.
                 if (manager != null)
+                {
                     SetLoaders(manager, new List<Object>());
+                    if (!manager.TrySetLoaders(new List<XRLoader>()))
+                        Debug.LogWarning("[TabletBuild] TrySetLoaders(vacio) devolvio false; " +
+                                         "la cache runtime del loader XR puede quedar stale.");
+                }
+
+                // GLES3 solo para la tablet (driver Vulkan roto en Unisoc/Mali baratas,
+                // ver <summary>); el visor Quest sigue Vulkan-only.
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { GraphicsDeviceType.OpenGLES3 });
 
                 // Identifier propio de la tablet: sin esto, el APK sale con
                 // com.simulador.vr (el del visor) y no pueden convivir instalados en
@@ -170,11 +228,20 @@ namespace Simulador.EditorTools
             }
             finally
             {
-                // Restaurar SIEMPRE los loaders XR, el identifier/nombre y el icono
-                // originales (el proyecto vuelve a quedar configurado para el visor,
-                // Quest intacto).
+                IsTabletBuildInProgress = false;
+
+                // Restaurar SIEMPRE los loaders XR (.asset + cache runtime), el
+                // GraphicsAPI, el identifier/nombre y el icono originales (el proyecto
+                // vuelve a quedar configurado para el visor, Quest intacto).
                 if (manager != null)
+                {
                     SetLoaders(manager, savedLoaders);
+                    if (!manager.TrySetLoaders(savedXrLoaders))
+                        Debug.LogWarning("[TabletBuild] TrySetLoaders(restaurar) devolvio false; " +
+                                         "revisar Project Settings > XR Plug-in Management > Android.");
+                }
+                PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, savedGraphicsApis);
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, savedUseDefaultGraphicsApis);
                 PlayerSettings.SetApplicationIdentifier(androidTarget, savedApplicationIdentifier);
                 PlayerSettings.productName = savedProductName;
                 foreach (var kind in AndroidIconKinds)
