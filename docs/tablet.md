@@ -499,6 +499,67 @@ TabletController.Start()
   `override_params` (misma vía persistente que "Ajuste fino": sobreviven updates). El botón
   Lente abre un overlay con la lista de lentes y **elección de ojo (Ambos/OD/OI)** antes de
   `apply_lens` (`ApplyLensTo(lensId, eye)`, extraído de `OnLensSelected`).
+- **Layout Standard: stream 100% de pantalla + barra/carrusel como overlays flotantes
+  (pedido explícito del clínico tras validar P7 en dispositivo)** → antes `BuildStandardScreen`
+  apilaba todo en una columna vertical (`StdCol`, `VerticalLayoutGroup`): la barra superior y el
+  carrusel se llevaban franjas fijas de layout (56 px / 106 px) y el `StdStreamRow` quedaba
+  apretado en el espacio restante, sin llenar la pantalla. Ahora `StdStreamRow` es hijo directo
+  de `_standardScreen` con `Stretch()` explícito (0,0→1,1, sin `StdCol` de por medio: se eliminó
+  esa columna) y `StdTopBar`/`StdCarousel`/`StdSliderPanel` son overlays anclados con los
+  helpers nuevos `PinTop`/`PinBottom` (mismo idiom que `Stretch`/`PinTopRight`: anchors
+  stretch-en-un-eje + `sizeDelta` negativo para el margen lateral) — flotan ENCIMA del stream en
+  vez de reservarle espacio. Orden de creación = orden de hermanos = orden de dibujado:
+  `StdStreamRow` → `StdTopBar` → `StdCarousel` → `StdSliderPanel` → `StdLensOverlay`
+  (`BuildStandardLensOverlay`, ya se llamaba al final): el slider grande del ícono y el overlay
+  de Lente siguen dibujándose por encima de todo porque se crean DESPUÉS de la barra/carrusel.
+  **Fondo translúcido de los overlays** (`OverlaySurface`, helper nuevo): reusa el color
+  `Surface` de la paleta activa (el mismo que ya usaba `StdSliderPanel` opaco, o `HeaderBar` del
+  modo Pro) con alfa fijo en 0.6 — a diferencia de `BtnStyle.Overlay`/`LabelKind.StreamChip`
+  (deliberadamente NO tematizados, fill fijo, pensados para un control aislado sobre video), la
+  barra/carrusel SÍ deben coherer con el tema oscuro/claro de la app (son paneles de chrome, no
+  un botón suelto sobre el frame), así que `OverlaySurface` sigue registrado vía
+  `_kit.Panel`/`Register` y se retematiza en caliente igual que cualquier otro panel. Son
+  tocables: `_kit.Panel` crea un `Image` de fondo con `raycastTarget` default `true`, así que un
+  tap sobre la franja de la barra/carrusel lo consume ahí (no llega al stream de atrás) y los
+  botones/ícono hijos siguen recibiendo el tap por delante (mismo patrón ya usado en `HeaderBar`
+  del modo Pro, que también es un `Panel` con botones adentro).
+  **Aspect fill sin deformar (crop/"envelope"), NO el `FitInParent` de siempre**:
+  `MakeStreamView` (compartido con el panel normal y `BuildFullscreenStream`) ganó un parámetro
+  `envelope` (default `false`, sin tocar Pro/fullscreen). Con `envelope: true` (solo los 2 panes
+  de `BuildStandardScreen`) el `AspectRatioFitter` usa `AspectMode.EnvelopeParent` en vez de
+  `FitInParent`: en vez de encajar DENTRO del área disponible (deja franjas vacías, "letterbox"),
+  la imagen CRECE hasta cubrir el área por completo recortando lo que sobra (típicamente
+  arriba/abajo, según el aspecto del área vs. el 4:3 del stream) — el `RawImage` sigue centrado
+  (`anchorMin/anchorMax/pivot = 0.5,0.5`, sin tocar) así que el recorte es simétrico. Como
+  `EnvelopeParent` agranda el `RawImage` más allá del rect de su "wrap", hace falta un
+  `RectMask2D` en ese `wrap` (agregado solo si `envelope`) para que el recorte sea real y la
+  imagen no se salga a pisar el pane/label vecino — sin el mask, `EnvelopeParent` sin más
+  simplemente dibuja fuera de los bounds.
+  **Reusa `MakeStreamView`, no lo duplica** (minimal footprint): el modo Pro no tenía un
+  mecanismo de "cover" hecho — no había nada equivalente en `BuildFullscreenStream` para reusar
+  tal cual (ese overlay usa `FitInParent` a propósito, ver Decisiones "Bug corregido: panes
+  chicos..."); se extendió el factory compartido con un parámetro opcional en vez de escribir un
+  segundo método paralelo.
+  **Chips de pane fuera del flow (`FloatStdPaneChip`)**: los labels "OD — ..."/"Ambos ojos — ..."
+  salieron del `VerticalLayoutGroup` del pane (`LayoutElement.ignoreLayout`) para que el stream
+  ocupe el pane COMPLETO, y quedaron anclados justo debajo de la barra superior flotante
+  (offset `topMargin + topBarH + 8`) — antes se dibujaban en la misma franja que los botones de
+  la barra y se superponían (visto en dual-pane en dispositivo). `raycastTarget = false`: flotan
+  sobre el stream y no deben consumir toques. **Gotcha de orden de dibujado**: el chip se crea
+  ANTES que el `StreamWrap` (orden histórico del código), y con `ignoreLayout` ambos se
+  superponen — sin un `SetAsLastSibling()` DESPUÉS de crear el stream, el stream tapa al chip
+  (visto en dispositivo en la v0.4.0: el chip "desaparecía").
+- **"Salir" en Standard NO cierra la app (postmortem)**: en validación sobre dispositivo se
+  observó (dos veces) un `Application.Quit()` disparado por un camino de UI no intencional
+  estando en Standard — con un toque en medio del stream y con el "Cerrar" del overlay
+  fullscreen del Pro re-abierto por una restauración de estado tras reconexión. La simulación
+  por raycast en el Editor (pantalla Standard + slider abierto, `EventSystem.RaycastAll` en el
+  punto exacto del tap) mostró que el stream consume el toque sin handler, así que el camino
+  exacto no se pudo reproducir fuera del dispositivo. Mitigación determinista en dos partes:
+  (1) el "Salir" de la barra Standard ahora hace `OnDisconnectPressed` (desconecta y vuelve al
+  discovery) — el único `Application.Quit` de la app queda en el "Salir" de la ConnectScreen,
+  donde es inofensivo; (2) `OpenFullscreenStream()` tiene guard: con `_standardScreen` activo
+  no abre (Standard ya ES fullscreen; cubre la restauración rota post-reconexión).
 - **Modo Pro** (UI actual) suma: **gating por procedencia** — en lentes que NO son propias
   (base/genéricas) el "Ajuste fino" solo muestra `ParamMeta.STANDARD_PARAMS`; en lentes propias
   (`origen=="custom"`) muestra todo + botones "Guardar en la lente" (`update_lens` con los

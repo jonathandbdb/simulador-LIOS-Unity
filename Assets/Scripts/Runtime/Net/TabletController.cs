@@ -728,7 +728,15 @@ namespace Simulador.Tablet
             }
         }
 
-        private void OpenFullscreenStream() => _fullscreenStream.SetActive(true);
+        // El overlay fullscreen es del modo Pro: en Standard el stream ya ES
+        // fullscreen y este overlay encima solo confunde. El guard cubre el caso
+        // observado en dispositivo de una restauracion de estado tras reconexion
+        // que lo re-abria sobre la pantalla Standard (ver docs/tablet.md).
+        private void OpenFullscreenStream()
+        {
+            if (_standardScreen != null && _standardScreen.activeSelf) return;
+            _fullscreenStream.SetActive(true);
+        }
 
         private void CloseFullscreenStream() => _fullscreenStream?.SetActive(false);
 
@@ -1746,6 +1754,53 @@ namespace Simulador.Tablet
         // Modo Standard (P7): stream a pantalla completa + barra superior
         // (escenarios / lente->ojo / salir) + carrusel de 5 parametros
         // ============================================================
+        // Fondo semi-transparente para los overlays del modo Standard (barra superior
+        // y carrusel) que flotan sobre el stream a pantalla completa: mismo color de
+        // panel (Surface) que ya usa el kit para paneles opacos (StdSliderPanel,
+        // Card, HeaderBar...), con alpha ~0.6 para mantener legible el stream detras.
+        // Se pasa como delegado a _kit.Panel asi que sigue registrado via Register:
+        // se retematiza en caliente (oscuro/claro) igual que cualquier otro widget.
+        private static Color OverlaySurface(TabletPalette p) => new Color(p.Surface.r, p.Surface.g, p.Surface.b, 0.6f);
+
+        // Ancla un overlay de ancho completo (menos margen lateral simetrico) al
+        // borde superior/inferior de la pantalla con altura fija -- lo usan
+        // StdTopBar/StdCarousel/StdSliderPanel de BuildStandardScreen, que ya no
+        // cuelgan de un ancestro con LayoutGroup que los dimensione (mismo motivo
+        // que Stretch/PinTopRight mas abajo).
+        private static void PinTop(RectTransform rt, float height, float marginSide, float marginTop)
+        {
+            rt.anchorMin = new Vector2(0f, 1f); rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(-2f * marginSide, height);
+            rt.anchoredPosition = new Vector2(0f, -marginTop);
+        }
+
+        private static void PinBottom(RectTransform rt, float height, float marginSide, float marginBottom)
+        {
+            rt.anchorMin = new Vector2(0f, 0f); rt.anchorMax = new Vector2(1f, 0f);
+            rt.pivot = new Vector2(0.5f, 0f);
+            rt.sizeDelta = new Vector2(-2f * marginSide, height);
+            rt.anchoredPosition = new Vector2(0f, marginBottom);
+        }
+
+        // Chip de pane del Standard ("OD — ...", "Ambos ojos — ..."): fuera del
+        // flow del VerticalLayoutGroup del pane (LayoutElement.ignoreLayout) para
+        // que el stream ocupe el pane COMPLETO, y anclado justo debajo de la barra
+        // superior flotante para no superponerse con sus botones (bug cosmetico
+        // visto en dual-pane). raycastTarget off: flota sobre el stream y no debe
+        // consumir toques.
+        private static void FloatStdPaneChip(TMP_Text chip, float topOffset)
+        {
+            chip.raycastTarget = false;
+            var le = chip.gameObject.AddComponent<LayoutElement>();
+            le.ignoreLayout = true;
+            var rt = chip.rectTransform;
+            rt.anchorMin = new Vector2(0f, 1f); rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, 26f);
+            rt.anchoredPosition = new Vector2(0f, -topOffset);
+        }
+
         private void BuildStandardScreen(Transform parent)
         {
             _standardScreen = new GameObject("StandardScreen", typeof(RectTransform));
@@ -1759,13 +1814,43 @@ namespace Simulador.Tablet
             Stretch(bg.GetComponent<RectTransform>());
             bg.GetComponent<Image>().color = Color.black;
 
-            var col = _kit.Box(_standardScreen.transform, "StdCol", true, 10,
-                new RectOffset(16, 16, 12, 12), expandW: true, expandH: true);
-            Stretch(col);
+            // Medidas de los overlays flotantes (topBar/carrusel/slider) -- ver
+            // PinTop/PinBottom arriba.
+            const float margin = 16f, topBarH = 56f, topMargin = 12f;
+            const float carouselH = 106f, carouselMargin = 12f, sliderGap = 10f, sliderH = 96f;
 
-            // ---- Barra superior: escenarios | lente | salir ----
-            var topBar = _kit.Box(col, "StdTopBar", false, 8, null, expandW: true);
-            _kit.Size(topBar, minH: 56, flexH: 0);
+            // ---- Stream a pantalla completa (0,0->1,1): pedido del clinico de
+            // aprovechar toda la pantalla de la tablet (ver docs/tablet.md P7/
+            // Standard). Barra superior y carrusel pasan a flotar ENCIMA como
+            // overlays translucidos en vez de reservarle franjas de layout -- este
+            // _kit.Box necesita Stretch() explicito porque ya no cuelga de un
+            // ancestro con LayoutGroup que lo dimensione (mismo gotcha de
+            // FullscreenRow, ver Decisiones en docs/tablet.md).
+            var streamRow = _kit.Box(_standardScreen.transform, "StdStreamRow", false, 0, null, expandW: true, expandH: true);
+            Stretch(streamRow);
+            // OD-primero (convencion clinica, ver docs/tablet.md): el pane derecho
+            // se crea antes para quedar a la izquierda del StdStreamRow horizontal.
+            _stdRightPane = _kit.Box(streamRow, "StdRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
+            _kit.Size(_stdRightPane.GetComponent<RectTransform>(), flexW: 1);
+            _stdRightLabel = _kit.Label(_stdRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            FloatStdPaneChip(_stdRightLabel, topMargin + topBarH + 8f);
+            _stdStreamRight = MakeStreamView(_stdRightPane.transform, envelope: true);
+            // El chip flota SOBRE el stream: al frente en el orden de hermanos, si no
+            // el StreamWrap (creado despues) lo tapa (visto en dispositivo, v0.4.0).
+            _stdRightLabel.transform.SetAsLastSibling();
+            _stdRightPane.SetActive(false);
+            var stdLeftPane = _kit.Box(streamRow, "StdLeftPane", true, 6, null, expandW: true, expandH: false);
+            _kit.Size(stdLeftPane, flexW: 1);
+            _stdLeftLabel = _kit.Label(stdLeftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            FloatStdPaneChip(_stdLeftLabel, topMargin + topBarH + 8f);
+            _stdStreamLeft = MakeStreamView(stdLeftPane, envelope: true);
+            _stdLeftLabel.transform.SetAsLastSibling();
+
+            // ---- Barra superior: escenarios | lente | salir (overlay flotante
+            // sobre el stream, fondo semi-transparente -- ver OverlaySurface) ----
+            var topBar = _kit.Panel(_standardScreen.transform, "StdTopBar", OverlaySurface, 14, false, 8,
+                new RectOffset(14, 14, 0, 0));
+            PinTop(topBar, topBarH, margin, topMargin);
             topBar.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
             _stdScenarioList = _kit.Box(topBar, "StdScenarios", false, 6, null, expandW: false);
             _kit.Spacer(topBar, 0, true);
@@ -1774,25 +1859,35 @@ namespace Simulador.Tablet
             lensBtn.OnClick = OpenStandardLensOverlay;
             var exitBtn = _kit.Button(topBar, "Salir", BtnStyle.Neutral, false, 48, 15);
             _kit.Size(exitBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
-            exitBtn.OnClick = Application.Quit;
+            // "Salir" en Standard desconecta y vuelve al discovery (ConnectScreen),
+            // NO cierra la app: en dispositivo se observo un Application.Quit
+            // disparado por un camino de UI no intencional en esta pantalla
+            // (postmortem en docs/tablet.md). Sin Quit aca, ningun toque en
+            // Standard puede matar la app en medio de una consulta; salir de la
+            // app queda solo en el Salir de la ConnectScreen.
+            exitBtn.OnClick = OnDisconnectPressed;
 
-            // ---- Stream (OD-primero, misma convencion que FullscreenStream) ----
-            var streamRow = _kit.Box(col, "StdStreamRow", false, 14, null, expandW: true, expandH: true);
-            _kit.Size(streamRow, flexH: 1);
-            _stdRightPane = _kit.Box(streamRow, "StdRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
-            _kit.Size(_stdRightPane.GetComponent<RectTransform>(), flexW: 1);
-            _stdRightLabel = _kit.Label(_stdRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
-            _kit.Size(_stdRightLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
-            _stdStreamRight = MakeStreamView(_stdRightPane.transform);
-            _stdRightPane.SetActive(false);
-            var stdLeftPane = _kit.Box(streamRow, "StdLeftPane", true, 6, null, expandW: true, expandH: false);
-            _kit.Size(stdLeftPane, flexW: 1);
-            _stdLeftLabel = _kit.Label(stdLeftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
-            _kit.Size(_stdLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
-            _stdStreamLeft = MakeStreamView(stdLeftPane);
+            // ---- Carrusel de iconos circulares (overlay flotante, mismo fondo) ----
+            var carousel = _kit.Panel(_standardScreen.transform, "StdCarousel", OverlaySurface, 14, false, 16,
+                new RectOffset(14, 14, 0, 0));
+            PinBottom(carousel, carouselH, margin, carouselMargin);
+            carousel.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleCenter;
+            _stdIcons.Clear();
+            foreach (var (key, label) in StandardCarousel)
+            {
+                string k = key;
+                var btn = _kit.CircleIcon(carousel, "Icon_" + key, out var ring, out var glyph);
+                BuildStandardGlyph(k, glyph);
+                btn.OnClick = () => OnStandardIconPressed(k);
+                _stdIcons[k] = (btn, ring);
+            }
 
-            // ---- Panel del slider (visible al seleccionar un icono) ----
-            var sliderPanel = _kit.Panel(col, "StdSliderPanel", p => p.Surface, 14, true, 4, new RectOffset(0, 0, 0, 0));
+            // ---- Panel del slider (visible al seleccionar un icono): se crea
+            // DESPUES de topBar/carousel para seguir dibujandose por encima de
+            // ambos (punto 4 del pedido), flotando justo arriba del carrusel. Su
+            // fondo opaco (p => p.Surface) no se toca -- ya se dibujaba encima del
+            // contenido antes de este cambio.
+            var sliderPanel = _kit.Panel(_standardScreen.transform, "StdSliderPanel", p => p.Surface, 14, true, 4, new RectOffset(0, 0, 0, 0));
             _stdSliderPanel = sliderPanel.gameObject;
             var spCol = _kit.Box(sliderPanel, "StdSliderCol", true, 4, new RectOffset(18, 18, 10, 10), expandW: true);
             Stretch(spCol);
@@ -1812,22 +1907,8 @@ namespace Simulador.Tablet
             _stdAxisValue = _kit.Label(axHeader, "", LabelKind.Value, TextAlignmentOptions.Right);
             _stdAxisSlider = _kit.Slider(_stdAxisRow.transform);
             _stdAxisSlider.onValueChanged.AddListener(OnStandardAxisChanged);
-            _kit.Size(sliderPanel, minH: 96, flexH: 0);
+            PinBottom(sliderPanel, sliderH, margin, carouselMargin + carouselH + sliderGap);
             _stdSliderPanel.SetActive(false);
-
-            // ---- Carrusel de iconos circulares ----
-            var carousel = _kit.Box(col, "StdCarousel", false, 16, null, expandW: true);
-            _kit.Size(carousel, minH: 106, flexH: 0);
-            carousel.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleCenter;
-            _stdIcons.Clear();
-            foreach (var (key, label) in StandardCarousel)
-            {
-                string k = key;
-                var btn = _kit.CircleIcon(carousel, "Icon_" + key, out var ring, out var glyph);
-                BuildStandardGlyph(k, glyph);
-                btn.OnClick = () => OnStandardIconPressed(k);
-                _stdIcons[k] = (btn, ring);
-            }
 
             BuildStandardLensOverlay();
         }
@@ -2237,18 +2318,26 @@ namespace Simulador.Tablet
         // Vista de stream por ojo: contenedor flexible (lo dimensiona la columna) con
         // un RawImage que se ajusta dentro preservando el aspecto 4:3 del visor (sin
         // distorsion / sin estirar). El placeholder oscuro = "sin señal".
-        private RawImage MakeStreamView(Transform pane)
+        // envelope=true (modo Standard, ver BuildStandardScreen): en vez de encajar
+        // DENTRO del area disponible (FitInParent, deja franjas vacias arriba/abajo
+        // o a los costados), la imagen CRECE hasta cubrirla por completo
+        // (AspectRatioFitter.EnvelopeParent) recortando lo que sobra -- por eso el
+        // "wrap" necesita un RectMask2D: sin el, el RawImage agrandado se saldria de
+        // su rect y pisaria el pane/label vecino. Panel normal y FullscreenStream NO
+        // pasan este parametro: siguen con FitInParent de siempre (no se tocan).
+        private RawImage MakeStreamView(Transform pane, bool envelope = false)
         {
             var wrap = new GameObject("StreamWrap", typeof(RectTransform));
             wrap.transform.SetParent(pane, false);
             _kit.Size(wrap.GetComponent<RectTransform>(), flexW: 1, flexH: 1);
+            if (envelope) wrap.AddComponent<RectMask2D>();
             var img = _kit.RawImage(wrap.transform);
             img.color = new Color(0.03f, 0.04f, 0.06f, 1f);
             var rt = img.rectTransform;
             rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
             rt.pivot = new Vector2(0.5f, 0.5f);
             var arf = img.gameObject.AddComponent<AspectRatioFitter>();
-            arf.aspectMode = AspectRatioFitter.AspectMode.FitInParent;
+            arf.aspectMode = envelope ? AspectRatioFitter.AspectMode.EnvelopeParent : AspectRatioFitter.AspectMode.FitInParent;
             arf.aspectRatio = 768f / 576f;
             return img;
         }
