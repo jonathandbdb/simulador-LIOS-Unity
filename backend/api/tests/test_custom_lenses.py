@@ -211,6 +211,113 @@ def test_lens_params_validation(client):
 
 
 # ---------------------------------------------------------------------------
+# P7.1: edicion de lentes BASE del catalogo por un admin (PUT/DELETE con un
+# lens_id que no esta en custom_lenses pero SI en el catalogo base activo).
+# Estos tests van ANTES de `test_lenses_merge_skips_base_id_collision` (mas
+# abajo) a proposito: ese test inserta a mano una CustomLens cuyo lens_id
+# colisiona con el id de la PRIMERA lente base — si corriera antes, el
+# lookup por lens_id de estos tests encontraria esa fila stray en vez de
+# caer a la rama de lente base. pytest colecciona en orden de definicion
+# dentro de un mismo archivo (sin plugin de randomizacion en este repo), asi
+# que la posicion en el archivo alcanza como garantia.
+# ---------------------------------------------------------------------------
+def test_admin_edit_base_lens_versions_and_history(client):
+    from app.database import engine
+    from app.models import LensCatalog
+    from sqlmodel import Session, select as sql_select
+
+    def _active_raw_version():
+        # Version RAW de LensCatalog (no la fingerprint mergeada que GET
+        # /api/lenses expone, que puede llevar "+xHASH" si ya hay
+        # genericas creadas por otros tests de este mismo archivo).
+        with Session(engine) as s:
+            cat = s.exec(
+                sql_select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+            ).first()
+            return cat.version
+
+    _add_device("DEV_BASE_ADM", app_mode="pro", is_admin=True)
+    base = client.get("/api/lenses").json()
+    base_lens = base["catalogo"][0]
+    base_id = base_lens["id"]
+    assert "origen" not in base_lens  # confirma que es una lente BASE, no un extra
+    base_version = _active_raw_version()
+
+    some_key = next(iter(base_lens["params"]))
+    params_v1 = dict(base_lens["params"])
+    spec_v1 = dict(params_v1[some_key])
+    spec_v1["default"] = spec_v1["min"]
+    params_v1[some_key] = spec_v1
+
+    r = client.put(f"/api/lenses/custom/{base_id}", json={
+        "device_id": "DEV_BASE_ADM",
+        "nombre": base_lens["nombre"] + " v2",
+        "descripcion": base_lens["descripcion"],
+        "params": params_v1,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert body["lens"]["id"] == base_id
+    assert body["lens"]["nombre"] == base_lens["nombre"] + " v2"
+    assert "origen" not in body["lens"]
+    v1 = f"{base_version}.a1"
+    assert _active_raw_version() == v1
+    # catalog_version es la version MERGEADA para ese device: arranca con
+    # v1, puede llevar "+xHASH" si ya hay genericas (de otros tests).
+    assert body["catalog_version"].startswith(v1)
+
+    # El cambio se sirve por GET /api/lenses con la version .a1 activa.
+    merged = client.get("/api/lenses").json()
+    assert merged["version"].startswith(v1)
+    edited = next(l for l in merged["catalogo"] if l["id"] == base_id)
+    assert edited["nombre"] == base_lens["nombre"] + " v2"
+    assert edited["params"][some_key]["default"] == spec_v1["min"]
+    assert "origen" not in edited
+
+    # La fila vieja NUNCA se toca: sigue en BD, solo desactivada (historial/rollback).
+    with Session(engine) as s:
+        old = s.exec(sql_select(LensCatalog).where(LensCatalog.version == base_version)).first()
+        assert old is not None and old.is_active is False
+
+    # Segunda edicion: encadena a .a2 (raiz de "{base}.a1" sigue siendo
+    # "{base}"), NUNCA ".a1.a1".
+    params_v2 = dict(params_v1)
+    spec_v2 = dict(params_v2[some_key])
+    spec_v2["default"] = spec_v2["max"]
+    params_v2[some_key] = spec_v2
+    r = client.put(f"/api/lenses/custom/{base_id}", json={
+        "device_id": "DEV_BASE_ADM",
+        "nombre": base_lens["nombre"] + " v3",
+        "descripcion": base_lens["descripcion"],
+        "params": params_v2,
+    })
+    assert r.status_code == 200
+    v2 = f"{base_version}.a2"
+    assert _active_raw_version() == v2
+    assert r.json()["catalog_version"].startswith(v2)
+    assert client.get("/api/lenses").json()["version"].startswith(v2)
+
+
+def test_edit_base_lens_requires_admin(client):
+    _add_device("DEV_BASE_PRO", app_mode="pro", is_admin=False)
+    base_id = client.get("/api/lenses").json()["catalogo"][0]["id"]
+    r = client.put(f"/api/lenses/custom/{base_id}", json={
+        "device_id": "DEV_BASE_PRO", "nombre": "Hackeada", "descripcion": "", "params": VALID_PARAMS,
+    })
+    assert r.status_code == 403
+    assert r.json()["reason"] == "NOT_ADMIN"
+
+
+def test_delete_base_lens_forbidden_even_for_admin(client):
+    _add_device("DEV_BASE_DEL", app_mode="pro", is_admin=True)
+    base_id = client.get("/api/lenses").json()["catalogo"][0]["id"]
+    r = client.delete(f"/api/lenses/custom/{base_id}", params={"device_id": "DEV_BASE_DEL"})
+    assert r.status_code == 403
+    assert r.json()["reason"] == "BASE_LENS"
+
+
+# ---------------------------------------------------------------------------
 # Merge y versionado de GET /api/lenses
 # ---------------------------------------------------------------------------
 def test_lenses_merge_and_versioning(client):

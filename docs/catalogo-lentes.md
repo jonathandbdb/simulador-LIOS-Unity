@@ -356,6 +356,26 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 - Gotcha: un device suspendido/vencido sincroniza como anónimo ⇒ sus customs desaparecen del
   cache local hasta reactivarlo (decisión deliberada, no bug).
 
+## P7.1: edición de lentes BASE por un admin (nota de contrato)
+
+- Un visor **admin** ahora puede EDITAR una lente BASE (monofocal/panoptix/vivity) desde la
+  tablet — el cambio se persiste en el backend (`PUT /api/lenses/custom/{lens_id}` con el
+  `id` de una lente base en vez de un `custom_xxxxxxxx`/`generic_xxxxxxxx`) y queda visible
+  para TODOS los devices en el próximo sync. Las bases **nunca se borran** (`DELETE` sobre
+  un id de base rechaza siempre con `reason:"BASE_LENS"`, ver `docs/backend.md` §P7.1).
+  **El schema JSON del contrato NO cambia**: la lente editada se sigue sirviendo con la
+  misma forma `{id, nombre, descripcion, params}` y SIN campo `origen` (sigue siendo una
+  lente base, no una custom/genérica) — `CatalogParser`/`CatalogModel` de Unity no
+  necesitan ningún cambio para esto.
+- **`defaults/lentes.json` y `Assets/StreamingAssets/lentes.json` pasan a ser "defaults de
+  fábrica", no la verdad viva**: a partir de P7.1, el catálogo realmente activo en un
+  backend en producción puede DIVERGIR de estos dos archivos si un admin editó una base
+  desde la tablet (versión `.aN`, ver `docs/backend.md` §P7.1) — el backend es quien manda
+  en runtime (`GET /api/lenses`), estos JSON siguen siendo el punto de partida para un
+  backend nuevo/reseteado y la base de comparación en diff/MD5 entre Unity y el repo, pero
+  ya no son garantía de "lo que el visor ve hoy" si el backend tiene ediciones de admin
+  encima.
+
 ## Pendientes / deuda
 
 - ~~Contrato compartido: `astig_magnitude`/`astig_axis_deg` aún no en `defaults/lentes.json`~~ —

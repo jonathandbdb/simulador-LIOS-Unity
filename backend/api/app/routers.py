@@ -11,6 +11,7 @@ Sprint 8 agregara /api/admin/* con JWT + CRUD completo.
 import hashlib
 import json
 import logging
+import re
 import secrets
 from datetime import date, datetime, timedelta
 from typing import Annotated, Literal
@@ -442,6 +443,101 @@ def _catalog_version_for(session: Session, device: Device | None) -> str:
     return _merged_version(base_version, extras)
 
 
+# ---------------------------------------------------------------------------
+# P7.1: edicion de lentes BASE del catalogo por un admin. La base nunca se
+# pisa in-place: PUT clona el catalogo activo en una version nueva `.aN` con
+# el cambio aplicado (rollback manual desde /admin/lenses activando la fila
+# vieja) y DELETE la rechaza siempre (ni siquiera un admin puede borrar una
+# base). El sufijo se calcula sobre la RAIZ de la version activa (sin un
+# `.aN` final, si ya tenia uno) para que ediciones encadenadas den .a1, .a2,
+# ... en vez de .a1.a1.
+# ---------------------------------------------------------------------------
+_VERSION_ROOT_RE = re.compile(r"^(.*?)(\.a(\d+))?$")
+
+
+def _version_root_and_suffix(version: str) -> tuple[str, int]:
+    m = _VERSION_ROOT_RE.match(version)
+    root = m.group(1) if m else version
+    suffix = int(m.group(3)) if m and m.group(3) else 0
+    return root, suffix
+
+
+def _next_admin_lens_version(session: Session, active_version: str) -> str:
+    """Siguiente version `.aN` para la raiz de `active_version`. N = mayor
+    sufijo existente (entre TODAS las filas de LensCatalog, activas o no,
+    con esa misma raiz) + 1; el while de colision es defensivo (no deberia
+    dispararse dado el calculo de N, mismo espiritu que el retry de
+    lens_id en create_custom_lens)."""
+    root, _ = _version_root_and_suffix(active_version)
+    existing = {c.version for c in session.exec(select(LensCatalog)).all()}
+    max_n = 0
+    for v in existing:
+        r, n = _version_root_and_suffix(v)
+        if r == root:
+            max_n = max(max_n, n)
+    n = max_n + 1
+    candidate = f"{root}.a{n}"
+    while candidate in existing:
+        n += 1
+        candidate = f"{root}.a{n}"
+    return candidate
+
+
+def _active_base_lens_index(catalog_data: dict, lens_id: str) -> int | None:
+    """Indice de `lens_id` dentro de `catalogo` del catalogo activo, o None."""
+    for i, lens in enumerate(catalog_data.get("catalogo", [])):
+        if lens.get("id") == lens_id:
+            return i
+    return None
+
+
+def _update_base_lens(session: Session, lens_id: str, body: CustomLensUpdate):
+    """Rama P7.1 de PUT /api/lenses/custom/{lens_id}: `lens_id` no es una
+    custom/generica pero coincide con una lente del catalogo BASE activo.
+    Solo un admin puede editarla (device efectivamente activo + is_admin,
+    mismo shape de rechazo que las genericas). La fila vieja de LensCatalog
+    NUNCA se toca — queda de historial/rollback en /admin/lenses."""
+    catalog = session.exec(
+        select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+    ).first()
+    if catalog is None:
+        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+    data = json.loads(catalog.data)
+    idx = _active_base_lens_index(data, lens_id)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+
+    device = _authorize_lens_write(session, body.device_id, need_admin=True)
+    if not isinstance(device, Device):
+        return device
+
+    new_data = json.loads(catalog.data)  # clon independiente para mutar
+    new_data["catalogo"][idx] = {
+        "id": lens_id,
+        "nombre": body.nombre,
+        "descripcion": body.descripcion,
+        "params": body.params,
+    }
+    new_version = _next_admin_lens_version(session, catalog.version)
+    new_data["version"] = new_version
+
+    catalog.is_active = False
+    session.add(catalog)
+    new_catalog = LensCatalog(
+        version=new_version,
+        data=json.dumps(new_data, ensure_ascii=False),
+        is_active=True,
+    )
+    session.add(new_catalog)
+    session.commit()
+
+    return {
+        "status": "ok",
+        "lens": dict(new_data["catalogo"][idx]),
+        "catalog_version": _catalog_version_for(session, device),
+    }
+
+
 @router.post("/lenses/custom", status_code=201)
 @limiter.limit("30/minute")
 def create_custom_lens(request: Request, body: CustomLensCreate, session: SessionDep):
@@ -512,8 +608,9 @@ def create_custom_lens(request: Request, body: CustomLensCreate, session: Sessio
 @router.put("/lenses/custom/{lens_id}")
 @limiter.limit("30/minute")
 def update_custom_lens(request: Request, lens_id: str, body: CustomLensUpdate, session: SessionDep):
-    """Edita una lente custom propia, o una generica si el device es admin.
-    Un Pro no-admin NO puede editar genericas (requisito de producto)."""
+    """Edita una lente custom propia, una generica (solo admin), o (P7.1)
+    una lente BASE del catalogo activo (solo admin — ver _update_base_lens).
+    Un Pro no-admin NO puede editar genericas ni bases (requisito de producto)."""
     err = _validate_lens_params(body.params)
     if err:
         raise HTTPException(status_code=422, detail=err)
@@ -522,7 +619,7 @@ def update_custom_lens(request: Request, lens_id: str, body: CustomLensUpdate, s
         select(CustomLens).where(CustomLens.lens_id == lens_id)
     ).first()
     if lens is None:
-        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+        return _update_base_lens(session, lens_id, body)
 
     is_generic = lens.owner_device_pk is None
     device = _authorize_lens_write(session, body.device_id, need_admin=is_generic)
@@ -549,12 +646,19 @@ def update_custom_lens(request: Request, lens_id: str, body: CustomLensUpdate, s
 @limiter.limit("30/minute")
 def delete_custom_lens(request: Request, lens_id: str, device_id: str, session: SessionDep):
     """Borra una lente custom propia, o una generica si el device es admin.
+    Las lentes BASE del catalogo NUNCA se borran (ni siquiera un admin,
+    P7.1) — devuelve 403 BASE_LENS sin importar quien lo pida.
     `device_id` va por query param (body en DELETE es antipatico para
     UnityWebRequest)."""
     lens = session.exec(
         select(CustomLens).where(CustomLens.lens_id == lens_id)
     ).first()
     if lens is None:
+        catalog = session.exec(
+            select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+        ).first()
+        if catalog is not None and _active_base_lens_index(json.loads(catalog.data), lens_id) is not None:
+            return _denied("BASE_LENS", "Las lentes base no se pueden eliminar.")
         raise HTTPException(status_code=404, detail="Lente no encontrada.")
 
     is_generic = lens.owner_device_pk is None

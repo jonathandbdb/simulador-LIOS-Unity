@@ -28,7 +28,7 @@ Stack: FastAPI 0.115 + uvicorn (Python 3.12), SQLModel, Postgres 16, MinIO, Cadd
 | `defaults/lentes.json` | Semilla del catálogo (v`0.5.1-clinical`, P6.9: rangos clínicos por foco — `foco_cerca_m` 0.15–1m, `foco_intermedio_m` 1–3m, `foco_lejos_m` 3–9m, antes 0–20 los tres —, 3 lentes: monofocal, panoptix, vivity; 13 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg`). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/MD5 en cada actualización). Detalle clínico de P6.9 (incluida la discrepancia deliberada con el texto descriptivo de panoptix/vivity) en `docs/catalogo-lentes.md`. |
 | `backend/.env.example` | Plantilla de `.env`: DOMAIN/SCHEME/PORT, PUBLIC_BASE_URL, POSTGRES_*, MINIO_*, S3_BUCKET, JWT_SECRET, ADMIN_DEFAULT_*, CORS_ORIGINS, LOG_LEVEL, LOG_RETENTION_DAYS (default 30). |
 | `backend/api/requirements-dev.txt` | Deps de test (`pytest`, `httpx`) además de `requirements.txt`. No se instala en la imagen de producción. |
-| `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit, persistencia de `last_apk_version` en device nuevo/existente y no-pisado con valor ausente/vacío), `test_admin_smoke.py` (login admin, aprobar/rechazar devices, smoke de `/admin/devices` mostrando `last_apk_version`), `test_admin_versions.py`, `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`), `test_log_retention.py` (`purge_old_logs` borra viejos y conserva recientes, throttle de `_maybe_purge_logs`, `POST /api/log` dispara la purga). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. **28 tests** al cerrar esta tarea (25 previos + 3 nuevos). |
+| `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit, persistencia de `last_apk_version` en device nuevo/existente y no-pisado con valor ausente/vacío), `test_admin_smoke.py` (login admin, aprobar/rechazar devices, smoke de `/admin/devices` mostrando `last_apk_version`), `test_admin_versions.py`, `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`), `test_log_retention.py` (`purge_old_logs` borra viejos y conserva recientes, throttle de `_maybe_purge_logs`, `POST /api/log` dispara la purga), `test_custom_lenses.py` (P7/P7.1: modo pro/admin, CRUD de lentes custom/genéricas y su matriz de autorización, merge/versionado de `GET /api/lenses`, panel `/admin/custom-lenses` y reemplazo de hardware, edición de lentes BASE por un admin con encadenado `.aN` y rechazo `BASE_LENS` en `DELETE` — ver P7.1 abajo; sus 3 tests nuevos de P7.1 se ubican ANTES de `test_lenses_merge_skips_base_id_collision` a propósito, ver comentario en el archivo). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. **47 tests** al cerrar P7.1 (44 previos + 3 nuevos). |
 
 ```
 Quest / Tablet ──HTTP──▶ caddy :8080/:443 ──▶ api :8000 ──▶ db (Postgres 16)
@@ -171,8 +171,38 @@ python -m pytest -v
   (`NOT_OWNER`) o admin para genéricas (`NOT_ADMIN` — un Pro NO puede tocar genéricas).
   Rechazos con shape de verify (`{status:"denied", reason, message}`): `DEVICE_NOT_FOUND`,
   `DEVICE_NOT_AUTHORIZED`, `MODE_NOT_PRO`, `NOT_ADMIN`, `NOT_OWNER`, `LENS_LIMIT_REACHED`
-  (topes 50/device, 100 genéricas, 409). Validación de params: ≤20 claves,
-  `min<=default<=max` numéricos.
+  (topes 50/device, 100 genéricas, 409), `BASE_LENS` (solo `DELETE`, ver P7.1 abajo).
+  Validación de params: ≤20 claves, `min<=default<=max` numéricos.
+- **(P7.1) Edición de lentes BASE por un admin.** `PUT /api/lenses/custom/{lens_id}` suma
+  una rama: si `lens_id` NO está en `custom_lenses` pero SÍ es el id de una lente del
+  catálogo BASE activo, un device efectivamente activo + `is_admin` puede editarla
+  (nombre/descripción/params, misma validación que una custom: ≤20 claves,
+  `min<=default<=max`; sin `is_admin` → 403 `NOT_ADMIN`, igual que las genéricas). La base
+  **nunca se pisa in-place**: la edición clona el catálogo activo entero en una fila NUEVA
+  de `LensCatalog` con una versión `.aN` automática y la activa — la fila vieja queda
+  desactivada pero **nunca se borra** (rollback manual desde `/admin/lenses`, botón
+  "Activar" sobre la versión anterior; verificado en vivo). Esquema de versión: `root =
+  versión activa sin sufijo ".aN" final` (regex `^(.*?)(\.a(\d+))?$`, en
+  `_version_root_and_suffix`); nueva versión = `{root}.a{N+1}` donde `N` es el mayor
+  sufijo existente **entre TODAS las filas de `LensCatalog`** (activas o no) con esa misma
+  raíz — así ediciones encadenadas dan `.a1`, `.a2`, ... y nunca `.a1.a1` (verificado en
+  vivo con dos `PUT` sucesivos sobre `monofocal`: `0.6.0-clinical` → `.a1` → `.a2`).
+  `DELETE /api/lenses/custom/{lens_id}` sobre un id de lente BASE devuelve **siempre** 403
+  `{status:"denied", reason:"BASE_LENS", message:"Las lentes base no se pueden
+  eliminar."}` — chequeado ANTES de evaluar el device (ni siquiera un admin puede
+  borrarla). El shape de respuesta del `PUT` (`{status, lens, catalog_version}`) es
+  idéntico al de una custom exitosa — visor/tablet no tocan su parsing. `POST` (crear) y
+  el merge de `GET /api/lenses` NO cambian: las bases siguen sin campo `origen` (la
+  edición admin muta el BLOB, no crea una fila `custom_lenses`).
+- **(P7.1) Trade-off del seed con versiones `.aN`**: `_seed_lens_catalog` solo reemplaza
+  el catálogo activo si su versión está en `_KNOWN_SEED_VERSIONS`; una versión `.aN` de
+  admin nunca está en esa lista (no se agrega a mano), así que queda protegida por
+  construcción — un release futuro que traiga un `defaults/lentes.json` nuevo **NO se
+  auto-promueve** mientras la activa sea una edición de admin (`.aN`); hay que activarlo a
+  mano desde `/admin/lenses` (mismo mecanismo de rollback de arriba). Verificado en vivo:
+  con el catálogo en `v0.6.0-clinical.a2`, un `docker compose restart api` logueó
+  `[seed] catalogo activo v0.6.0-clinical.a2 NO es seed conocido; se respeta. JSON del
+  repo (v0.6.0-clinical) ignorado.`
 - **Panel**: página nueva `/admin/custom-lenses` (listar/filtrar/borrar, params read-only);
   `devices_delete` borra las customs del device (cascade app-level + ON DELETE CASCADE; las
   genéricas nunca). **Reemplazo de hardware**: `POST /admin/devices/{pk}/replace` re-apunta
