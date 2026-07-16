@@ -196,12 +196,15 @@ def devices_create(
     if existing is not None:
         return _flash_redirect("/admin/devices", "Duplicate device_id", "error")
     now = utcnow()
+    normalized_mode = app_mode if app_mode in ("standard", "pro") else "standard"
     d = Device(
         device_id=device_id.strip(),
         name=name.strip(),
         status=status,
-        app_mode=app_mode if app_mode in ("standard", "pro") else "standard",
-        is_admin=bool(is_admin),  # checkbox: "on" si esta tildado, ausente si no
+        app_mode=normalized_mode,
+        # is_admin solo tiene sentido en modo pro (P7); la UI ya lo oculta en
+        # standard, pero esto es la regla de integridad real, no la UI.
+        is_admin=bool(is_admin) and normalized_mode == "pro",  # checkbox: "on" si esta tildado, ausente si no
         license_expiry=_parse_date(license_expiry),
         notes=notes.strip() or None,
         created_at=now,
@@ -227,7 +230,9 @@ def devices_edit(
     d.name = name.strip()
     d.status = status
     d.app_mode = app_mode if app_mode in ("standard", "pro") else "standard"
-    d.is_admin = bool(is_admin)
+    # is_admin solo tiene sentido en modo pro (P7); la UI ya lo oculta en
+    # standard, pero esto es la regla de integridad real, no la UI.
+    d.is_admin = bool(is_admin) and d.app_mode == "pro"
     d.license_expiry = _parse_date(license_expiry)
     d.updated_at = utcnow()
     session.add(d)

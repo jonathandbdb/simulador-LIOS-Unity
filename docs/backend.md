@@ -146,6 +146,13 @@ python -m pytest -v
 - **`Device` suma `app_mode`** (`"standard"|"pro"`, default standard) **e `is_admin`** (bool):
   editables en `/admin/devices` (select + checkbox, badges en el resumen). El verify OK los
   devuelve (`app_mode`/`is_admin`) — contrato en `docs/licenciamiento.md`.
+  **`is_admin` implica `pro`**: admin habilita crear lentes genéricas, algo que la UI standard
+  del visor ni expone — un standard+admin es un estado incoherente. La UI de `/admin/devices`
+  oculta el checkbox cuando el select está en standard (JS `syncAdminField`, lo destilda al
+  cambiar) y el server lo FUERZA en `devices_create`/`devices_edit`
+  (`is_admin = bool(form) and app_mode == "pro"`) — la regla de integridad vive en el server,
+  la UI es comodidad. El badge del resumen tampoco se muestra si el device no es pro (datos
+  pre-regla).
 - **Tabla `custom_lenses`** (migración `0004`): lentes creadas desde dispositivos.
   `owner_device_pk` es FK a `devices.id` (el PK int, NO el string `device_id`); **NULL = lente
   GENÉRICA** (visible para todos, solo admin). `lens_id` (`custom_xxxxxxxx`/`generic_xxxxxxxx`,

@@ -16,11 +16,11 @@
     </select>
     <input class="input" name="license_expiry" type="date" title="{{ t('dev.expiry_hint') }}" />
     <button class="btn btn-primary" type="submit">{{ t('dev.save') }}</button>
-    <select class="select" name="app_mode" title="{{ t('dev.app_mode') }}">
+    <select class="select" name="app_mode" title="{{ t('dev.app_mode') }}" onchange="syncAdminField(this, 'new-is-admin-field')">
       <option value="standard">{{ t('dev.app_mode.standard') }}</option>
       <option value="pro">{{ t('dev.app_mode.pro') }}</option>
     </select>
-    <label class="field row" style="align-items:center; gap:6px;">
+    <label class="field row hidden" id="new-is-admin-field" style="align-items:center; gap:6px;">
       <input type="checkbox" name="is_admin" />
       <span>{{ t('dev.is_admin') }}</span>
     </label>
@@ -58,7 +58,7 @@
         {% if d.status == 'rejected' %}<span class="badge badge-err">{{ t('dev.status.rejected') }}</span>{% endif %}
         {% if d.status == 'suspended' %}<span class="badge">{{ t('dev.status.suspended') }}</span>{% endif %}
         {% if d.app_mode == 'pro' %}<span class="badge badge-ok">{{ t('dev.app_mode.pro') }}</span>{% endif %}
-        {% if d.is_admin %}<span class="badge badge-warn">{{ t('dev.is_admin') }}</span>{% endif %}
+        {% if d.is_admin and d.app_mode == 'pro' %}<span class="badge badge-warn">{{ t('dev.is_admin') }}</span>{% endif %}
         {% if lens_counts.get(d.id) %}<span class="badge">{{ lens_counts.get(d.id) }} {{ t('dev.custom_lens_count') }}</span>{% endif %}
       </div>
       <div class="device-summary-meta hint xs">
@@ -101,12 +101,12 @@
         </label>
         <label class="field">
           <span>{{ t('dev.app_mode') }}</span>
-          <select form="edit-{{ d.id }}" class="select" name="app_mode">
+          <select form="edit-{{ d.id }}" class="select" name="app_mode" onchange="syncAdminField(this, 'is-admin-field-{{ d.id }}')">
             <option value="standard" {% if d.app_mode=='standard' %}selected{% endif %}>{{ t('dev.app_mode.standard') }}</option>
             <option value="pro"      {% if d.app_mode=='pro' %}selected{% endif %}>{{ t('dev.app_mode.pro') }}</option>
           </select>
         </label>
-        <label class="field row" style="align-items:center; gap:6px;">
+        <label class="field row {% if d.app_mode != 'pro' %}hidden{% endif %}" id="is-admin-field-{{ d.id }}" style="align-items:center; gap:6px;">
           <input form="edit-{{ d.id }}" type="checkbox" name="is_admin" {% if d.is_admin %}checked{% endif %} />
           <span>{{ t('dev.is_admin') }}</span>
         </label>
@@ -153,6 +153,20 @@
     var willOpen = body.classList.contains('hidden');
     body.classList.toggle('hidden', !willOpen);
     card.classList.toggle('open', willOpen);
+  }
+
+  // El checkbox "Admin" solo tiene sentido en modo Pro (P7): se oculta al
+  // elegir "standard" y, si estaba tildado, se destilda para no mandar un
+  // is_admin=on invisible en el submit (el server tambien lo normaliza).
+  function syncAdminField(selectEl, fieldId) {
+    var field = document.getElementById(fieldId);
+    if (!field) return;
+    var isPro = selectEl.value === 'pro';
+    field.classList.toggle('hidden', !isPro);
+    if (!isPro) {
+      var checkbox = field.querySelector('input[type="checkbox"]');
+      if (checkbox) checkbox.checked = false;
+    }
   }
 </script>
 {% endblock %}

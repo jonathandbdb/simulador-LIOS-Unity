@@ -318,6 +318,17 @@ def test_admin_device_mode_and_admin_flags_persist(client):
         d = s.exec(select(Device).where(Device.device_id == "DEV_PANEL")).first()
         assert d.app_mode == "standard" and d.is_admin is False
 
+    # Normalizacion (P7): is_admin solo tiene sentido en modo pro. Un submit
+    # manual con standard + checkbox tildado NO debe dejar admin en True
+    # (la UI oculta el checkbox, pero la regla de integridad vive aca).
+    r = client.post(f"/admin/devices/{pk}/edit", data={
+        "name": "Editado", "status": "active", "app_mode": "standard", "is_admin": "on",
+    }, follow_redirects=False)
+    assert r.status_code == 303
+    with Session(engine) as s:
+        d = s.exec(select(Device).where(Device.device_id == "DEV_PANEL")).first()
+        assert d.app_mode == "standard" and d.is_admin is False
+
 
 def test_admin_custom_lenses_page_and_delete(client):
     from app.database import engine
