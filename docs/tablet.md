@@ -4,10 +4,11 @@
 App Android plana (sin VR) que corre en la tablet del oftalmólogo: descubre el visor Quest en la
 red, se conecta por WebSocket, muestra en vivo lo que ve el paciente (stream por ojo) y permite
 aplicar lentes intraoculares, ajustar parámetros clínicos, simular astigmatismo, cambiar de
-escenario, ver el stream a pantalla completa, guardar/cargar presets de sesión y refrescar el
-catálogo en caliente (P5). Es la réplica fiel de `features/tablet/streaming_client.gd` del
-proyecto Godot original, con extensiones de flujo clínico propias del simulador. La comparación
-A/B (P5.1) se agregó y luego se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica.
+escenario, ver el stream a pantalla completa y refrescar el catálogo en caliente (P5). Es la
+réplica fiel de `features/tablet/streaming_client.gd` del proyecto Godot original, con
+extensiones de flujo clínico propias del simulador. La comparación A/B (P5.1) se agregó y luego
+se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica. Los presets de sesión
+(P5.2) tuvieron el mismo destino, ver Decisiones "Retiro de los presets de sesión".
 
 ## Arquitectura actual
 
@@ -19,12 +20,13 @@ A/B (P5.1) se agregó y luego se retiró (P6.8, ver Decisiones) — nunca se us�
 |---|---|
 | `Assets/Scripts/Runtime/Tablet/TabletSession.cs` (nuevo, P6.2) | **Capa de sesión/protocolo.** Plain C# (NO MonoBehaviour). Posee `WebSocketClient` + `DiscoveryListener`, el flujo de conexión/emparejamiento (PIN de 6 dígitos o token persistente, ver Decisiones "Emparejamiento persistente por token"), la máquina de reconexión automática (P2.5) y el estado de sesión (`vision_state`, catálogo, escenarios, mapa host→token persistido en `pairing.json`, hosts descubiertos). Expone eventos tipados (`Connected`, `AuthOk`, `PinScreenRequested`, `ShowConnectScreenRequested`, `ReconnectStarted`, `ReconnectStatusChanged`, `HelloReceived`, `VisionStateChanged`, `FrameReceived`) y propiedades read-only (`IsConnecting`, `IsSessionActive`, `IsReconnecting`, `IsWsOpen`, `CurrentHost`, `DiscoveredHosts`, `LensesById`, `VisionState`, `Scenarios`, `ScenarioLabels`, `CurrentScenario`). Namespace `Simulador.Tablet`. |
 | `Assets/Scripts/Runtime/Net/TabletController.cs` | **Capa de UI.** MonoBehaviour único de la app (sigue en `Net/` con ese nombre — la escena `Tablet.unity` lo referencia por GUID del `.cs`, ver Gotchas — pero cambió de namespace `Simulador.Net` → `Simulador.Tablet`, P6.2). Construye toda la interfaz en `Start()`, crea y drena la `TabletSession` en su `Update()` (`session.Update(Time.deltaTime)`), traduce eventos de sesión → widgets (`OnSession*` handlers) y clicks → métodos de la sesión (`_session.Connect/Disconnect/SendCommand/CancelReconnect/...`). |
-| `Assets/Scripts/Runtime/Tablet/TabletUiKit.cs` | Fábrica de widgets uGUI temables: `Label`, `Button`, `Panel`/`Card`, `Slider`, `LineEdit` (TMP_InputField), `CheckToggle`, `StatusBadge`, `RawImage`, `ScrollColumn`, `Box`/`Spacer`/`Size`. Genera el sprite de esquinas redondeadas por código (9-slice cacheado por radio) y registra un callback de "repaint" por widget para retematizar en caliente. |
+| `Assets/Scripts/Runtime/Tablet/TabletUiKit.cs` | Fábrica de widgets uGUI temables: `Label`, `Button`, `Panel`/`Card`, `Slider`, `LineEdit` (TMP_InputField), `CheckToggle`, `RawImage`, `ScrollColumn`, `Box`/`Spacer`/`Size`. Genera el sprite de esquinas redondeadas por código (9-slice cacheado por radio) y registra un callback de "repaint" por widget para retematizar en caliente. |
 | `Assets/Scripts/Runtime/Tablet/TabletPalette.cs` | Paletas Dark (consola médica, teal) y Light (historia clínica, azul); port verbatim de las constantes del `theme_builder.gd` de Godot. |
 | `Assets/Scripts/Runtime/Tablet/TabletButton.cs` | Botón custom (hereda `Selectable`): fill + borde + texto con color por estado (normal/hover/pressed), modo toggle y callbacks `OnClick`/`OnToggled`. Reemplaza el `ColorBlock` de uGUI. |
 | `Assets/Scripts/Runtime/Tablet/LensCardView.cs` | Card de lente: nombre, descripción clínica, chips OD/OI que marcan en qué ojo(s) está aplicada; tap = aplicar. |
 | `Assets/Scripts/Runtime/Tablet/ParamRowView.cs` | Fila de ajuste fino: label + valor formateado + slider + hint clínico. `SetValueSilent` sincroniza sin re-emitir. |
 | `Assets/Scripts/Runtime/Tablet/ScrollFriendlySlider.cs` (nuevo, usabilidad táctil) | Subclase de `Slider` que le cede el drag vertical al `ScrollRect` padre en vez de consumirlo (ver Decisiones "Usabilidad táctil"). Usada por `TabletUiKit.Slider()` en vez del `Slider` estándar. |
+| `Assets/Scripts/Runtime/Tablet/KeyboardAvoider.cs` (nuevo, usabilidad táctil) | Componente hermano de todo `TMP_InputField` (`TabletUiKit.LineEdit()` lo agrega solo): evita que el teclado nativo de Android tape el campo dentro de una columna scrolleable, agrandando el `Content` del `ScrollRect` con un espaciador y scrolleando al enfocar (ver Decisiones "Teclado nativo tapa los campos fuera del PIN"). Inerte si no hay `ScrollRect` ancestro. |
 | `Assets/Scripts/Runtime/Tablet/ParamMeta.cs` | Metadata clínica estática de los parámetros del catálogo (ver abajo). |
 | `Assets/Scenes/Tablet.unity` | Escena mínima: raíces `TabletApp` (con `TabletController`), `Directional Light` y `Main Camera`. Nada de UI serializada. |
 | `Assets/Resources/TabletFonts/` | `Inter-Regular SDF` e `Inter-SemiBold SDF` (TMP_FontAsset), cargados con `Resources.Load` en `Start()`. |
@@ -60,7 +62,8 @@ TabletController.Start()
    session: binario 'B'/'L'/'R'+JPG ─▶ separa header ─▶ evento FrameReceived(eye, jpg) ─▶
                     UI.LoadImage en RawImage por ojo + contadores del footer
    UI ─▶ session.SendCommand(apply_lens / override_params / set_astigmatism / load_scenario / refresh)
-   UI (boton Desvincular) ─▶ session.Unpair() ─▶ SendCommand({"cmd":"unpair"}) + borra token local +
+   UI (boton Desvincular) ─▶ popup de confirmacion (UnpairConfirm) ─▶ "Desvincular" ─▶
+                    session.Unpair() ─▶ SendCommand({"cmd":"unpair"}) + borra token local +
                     Disconnect("Desvinculado...") ─▶ evento ShowConnectScreenRequested
    session: "vision_state" ─▶ evento VisionStateChanged ─▶ UI.RefreshVisionUI + SyncParamRowsFromState()
 ```
@@ -95,10 +98,12 @@ TabletController.Start()
 - **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), toggle de tema
   claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), botón **"Ocultar
   HUD"/"Mostrar HUD"** (toggle del HUD de diagnóstico del visor vía comando `set_hud`, ver
-  Decisiones "Toggle del HUD del visor"), badge de estado (punto de color + texto), botón
-  Desconectar y botón **Desvincular** (emparejamiento persistente por token: revoca el token de
-  esta tablet en el visor y olvida el emparejamiento local con el host actual -- ver Decisiones
-  "Emparejamiento persistente por token").
+  Decisiones "Toggle del HUD del visor"), botón Desconectar y botón **Desvincular**, que ahora abre
+  un popup de confirmación (`UnpairConfirm`, ver Decisiones "Popup de confirmación de Desvincular")
+  antes de revocar el token de esta tablet en el visor y olvidar el emparejamiento local con el
+  host actual (ver Decisiones "Emparejamiento persistente por token"). **Sin badge de estado** (ver
+  Decisiones "Header sin badge de estado"): llegar a esta pantalla ya implica sesión conectada y
+  autenticada.
 - **Panel de stream (izquierda):** uno o dos panes con `RawImage` dentro de un `AspectRatioFitter`
   4:3 (768/576). El split lo decide `blend_active` del `vision_state` (P2.1 — fuente única de
   verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente, **OD arriba /
@@ -110,11 +115,11 @@ TabletController.Start()
 - **Columna scrolleable (derecha):** cards "Ojo a tratar" (Ambos / OD / OI), "Lentes intraoculares"
   (LensCardViews del catálogo), "Ajuste fino" (colapsable, ParamRowViews de la lente en edición +
   Restaurar valores — desde P4.4 incluye `astig_magnitude`/`astig_axis_deg`, persistentes por
-  lente), "Astigmatismo" (colapsable: hint de precedencia + switch + sliders LIVE de magnitud
-  0–50 px y eje 0–180°, no persistente — ver Decisiones "Dos controles de astigmatismo") y
-  **"Presets"** (P5.2, colapsable: lista de presets guardados con Aplicar/Borrar + `LineEdit` de
-  nombre y botón Guardar — ver Decisiones). La card "Comparar A / B" (P5.1) se retiró en P6.8 —
-  ver Decisiones "Stream a pantalla completa, retiro de Comparar A/B".
+  lente) y "Astigmatismo" (colapsable: hint de precedencia + switch + sliders LIVE de magnitud
+  0–50 px y eje 0–180°, no persistente — ver Decisiones "Dos controles de astigmatismo"). La card
+  "Comparar A / B" (P5.1) se retiró en P6.8 — ver Decisiones "Stream a pantalla completa, retiro de
+  Comparar A/B". La card "Presets" (P5.2) tuvo el mismo destino — ver Decisiones "Retiro de los
+  presets de sesión".
 - **Stream a pantalla completa (P6.8, overlay `FullscreenStream`):** se abre con el botón
   "Pantalla completa" del panel de stream o se cierra con el botón "Cerrar" (esquina superior
   derecha del overlay) o tocando en cualquier punto del fondo. Reusa las mismas `Texture2D`
@@ -266,6 +271,18 @@ TabletController.Start()
   escritura del socket) — vuelve al `ConnectScreen` con "Desvinculado..."; la próxima conexión a
   ese visor pide el PIN de nuevo. Reset total del lado visor (todos los emparejamientos): borrar
   `paired_tokens.json` a mano, sin UI dedicada (ver Minimal footprint en `docs/networking.md`).
+- **Popup de confirmación de Desvincular (nuevo)** → revocar el token es una acción sin vuelta
+  atrás desde la tablet (hay que volver a pedir el PIN), pero el botón vive discreto al lado de
+  Desconectar en el header — un tap accidental ya no dispara `_session.Unpair()` directo.
+  `OnUnpairPressed` ahora solo abre un overlay modal (`UnpairConfirm`, `BuildUnpairConfirm`) con el
+  patrón scrim + card centrada ya usado por `BuildUpdateScreen` (fondo semi-opaco 0.6 alfa + card
+  con `ContentSizeFitter`) y el cierre-al-tocar-el-fondo de `BuildStandardLensOverlay`: título
+  "Desvincular", cuerpo "¿Desvincular la tablet de este visor? Vas a necesitar el PIN para volver
+  a conectarte." y 2 botones (Cancelar/Ghost cierra el popup sin más; Desvincular/Accent llama
+  `_session.Unpair()` y cierra). `TabletSession.Unpair()` y el protocolo no cambiaron: es
+  puramente una confirmación del lado UI. `ShowConnectScreen`/`ShowPinScreen`/`ShowReconnectScreen`
+  cierran el popup igual que ya cerraban `FullscreenStream` (mismo motivo: no dejar un overlay
+  abierto sobre una pantalla que ya no corresponde).
 - **FPS del footer normalizado por pane, no por mensaje (P5.5)** → `StreamingCapture` manda, por
   tick (20 Hz), UN frame `'B'` fuera de blend o DOS frames `'L'`+`'R'` en blend (ver
   `docs/networking.md`); `OnBinary` cuenta cada mensaje recibido igual. Sin corrección, el footer
@@ -341,18 +358,19 @@ TabletController.Start()
   claro. Sigue registrado vía `Register(p => StyleButton(...))` como cualquier botón (se re-pinta
   en cada `ApplyTheme`), solo que el resultado es idéntico en Dark y Light — no rompe el contrato
   de repaint, solo lo vuelve un no-op visual a propósito.
-- **Presets de sesión: snapshot del `vision_state`, aplicar = comandos existentes (P5.2)** →
-  guardar un preset clona (`JObject.DeepClone`) el `left`/`right` TAL COMO llegan del visor
-  (`lens_id` + todos los params aplanados, incluidos overrides ya aplicados) más `_currentScenario`
-  — no hace falta un modelo de datos propio ni tocar el protocolo: es literalmente lo que ya
-  parsea `OnText` para pintar la UI. Aplicar reproduce el snapshot con la MISMA secuencia que
-  usaría un clínico a mano: `apply_lens` (fija los defaults del catálogo para esa lente) seguido
-  de `override_params` con el resto de las claves del snapshot ENCIMA (reproduce los overrides
-  que tenía guardados). Persistencia 100% LOCAL de la tablet
-  (`persistentDataPath/presets.json`, `JArray` de objetos `{name, scenario, left, right}`) — el
-  visor nunca se entera de que existen presets, no es un concepto de su protocolo. Igual patrón
-  de resiliencia que `DataManager.LoadLensOverrides`: archivo ausente o corrupto → arranca sin
-  presets, sin loguear error.
+- **Retiro de los presets de sesión (P5.2 → retirado)** → pedido explícito, mismo criterio que el
+  retiro de "Comparar A/B" (P6.8, ver arriba): la card "Presets" (snapshot de `vision_state` por
+  ojo + escenario, persistido 100% local en `persistentDataPath/presets.json`, nunca un concepto
+  del protocolo del visor) no se usaba en la práctica clínica. Se retiró entera: campos `_presets`/
+  `_presetList`/`_presetNameEdit`/`_presetStatus`/`PresetsPath`, las llamadas a
+  `LoadPresetsFromDisk`/`RebuildPresetList` en `Start()`, `BuildPresetsCard` (y su invocación en
+  `BuildBody`) y los métodos `OnSavePresetPressed`/`OnDeletePreset`/`ApplyPreset`/
+  `ApplyPresetEye`/`RebuildPresetList`/`SetPresetStatus`/`LoadPresetsFromDisk`/`SavePresetsToDisk`/
+  `CloneEyeState` — código muerto exclusivo de esa card, no compartido con nada más (los comandos
+  `apply_lens`/`override_params`/`load_scenario` que reusaba siguen intactos, los sigue usando el
+  resto de la UI). El archivo `persistentDataPath/presets.json` de un device ya emparejado NO se
+  borra (no es responsabilidad del código, y no hay forma de alcanzarlo desde la tablet sin ADB):
+  queda como dato huérfano inofensivo, la app ya no lo lee ni lo escribe.
 - **`refresh` en caliente reusa el branch de `"hello"` (P5.4)** → el botón "Actualizar" del header
   manda `{"cmd":"refresh"}`; el visor responde con el mismo payload EXACTO de un `hello`
   (`BuildHello()` reusado del lado visor, ver `docs/networking.md`), así que `OnText` no necesita
@@ -476,15 +494,91 @@ TabletController.Start()
   inferior, ya no lo tapa. `ConnectScreen`/`ReconnectScreen` no llevan `LineEdit` (sin teclado) y
   quedaron centrados sin cambios — es un ajuste puntual del wrap de `PinScreen`, no un cambio al
   contenedor común (`Stretch()` del `_pinScreen` raíz sigue ocupando toda la pantalla).
+- **Teclado nativo tapa los campos fuera del PIN (`KeyboardAvoider`, nuevo)** → el fix puntual del
+  PIN de arriba (popup anclado al tercio superior) no sirve para un `LineEdit` DENTRO de una
+  columna scrolleable (p.ej. "Nombre de la lente nueva"/"Descripción" de la card "Crear lente"):
+  ahí no hay un wrap propio para reanclar, el campo puede estar en cualquier punto del scroll.
+  `KeyboardAvoider` (`Assets/Scripts/Runtime/Tablet/KeyboardAvoider.cs`, `ISelectHandler`/
+  `IDeselectHandler`) generaliza la misma suposición del PIN (el teclado ocupa la mitad inferior de
+  la pantalla; `TouchScreenKeyboard.area` sigue sin ser confiable en Android para medirlo) a
+  cualquier `LineEdit`: al enfocarlo (`OnSelect`), agrega/activa un espaciador ("KeyboardSpacer",
+  un `LayoutElement` con `minHeight = preferredHeight = 50%` del alto del canvas raíz) como ÚLTIMO
+  hijo del `Content` del `ScrollRect` ancestro, fuerza el rebuild de layout y scrollea el `Content`
+  para que el CENTRO del campo quede al ~30% desde arriba de la pantalla (delta medido en el
+  espacio local del canvas raíz — el `Content` de `ScrollColumn` tiene pivot (0.5,1) y no hay
+  escalas intermedias, así que el delta se traduce 1:1 a `anchoredPosition.y`; clamp a
+  `[0, contentH − viewportH]`; si el campo ya está más arriba que el target, no scrollea). Al
+  desenfocar (`OnDeselect`), colapsa el espaciador un frame después — salvo que el CAMPO SIGUIENTE
+  enfocado pertenezca al MISMO `ScrollRect` (salto directo entre inputs de la misma card, sin el
+  parpadeo de colapsar y reexpandir). `OnDisable` colapsa el espaciador DE INMEDIATO, sin corutina
+  (caso real: una card colapsable —"Crear lente"— se cierra con el campo todavía enfocado; los
+  eventos de UI no corren sobre un GameObject ya inactivo). Es un componente HERMANO del
+  `TMP_InputField`, no lo reemplaza: `TabletUiKit.LineEdit()` lo agrega a TODOS por una línea al
+  final, sin parámetros ni opt-out — si no hay un `ScrollRect` ancestro (el `LineEdit` numérico del
+  `PinScreen`, que ya resuelve su propio caso con el anclaje al tercio superior) el componente
+  simplemente queda inerte.
 - **Toggle del HUD del visor (`set_hud`)** → botón "Ocultar HUD"/"Mostrar HUD" en el header
-  (`TabletController.OnHudTogglePressed`), manda `{"cmd":"set_hud","visible":bool}` (ver
+  (`TabletController.OnHudTogglePressed`, solo visible en Pro/admin — el header de Standard
+  (`BuildStandardScreen`) no tiene este botón), manda `{"cmd":"set_hud","visible":bool}` (ver
   `docs/networking.md`) para mostrar/ocultar el HUD de diagnóstico del visor
   (`Vision/HudController.cs`, sin tocarlo — el visor resuelve la referencia desde `Net/`).
   Fire-and-forget, como `set_astigmatism`/`load_scenario`: no hay ack ni campo en `vision_state`
   que confirme el resultado, así que `_hudVisible` es el estado optimista de ESTA tablet nomás.
   Arranca en `true` ("Ocultar HUD" visible) y se resetea a `true` en `OnSessionConnected` (nueva
-  conexión, inicial o P2.5) para no arrastrar el toggle de una sesión anterior — ver Gotchas
-  abajo para el mismatch conocido si otra tablet ocultó el HUD antes.
+  conexión, inicial o P2.5) para no arrastrar el toggle de una sesión anterior. **HUD forzado por
+  modo en cada `hello` (nuevo, cierra parte del mismatch de Gotchas/`docs/networking.md`
+  Pendientes)** → `OnSessionHello` ahora manda `set_hud` explícito según el modo, en TODO hello
+  (conexión inicial, reconexión exitosa o `refresh`): modo `"standard"` → `_hudVisible = false` +
+  `set_hud false` (el HUD de diagnóstico no tiene sentido en manos del paciente/operador de
+  Standard, que ni siquiera tiene el botón); pro/admin → `set_hud` con el `_hudVisible` vigente de
+  ESTA tablet (recién reseteado a `true` tras `OnSessionConnected`). Esto no resuelve el mismatch
+  entero (sigue sin haber `hud_visible` en `vision_state`, ver `docs/networking.md`), pero cierra
+  el caso más grave: antes, una tablet Standard que ocultaba el HUD y se desconectaba dejaba el
+  HUD (y el PIN que muestra) invisible para el PRÓXIMO emparejamiento, sin ningún camino de vuelta
+  salvo tocar el toggle desde una tablet Pro. Ver también la red de seguridad del lado visor en
+  `docs/networking.md` (`NetworkController.OnClientDisconnected`/`"unpair"`).
+- **Header sin badge de estado** → pedido explícito: el `StatusBadge` del header ("●
+  Conectado · <IP>") se retiró entero — `_kit.StatusBadge(...)` en `BuildHeader`, el método
+  `TabletUiKit.StatusBadge` (ya sin otro caller), `SetBadge`/`ConnectedBadgeText` y TODAS sus
+  llamadas (retema en `ApplyTheme`, `ShowMainScreen`, cada guard "Sin conexión" de los comandos
+  fire-and-forget). Los guards de `refresh`/`set_hud`/`apply_lens`/`load_scenario`/
+  `set_astigmatism` que dependían del badge para avisar "Sin conexión" quedan como
+  `if (!_session.IsWsOpen) return;` silencioso — no se agregó un reemplazo (la única pantalla
+  donde esos botones son alcanzables YA implica sesión conectada, así que el caso es un borde
+  transitorio, no el flujo normal). El punto de color + IP era redundante con llegar al
+  `MainScreen` (solo se muestra autenticado) y mostraba una IP en pantalla — dato que el resto de
+  la UI (lista de visores descubiertos, ver Decisiones "Lista de visores sin IP")
+  deliberadamente evita. **Excepción, corregida en una tarea de seguimiento:** el feedback de
+  guardar/eliminar/crear lente SÍ se había perdido con el badge (`OnSaveLensPressed`/
+  `OnDeleteLensPressed` quedaron sin ningún status visible) — ver la próxima decisión, "Feedback
+  de guardar/crear lentes custom (`SetLensStatus`)".
+- **Feedback de guardar/crear lentes custom (`SetLensStatus`, nuevo)** → pedido explícito tras
+  notar que "Guardar en la lente"/"Eliminar lente" (Ajuste fino) no mostraban ninguna confirmación
+  desde el retiro del badge (ver decisión de arriba); "Crear lente" sí tenía un label propio
+  (`_createStatus`) pero sin timeout. El visor YA emite una confirmación real para los 3 comandos
+  (`create_lens`/`update_lens`/`delete_lens`): `lens_saved`/`lens_error` vía HTTP al backend
+  (`NetworkController.RunLensCommand`, ver `docs/networking.md` "P7: comandos de lentes custom"),
+  así que no hizo falta inventar un ack nuevo — solo enganchar la UI a lo que ya llega
+  (`TabletSession.LensSaved`/`LensError`, ya existían desde P7). `SetLensStatus(label, ref
+  routine, text, delaySeconds, thenText)` es el helper compartido por los 2 labels
+  (`_createStatus` para "Crear lente"; `_ownLensStatus`, nuevo, bajo los botones "Guardar en la
+  lente"/"Eliminar lente" en la card "Ajuste fino"): cancela cualquier coroutine pendiente del
+  MISMO label antes de aplicar el texto nuevo (a lo sumo una coroutine por label a la vez, nunca
+  compiten un timeout viejo con un resultado que ya llegó) y, si `delaySeconds > 0`, programa un
+  texto de seguimiento. Se usa para 2 timers distintos con el mismo mecanismo: **(1) timeout de
+  "sin respuesta"** — al enviar el comando se muestra "Guardando..."/"Creando lente..."/
+  "Eliminando..." y, si no llega `lens_saved`/`lens_error` en `LensStatusTimeoutS` (5 s), degrada a
+  un mensaje neutro ("El visor no respondió todavía; puede seguir en curso." — el visor puede
+  seguir esperando al backend, `CustomLensClient` tiene su propio timeout HTTP de 8 s, así que
+  "sin respuesta a los 5 s" NO implica fallo); **(2) auto-limpieza del resultado final** — al
+  llegar `lens_saved` ("Lente guardada ✓"/"Lente creada ✓"/"Lente eliminada ✓") o `lens_error`
+  (mensaje mapeado por `reason`, incluido `BASE_LENS`/`NOT_ADMIN` del gating P7.1), el texto se
+  limpia solo a los `LensStatusClearS` (4 s) — mismo patrón visual que tenía el status de presets
+  retirado. `BuildParamsEditor` limpia `_ownLensStatus` (sin delay) al cambiar de lente en edición,
+  para no dejar un resultado o un timeout de la lente anterior confundiendo al operador. Sin
+  correlación de request (no hay un id por comando): con un solo comando en vuelo por label esto
+  no importa; si se mandaran 2 comandos casi simultáneos sobre el mismo label, el más reciente
+  gana (mismo criterio simple que ya usaba `_createStatus`, no se agregó tracking de requests).
 
 ## P7: modos Standard/Pro (UI por modo del visor)
 
@@ -549,6 +643,15 @@ TabletController.Start()
   ANTES que el `StreamWrap` (orden histórico del código), y con `ignoreLayout` ambos se
   superponen — sin un `SetAsLastSibling()` DESPUÉS de crear el stream, el stream tapa al chip
   (visto en dispositivo en la v0.4.0: el chip "desaparecía").
+- **Separación visual entre el slider de magnitud y la fila del eje (`StdSliderPanel`)**: el
+  `StdSliderCol` (`BuildStandardScreen`) usa spacing 4 (compartido con el header título/valor de
+  arriba) para los 3 hijos que apila (header, `_stdSlider`, `_stdAxisRow`) — con el eje visible
+  (solo al elegir el ícono de astigmatismo), el slider de magnitud y la fila "Eje" quedaban
+  pegados, leyéndose como un único control. Fix puntual: un `_kit.Spacer(spCol, 12, false)` entre
+  `_stdSlider` y `_stdAxisRow`, sin tocar el spacing general de la columna (no afecta la
+  separación header/slider, que no tenía el mismo problema). El spacer queda siempre presente
+  (no se togglea junto con `_stdAxisRow.SetActive(axis)`): con el eje oculto (cualquier ícono que
+  no sea astigmatismo) el panel queda con ~12 px extra debajo del slider, inocuo.
 - **"Salir" en Standard NO cierra la app (postmortem)**: en validación sobre dispositivo se
   observó (dos veces) un `Application.Quit()` disparado por un camino de UI no intencional
   estando en Standard — con un toque en medio del stream y con el "Cerrar" del overlay
@@ -561,36 +664,44 @@ TabletController.Start()
   donde es inofensivo; (2) `OpenFullscreenStream()` tiene guard: con `_standardScreen` activo
   no abre (Standard ya ES fullscreen; cubre la restauración rota post-reconexión).
 - **Modo Pro** (UI actual) suma: **gating por procedencia** — en lentes que NO son propias
-  (base/genéricas) el "Ajuste fino" solo muestra `ParamMeta.STANDARD_PARAMS`; en lentes propias
+  (de catálogo — P7.2: fábrica o agregadas por un admin, ya indistinguibles entre sí) el
+  "Ajuste fino" solo muestra `ParamMeta.STANDARD_PARAMS`; en lentes propias
   (`origen=="custom"`) muestra todo + botones "Guardar en la lente" (`update_lens` con los
   valores actuales como defaults) y "Eliminar lente" (doble tap de confirmación). Card nueva
   **"Crear lente"**: duplica la lente en edición con los ajustes aplicados como defaults
-  (`BuildParamsSnapshot`); si el visor es admin aparece el toggle "Genérica". Feedback por
-  `lens_saved`/`lens_error` (mapeo de reasons en `OnLensError`).
-- **P7.1 — gating por procedencia × admin, matriz completa** (`BuildParamsEditor`,
+  (`BuildParamsSnapshot`); si el visor es admin aparece el toggle **"Agregar al catálogo (para
+  todos)"** (P7.2, ex "Genérica" — el protocolo no cambia, sigue mandando `scope:"generic"`).
+  Feedback por `lens_saved`/`lens_error` (mapeo de reasons en `OnLensError`) mostrado inline con
+  `SetLensStatus` — status "Guardando.../Creando.../Eliminando..." al enviar, degrada a un
+  mensaje neutro a los 5 s sin respuesta, resultado final (ok/error) se limpia solo a los 4 s —
+  ver Decisiones "Feedback de guardar/crear lentes custom (`SetLensStatus`)".
+- **P7.1→P7.2 — gating por procedencia × admin, matriz completa** (`BuildParamsEditor`,
   `TabletController.cs`): lo de arriba describe el caso NO-admin. Un visor conectado ADMIN
   (`TabletSession.IsAdmin`) amplía el "Ajuste fino" también sobre lentes que no son propias
-  (decisión de producto: un admin gestiona el catálogo entero desde la tablet), pero el botón
-  "Eliminar lente" nunca aparece sobre una BASE — las lentes base no se pueden borrar nunca:
+  (decisión de producto: un admin gestiona el catálogo entero desde la tablet). **P7.2 (cambio
+  de contrato del backend, ver `docs/catalogo-lentes.md` §P7.2): la categoría "genérica"
+  desaparece — se fusiona con el catálogo BASE, y el admin pasa a poder ELIMINAR cualquier
+  lente de catálogo, no solo las ex-genéricas** (histórico P7.1: las bases nunca se
+  borraban, `delete_lens` sobre una base respondía siempre `BASE_LENS`):
 
   | Lente (`origen`) | No-admin | Admin |
   |---|---|---|
-  | Base (`null`) | Solo `STANDARD_PARAMS`, sin botones | Ajuste fino completo + "Guardar en la lente" (`update_lens`); **sin** "Eliminar lente" |
-  | Genérica (`"generic"`) | Solo `STANDARD_PARAMS`, sin botones | Ajuste fino completo + "Guardar en la lente" + "Eliminar lente" |
+  | De catálogo (`null`/ausente — fábrica o agregada por un admin, P7.2 las fusionó) | Solo `STANDARD_PARAMS`, sin botones | Ajuste fino completo + "Guardar en la lente" + "Eliminar lente" |
   | Propia (`"custom"`) | Ajuste fino completo + "Guardar en la lente" + "Eliminar lente" | igual que no-admin (ser dueño de una custom ya habilitaba todo; el modo admin no le suma ni le saca nada) |
 
   Implementación: `fullEdit = ownCustom || isAdmin` decide si `ordered` se recorta a
-  `STANDARD_PARAMS`; `canSave = ownCustom || isAdmin` y `canDelete = ownCustom || (isAdmin &&
-  origen == "generic")` deciden la visibilidad de los botones — una base nunca entra en
-  `canDelete`, sin importar el modo. El backend sigue siendo la autoridad real (implementado en
-  paralelo a esta tarea): `update_lens` sobre una base la guarda igual que hoy si el visor es
-  admin (si no, responde `NOT_ADMIN`, ya mapeado); `delete_lens` sobre una base devuelve el
-  reason nuevo `BASE_LENS` ("Las lentes base no se pueden eliminar.", mapeado en `OnLensError`)
-  — la UI ya no ofrece ese botón para una base, pero el mensaje queda como red de seguridad ante
-  un estado de sesión desactualizado (p.ej. `IsAdmin` cambió entre el `hello` y el tap). No se
-  agregó un badge nuevo para "Base": sigue sin badge, igual que antes de P7.1 (`LensCardView`
-  solo distingue "Propia"/"Genérica").
-- Las cards de lente muestran badge "Propia"/"Genérica" según `origen` (`LensCardView`).
+  `STANDARD_PARAMS`; `canSave = ownCustom || isAdmin` y `canDelete = ownCustom || isAdmin`
+  (P7.2: antes `canDelete` exigía además `origen == "generic"` — esa condición se retiró, ese
+  valor ya no llega del backend) deciden la visibilidad de los botones. El backend sigue siendo
+  la autoridad real: `update_lens`/`delete_lens` sobre cualquier lente de catálogo la aplica si
+  el visor es admin (si no, responde `NOT_ADMIN`, ya mapeado, mensaje generalizado en P7.2 para
+  cubrir editar/eliminar/crear-para-todos). El reason `BASE_LENS` ("Las lentes base no se pueden
+  eliminar.") queda sin uso en un backend P7.2 pero se mantiene mapeado en `OnLensError` por
+  compatibilidad con un backend viejo que todavía lo emita. No se agregó un badge nuevo para
+  "catálogo": sigue sin badge, igual que antes (`LensCardView`, ver el punto siguiente).
+- Las cards de lente muestran badge "Propia" según `origen == "custom"` (`LensCardView`). El
+  badge "Genérica" (`origen == "generic"`) queda solo como tolerancia con un backend viejo no
+  migrado a P7.2 — un backend nuevo ya no emite ese valor, así que en la práctica no aparece.
 
 ## Gotchas
 - **El botón "Ocultar/Mostrar HUD" no refleja el estado real del HUD, solo el de ESTA tablet en
@@ -735,11 +846,6 @@ TabletController.Start()
   ya no sirve), Cancelar, y `hello` (éxito). Si se agrega un cuarto camino de salida del loop,
   acordarse de apagar el flag ahí también o el timer de `TabletSession.Update()` sigue vivo
   compitiendo con la pantalla nueva.
-- **Los presets NO revalidan contra el catálogo actual (P5.2):** si se borra una lente del
-  catálogo (edición manual de `lentes.json`/backend) y se aplica un preset viejo que la
-  referenciaba, `apply_lens` del visor solo loguea warning y no cambia el estado de ese ojo — el
-  preset "falla en silencio" para esa lente puntual (el resto de los comandos del preset sí se
-  mandan). No hay validación cliente-side de que los ids de un preset sigan existiendo.
 - **`ScrollFriendlySlider` decide la dirección UNA sola vez por gesto (en `OnBeginDrag`) y no
   vuelve a evaluarla:** si el operador empieza arrastrando horizontal (mueve el slider) y a
   mitad de gesto curva el dedo hacia vertical sin soltar, sigue moviendo el valor (no se pasa a
@@ -758,11 +864,6 @@ TabletController.Start()
   puede hacer que arranque en portrait. `ProjectSettings.asset` (compartido con el visor) sigue
   con las 4 orientaciones habilitadas a propósito — no se tocó, es contrato compartido; el nuevo
   lock vive en el manifest custom, no en Player Settings.
-- **`presets.json` no tiene versión/migración:** a diferencia de `lentes.json` (`version` +
-  `MergeMissingParams`), el archivo de presets es un snapshot crudo del `vision_state` de cuando
-  se guardó. Si el shape de `vision_state` cambia a futuro (nuevo campo obligatorio, etc.) un
-  preset viejo puede aplicar parcialmente. Aceptable hoy: son datos locales de un solo clínico,
-  no un contrato compartido.
 
 ## Cómo probar
 0. **Regresión del split P6.2 (la que realmente importa, ver Gotchas):** Play en
@@ -797,10 +898,11 @@ TabletController.Start()
    en el visor real lo muestra el HUD). Ingresarlo mal a propósito una vez → "PIN incorrecto. Volvé
    a intentarlo." y vuelve a pedirlo; ingresarlo bien → debe llegar el `auth_ok` con un token nuevo
    (persistido en `pairing.json` de la tablet y en `paired_tokens.json` del visor, ver
-   `docs/networking.md`) seguido del `hello`, pasar a la pantalla principal con badge verde
-   `Conectado · IP`, las cards del catálogo y el stream en movimiento (footer con fps/MB
-   creciendo). Probar también un PIN con ceros a la izquierda (p.ej. `000123`, si el que generó el
-   visor tiene esa forma) para confirmar que el `LineEdit` numérico no los recorta ni el envío los
+   `docs/networking.md`) seguido del `hello`, pasar a la pantalla principal (sin badge de estado,
+   ver Decisiones "Header sin badge de estado") con las cards del catálogo y el stream en
+   movimiento (footer con fps/MB creciendo). Probar también un PIN con ceros a la izquierda
+   (p.ej. `000123`, si el que generó el visor tiene esa forma) para confirmar que el `LineEdit`
+   numérico no los recorta ni el envío los
    trunca (el PIN es un string de 6 caracteres, no un número).
 2b. **Lockout:** repetir el PIN incorrecto 3 veces (reconectando cada vez) → al cuarto intento la
    tablet debe mostrar "Demasiados intentos. Esperá Ns y volvé a intentarlo." (no "PIN
@@ -884,13 +986,13 @@ TabletController.Start()
     tocar "Desconectar" (o forzar una caída del visor) → el overlay debe cerrarse solo y mostrar
     el `ConnectScreen`/`ReconnectScreen` correspondiente (no debe quedar un frame congelado tapando
     la pantalla).
-12. **Presets de sesión (P5.2):** armar un estado (lente + algún override + escenario), abrir
-    "Presets", escribir un nombre y "Guardar" → debe aparecer en la lista. Cambiar todo (otra
-    lente, otro escenario) y tocar "Aplicar" en el preset guardado → debe volver exactamente al
-    estado guardado (lente + valor del override + escenario). Guardar CON EL MISMO NOMBRE otra
-    vez → debe sobreescribir (no duplicar) la entrada. "Borrar" → desaparece de la lista. Cerrar y
-    reabrir la app (Stop/Play en Editor, o matar/reabrir en device) → los presets guardados deben
-    seguir ahí (persisten en `persistentDataPath/presets.json`, sobreviven a la sesión de WS).
+12. **Popup de confirmación de Desvincular (nuevo, reemplaza el test de Presets — P5.2 retirado):**
+    con la tablet conectada, tocar "Desvincular" en el header → debe aparecer el popup modal
+    (scrim + card, sin desconectar todavía) con el título "Desvincular" y el mensaje de
+    confirmación. Tocar "Cancelar" (o tocar el fondo semi-opaco) → el popup se cierra y la sesión
+    sigue activa (no se mandó `unpair`). Volver a abrirlo y tocar "Desvincular" → recién ahí debe
+    desconectar y volver al `ConnectScreen` con "Desvinculado..." (mismo comportamiento de fondo
+    que antes de este cambio, ver Decisiones "Popup de confirmación de Desvincular").
 13. **Refresh en caliente (P5.4):** con la tablet conectada, tocar "Actualizar" en el header → no
     debe pedir el PIN de nuevo ni pasar por ninguna pantalla intermedia (sigue en `MainScreen`
     todo el tiempo); la lista de lentes/escenarios se repuebla en el momento. Ver
@@ -920,11 +1022,51 @@ TabletController.Start()
     Cancelar/Conectar) debe quedar visible en el tercio superior, sin que el teclado tape ninguna
     parte. Escribir el PIN completo y tocar "Conectar" (o Enter) sin tener que cerrar el teclado a
     mano para ver qué se tipeó.
-17. **Toggle de HUD del visor (2 dispositivos, `set_hud`):** ver el paso 12 de
-    `docs/networking.md` — con la tablet conectada, tocar "Ocultar HUD"/"Mostrar HUD" en el header
-    y confirmar en el visor (HMD o Editor) que el HUD de diagnóstico aparece/desaparece al
-    instante, y que el texto del botón sigue el estado local. Desconectar y reconectar con el HUD
-    oculto → el botón debe resetear a "Ocultar HUD" (aunque el HUD real siga oculto, ver Gotchas).
+16b. **`KeyboardAvoider` en un `LineEdit` dentro de una columna scrolleable (device Android real,
+    nuevo — generaliza el fix del PIN):** conectado en modo Pro, abrir la card "Crear lente",
+    tocar el campo "Nombre de la lente nueva" → el teclado debe desplegarse y la columna debe
+    scrollear sola para dejar el campo visible en el tercio superior, sin que el teclado lo tape
+    (aunque el campo esté más abajo en la columna que en el caso del PIN). Tocar directamente el
+    campo "Descripción" sin cerrar el teclado → debe saltar de un campo a otro sin que la columna
+    "salte" o parpadee (el espaciador se mantiene, no colapsa entre inputs del mismo scroll).
+    Cerrar el teclado (o tocar fuera) → la columna debe volver a su rango normal de scroll
+    (colapsa el espaciador). Repetir colapsando la card "Crear lente" (tocar su título) con el
+    campo todavía enfocado → no debe quedar un hueco vacío al reabrirla.
+17. **Toggle de HUD del visor (2 dispositivos, `set_hud`, ahora también forzado por modo en cada
+    hello):** ver el paso 12 de `docs/networking.md` — con la tablet conectada en modo Pro, tocar
+    "Ocultar HUD"/"Mostrar HUD" en el header y confirmar en el visor (HMD o Editor) que el HUD de
+    diagnóstico aparece/desaparece al instante, y que el texto del botón sigue el estado local.
+    Desconectar y reconectar con el HUD oculto → el botón debe resetear a "Ocultar HUD" y el HUD
+    real debe volver a mostrarse solo (antes de este cambio quedaba oculto, ver Decisiones "Toggle
+    del HUD del visor" y la red de seguridad en `NetworkController.OnClientDisconnected` de
+    `docs/networking.md`). **Nuevo, modo Standard:** conectar una tablet en modo Standard (o forzar
+    `mode: "standard"` del lado visor/backend para la prueba) → el HUD del visor debe ocultarse
+    solo al llegar el `hello` (sin que el clínico toque nada, Standard no tiene el botón); si el
+    HUD estaba visible antes de esta conexión, debe desaparecer apenas conecta.
+18. **Feedback de guardar/crear/eliminar lentes custom (nuevo, `SetLensStatus`):** en modo Pro,
+    aplicar una lente propia (`origen == "custom"`) o conectar como admin sobre CUALQUIER lente
+    de catálogo (P7.2 — ya no hace falta que sea una ex-genérica), ajustar un parámetro y tocar
+    "Guardar en la lente" → debajo del botón debe aparecer "Guardando..." y, al llegar la
+    confirmación del visor (con backend accesible), cambiar a "Lente guardada ✓" y limpiarse
+    solo ~4 s después. Repetir con "Eliminar lente" (doble tap) → "Eliminando..." → "Lente
+    eliminada ✓" (la lente debe desaparecer de la lista al repoblarse el catálogo) — probar
+    también eliminando una lente BASE de fábrica (p.ej. `monofocal`) como admin: P7.2 permite
+    borrarla, con `catalog_version` nueva del lado backend (rollback disponible desde el panel
+    admin, no desde la tablet). En la card "Crear lente", completar nombre + activar
+    **"Agregar al catálogo (para todos)"** (solo admin) + "Crear desde la lente en edición" →
+    "Creando lente..." → "Lente creada ✓. Va a aparecer en la lista al actualizar el catálogo."
+    — la lente nueva debe aparecer SIN badge (indistinguible de una de fábrica), no con
+    "Genérica". **Timeout (requiere simular backend caído o desconectado, p.ej. parar el
+    contenedor del backend):** repetir cualquiera de las acciones → tras ~5 s sin respuesta el
+    status debe cambiar a "El visor no respondió todavía; puede seguir en curso." (sin quedar
+    pegado en "Guardando..." para siempre); si la respuesta llega tarde (backend vuelve), el
+    mensaje final debe reemplazar igual al neutro. **Error, caso no-admin (gating P7.2):** con
+    un visor NO admin, si se llega a disparar `update_lens`/`delete_lens` sobre una lente de
+    catálogo (no debería ser alcanzable por UI, ver matriz P7.1→P7.2) el mensaje mapeado
+    (`NOT_ADMIN`: "Solo un dispositivo administrador puede modificar o eliminar lentes del
+    catálogo.") debe aparecer en el mismo label y limpiarse solo. **Cambiar de lente en edición
+    mientras hay un status visible** → el status debe limpiarse de inmediato (no debe quedar
+    "Guardando..." de la lente anterior pegado sobre la nueva).
 
 ## Pendientes / deuda
 - El lockout es global del lado del visor (no por tablet/IP): si otro cliente en la LAN agotó el
@@ -938,11 +1080,9 @@ TabletController.Start()
   comparten UI — se agregó solo un hint de precedencia en la card live (ver Decisiones). Evaluar
   en una tarea futura si conviene fusionarlos o si la separación live/persistente es intencional
   a largo plazo (p.ej. la card live podría ser para "probar rápido" sin comprometerse a guardarlo).
-- **Presets (P5.2) no revalidan ids ni versionan el archivo** — ver el detalle en Gotchas. No
-  rompe nada hoy (degrada a warning/estado parcial), pero es un borde a endurecer si los presets
-  compartidos entre clínicos se vuelven un caso de uso real.
 - **`refresh` (P5.4) no tiene indicador visual de "en curso" ni feedback de error**: `OnRefreshPressed`
-  solo valida que el WS esté abierto (badge "Sin conexión" si no) pero no muestra nada mientras
+  solo valida que el WS esté abierto (sin efecto visible si no, desde el retiro del badge de
+  estado del header — ver Decisiones "Header sin badge de estado") pero no muestra nada mientras
   espera la respuesta ni si el visor tardara en contestar; como reusa el flujo de `"hello"`, el
   único indicio de éxito es que la lista de lentes/escenarios se repuebla. Aceptable para un botón
   de uso ocasional, pero si se vuelve frecuente convendría un estado de carga.

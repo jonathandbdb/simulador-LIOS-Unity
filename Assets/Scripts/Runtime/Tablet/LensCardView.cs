@@ -47,10 +47,14 @@ namespace Simulador.Tablet
             var name = kit.Label(top, string.IsNullOrEmpty(nombre) ? id : nombre, LabelKind.Section, TextAlignmentOptions.Left);
             name.raycastTarget = false;
             kit.Size(name.rectTransform, flexW: 1);
-            // P7: procedencia de la lente ("custom" = propia de este visor,
-            // "generic" = creada por un admin para todos; null = catalogo base,
-            // sin badge). Texto plano estilo hint, sin pildora: no compite con
-            // los chips OD/OI de estado.
+            // P7.2: el backend ya NO emite origen:"generic" (esas lentes se
+            // fusionaron con el catalogo base, indistinguibles de las de
+            // fabrica) -- "custom" = propia de este visor sigue igual; null/
+            // ausente = cualquier lente de catalogo, sin badge. La rama
+            // "generic" queda solo como tolerancia por si un backend viejo (aun
+            // no migrado) todavia la manda -- nada mas en la tablet depende de
+            // ese valor (ver docs/catalogo-lentes.md §P7.2). Texto plano estilo
+            // hint, sin pildora: no compite con los chips OD/OI de estado.
             if (origen == "custom" || origen == "generic")
             {
                 var badge = kit.Label(top, origen == "custom" ? "Propia" : "Genérica",

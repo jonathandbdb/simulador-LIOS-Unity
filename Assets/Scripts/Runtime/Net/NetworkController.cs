@@ -240,11 +240,24 @@ namespace Simulador.Net
 
         private void OnClientDisconnected(int id)
         {
+            // Red de seguridad del HUD (ver "set_hud" en docs/networking.md): una
+            // tablet en modo Standard fuerza el HUD oculto en cada hello (ver
+            // TabletController.OnSessionHello); si se desconecta sin que quede
+            // ninguna otra tablet autenticada, el HUD (y el PIN que muestra) se
+            // volveria invisible para el PROXIMO emparejamiento. _tokenByClientId
+            // todavia tiene la entrada de este cliente en este punto (recien se
+            // borra abajo), asi que sirve para saber si estaba autenticado.
+            // PumpEvents ya llama esto desde el hilo principal (WebSocketServer.
+            // PumpEvents via Update()), asi que tocar la API de Unity aca es seguro
+            // sin encolar nada nuevo.
+            bool wasAuthenticated = _tokenByClientId.ContainsKey(id);
             // _tokenByClientId es puramente informativo mientras la conexion esta
             // abierta (para poder resolver el token propio en "unpair" sin que el
             // cliente lo reenvie); no hace falta persistir su remocion, el token
             // sigue siendo valido en paired_tokens.json hasta un unpair explicito.
             _tokenByClientId.Remove(id);
+            if (wasAuthenticated && (_server == null || _server.AuthenticatedClientCount == 0))
+                ResolveHud()?.gameObject.SetActive(true);
             Debug.Log($"Net: cliente {id} desconectado");
         }
 
@@ -540,6 +553,16 @@ namespace Simulador.Net
                         RemovePairedToken(revoked);
                         _tokenByClientId.Remove(id);
                         Debug.Log($"Net: cliente {id} se desvinculo (token revocado).");
+                        // Misma red de seguridad del HUD que OnClientDisconnected: el
+                        // "unpair" borra la entrada de _tokenByClientId ANTES de que
+                        // llegue el disconnect real del socket (la tablet cierra la
+                        // conexion por su cuenta apenas manda este comando, ver
+                        // TabletSession.Unpair), asi que ese chequeo ya no lo
+                        // detectaria -- se resuelve aca. AuthenticatedClientCount
+                        // todavia cuenta a ESTE cliente (sigue Open/Authenticated
+                        // hasta que se desconecte), de ahi el <= 1.
+                        if (_server == null || _server.AuthenticatedClientCount <= 1)
+                            ResolveHud()?.gameObject.SetActive(true);
                     }
                     break;
                 case "set_hud":

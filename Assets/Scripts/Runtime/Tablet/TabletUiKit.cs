@@ -285,30 +285,6 @@ namespace Simulador.Tablet
         }
 
         // ============================================================
-        // StatusBadge (pildora con punto de color + texto)
-        // ============================================================
-        public RectTransform StatusBadge(Transform parent, out Image dot, out TMP_Text text)
-        {
-            var root = Panel(parent, "StatusBadge", p => p.SurfaceRaised, 99, false, 8,
-                new RectOffset(14, 14, 6, 6));
-            var hlg = root.GetComponent<HorizontalLayoutGroup>();
-            hlg.childForceExpandWidth = false; hlg.childForceExpandHeight = false;
-            hlg.childAlignment = TextAnchor.MiddleLeft;
-            Size(root, minH: 36, prefH: 36, flexW: 0, flexH: 0);
-
-            var dotGo = new GameObject("Dot", typeof(RectTransform));
-            dotGo.transform.SetParent(root, false);
-            dot = dotGo.AddComponent<Image>();
-            dot.sprite = Rounded(16); dot.type = Image.Type.Simple;
-            Size(RT(dotGo), minW: 12, minH: 12, prefW: 12, prefH: 12, flexW: 0, flexH: 0);
-
-            text = Label(root, "", LabelKind.Body, TextAlignmentOptions.Left);
-            text.fontSize = 14;
-            Size(text.rectTransform, flexW: 0, flexH: 0);
-            return root;
-        }
-
-        // ============================================================
         // Slider touch-friendly
         // ============================================================
         public UnityEngine.UI.Slider Slider(Transform parent)
@@ -401,6 +377,11 @@ namespace Simulador.Tablet
             input.placeholder = ph;
             input.fontAsset = FontRegular;
             input.pointSize = 16;
+            // Gancho generico: evita que el teclado nativo de Android tape este
+            // campo dentro de una columna scrolleable (ver KeyboardAvoider). Sin
+            // parametros ni opt-out -- cubre todo LineEdit presente y futuro; queda
+            // inerte si no hay un ScrollRect ancestro (p.ej. el LineEdit del PIN).
+            root.AddComponent<KeyboardAvoider>();
             return input;
         }
 

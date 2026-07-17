@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
@@ -16,8 +17,8 @@ namespace Simulador.Tablet
     /// P6.2) en su Update() y traduce eventos de sesion -> widgets y clicks -> metodos
     /// de la sesion. Replica fiel de features/tablet/streaming_client.gd: pantalla de
     /// conexion + pantalla principal (header con escenarios/tema/estado, stream con
-    /// split en modo blend, cards de ojo/lentes/ajuste fino/astigmatismo/A-B/presets)
-    /// con tema oscuro/claro Inter.
+    /// split en modo blend, cards de ojo/lentes/ajuste fino/astigmatismo) con tema
+    /// oscuro/claro Inter.
     ///
     /// P6.2 (split god-object): la capa de red + protocolo + estado de sesion vivia
     /// toda ACA (WebSocketClient/DiscoveryListener, auth por PIN, maquina de
@@ -63,8 +64,6 @@ namespace Simulador.Tablet
         // --- Header ---
         private RectTransform _scenarioList;
         private TabletButton _themeToggle;
-        private Image _statusDot;
-        private TMP_Text _statusText;
 
         // --- Toggle de HUD del visor (comando "set_hud", ver docs/networking.md) ---
         // Estado puramente local/optimista: no hay campo en vision_state que
@@ -74,6 +73,12 @@ namespace Simulador.Tablet
         // anterior.
         private TabletButton _hudToggleBtn;
         private bool _hudVisible = true;
+
+        // --- Confirmacion de "Desvincular" (header Pro, overlay modal) ---
+        // Revocar el emparejamiento por token exige volver a pedir el PIN -- un tap
+        // accidental en el boton discreto del header ya no dispara _session.Unpair()
+        // directo (ver OnUnpairPressed/BuildUnpairConfirm).
+        private GameObject _unpairConfirm;
 
         // --- Stream ---
         private RawImage _streamLeft, _streamRight;
@@ -104,6 +109,11 @@ namespace Simulador.Tablet
         private TabletButton _createGenericToggle; // solo visible si el visor es admin
         private GameObject _createGenericRow;
         private TMP_Text _createStatus;
+        // Status inline de "Guardar en la lente"/"Eliminar lente" (Ajuste fino),
+        // mismo patron visual que _createStatus. Coroutines: cada label tiene a lo
+        // sumo UNA pendiente (busy-timeout o auto-limpieza), ver SetLensStatus.
+        private TMP_Text _ownLensStatus;
+        private Coroutine _createStatusRoutine, _ownLensStatusRoutine;
 
         // --- Modo Standard (P7): stream fullscreen + carrusel de 5 parametros ---
         private GameObject _standardScreen;
@@ -166,16 +176,6 @@ namespace Simulador.Tablet
         private RawImage _fsStreamLeft, _fsStreamRight;
         private TMP_Text _fsLeftLabel, _fsRightLabel;
 
-        // --- Presets de sesion (P5.2) ---
-        // Persistencia local (nunca al visor): snapshot de vision_state (lens_id +
-        // params por ojo, tal como llega del visor) + escenario. Aplicar = secuencia
-        // de comandos existentes (apply_lens/override_params/load_scenario).
-        private readonly List<JObject> _presets = new();
-        private RectTransform _presetList;
-        private TMP_InputField _presetNameEdit;
-        private TMP_Text _presetStatus;
-        private string PresetsPath => Application.persistentDataPath + "/presets.json";
-
         // --- Footer ---
         private TMP_Text _footer;
         private int _framesReceived, _framesLastTick;
@@ -210,8 +210,6 @@ namespace Simulador.Tablet
 
             BuildUI();
             ApplyTheme(_isDark);
-            LoadPresetsFromDisk();
-            RebuildPresetList();
             SubscribeUpdateEvents();
 
             _session = new TabletSession();
@@ -284,11 +282,24 @@ namespace Simulador.Tablet
             // cualquier otro valor (o visor viejo sin campo) -> UI Pro completa.
             if (_session.Mode == "standard")
             {
+                // El HUD de diagnostico (FPS/PIN, ver docs/networking.md "set_hud") no
+                // tiene sentido en manos del paciente/operador de modo Standard -- se
+                // fuerza oculto en CADA hello (conexion inicial, reconexion o refresh),
+                // sin depender de un boton que Standard ni siquiera tiene.
+                _hudVisible = false;
+                _session.SendCommand(new JObject { ["cmd"] = "set_hud", ["visible"] = false });
                 RebuildStandardLensList();
                 ShowStandardScreen();
             }
             else
             {
+                // Pro/admin: re-afirma el estado optimista de ESTA tablet (recien
+                // reseteado a "visible" por OnSessionConnected) en cada hello -- cierra
+                // parcialmente el mismatch de docs/networking.md Pendientes (una
+                // tablet Standard que ocultaba el HUD y se desconectaba dejaba el
+                // visor sin HUD para el proximo emparejamiento; ver tambien la red de
+                // seguridad en NetworkController.OnClientDisconnected/"unpair").
+                _session.SendCommand(new JObject { ["cmd"] = "set_hud", ["visible"] = _hudVisible });
                 ShowMainScreen();
             }
         }
@@ -351,12 +362,8 @@ namespace Simulador.Tablet
             _kit.Apply(TabletPalette.For(dark));
             if (_themeToggle?.Label != null)
                 _themeToggle.Label.text = dark ? "Modo claro" : "Modo oscuro";
-            if (_session != null && _session.IsSessionActive) SetBadge(_kit.P.Ok, ConnectedBadgeText());
             SaveThemePref();
         }
-
-        private string ConnectedBadgeText() =>
-            string.IsNullOrEmpty(_session.CurrentHost) ? "Conectado" : "Conectado · " + _session.CurrentHost;
 
         private bool LoadThemePref()
         {
@@ -385,6 +392,7 @@ namespace Simulador.Tablet
         private void ShowConnectScreen(string message, bool isError = false)
         {
             CloseFullscreenStream(); // sesion interrumpida: no dejar el overlay de stream congelado
+            CloseUnpairConfirm();
             _connectScreen.SetActive(true);
             _pinScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
@@ -402,7 +410,6 @@ namespace Simulador.Tablet
             _reconnectScreen.SetActive(false);
             _standardScreen.SetActive(false);
             _mainScreen.SetActive(true);
-            SetBadge(_kit.P.Ok, ConnectedBadgeText());
         }
 
         // P7: pantalla del modo Standard (stream fullscreen + carrusel).
@@ -422,6 +429,7 @@ namespace Simulador.Tablet
         private void ShowPinScreen(string host, string message = "")
         {
             CloseFullscreenStream();
+            CloseUnpairConfirm();
             _pinPendingHost = host;
             _connectScreen.SetActive(false);
             _mainScreen.SetActive(false);
@@ -440,6 +448,7 @@ namespace Simulador.Tablet
         private void ShowReconnectScreen(string host, string message)
         {
             CloseFullscreenStream();
+            CloseUnpairConfirm();
             _connectScreen.SetActive(false);
             _pinScreen.SetActive(false);
             _mainScreen.SetActive(false);
@@ -468,12 +477,6 @@ namespace Simulador.Tablet
             if (_reconnectStatus == null) return;
             _reconnectStatus.text = text;
             _reconnectStatus.color = isError ? _kit.P.Error : _kit.P.TextHint;
-        }
-
-        private void SetBadge(Color color, string text)
-        {
-            if (_statusDot != null) _statusDot.color = color;
-            if (_statusText != null) _statusText.text = text;
         }
 
         // ============================================================
@@ -586,11 +589,23 @@ namespace Simulador.Tablet
 
         private void OnDisconnectPressed() => _session.Disconnect();
 
-        // Boton "Desvincular" (header): revoca el token de esta tablet en el visor y
+        // Boton "Desvincular" (header): abre el popup de confirmacion (ver
+        // BuildUnpairConfirm) en vez de desvincular directo -- revocar el
+        // emparejamiento por token exige volver a pedir el PIN, no es una accion
+        // que convenga disparar por un tap accidental sobre un boton discreto.
+        private void OnUnpairPressed() => _unpairConfirm?.SetActive(true);
+
+        // Confirmado en el popup: revoca el token de esta tablet en el visor y
         // olvida el emparejamiento local con el host actual (ver
         // TabletSession.Unpair) -- vuelve al ConnectScreen y la proxima conexion a
         // este visor va a pedir el PIN de nuevo.
-        private void OnUnpairPressed() => _session.Unpair();
+        private void OnUnpairConfirmed()
+        {
+            CloseUnpairConfirm();
+            _session.Unpair();
+        }
+
+        private void CloseUnpairConfirm() => _unpairConfirm?.SetActive(false);
 
         // P5.4: refresh en caliente -- pide {"cmd":"refresh"}; el visor responde con
         // el mismo payload del "hello" (BuildHello reusado del lado visor) y
@@ -599,7 +614,7 @@ namespace Simulador.Tablet
         // parsear nada nuevo del lado tablet.
         private void OnRefreshPressed()
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) return;
             _session.SendCommand(new JObject { ["cmd"] = "refresh" });
         }
 
@@ -611,7 +626,7 @@ namespace Simulador.Tablet
         // "visible" en cada conexion nueva, ver OnSessionConnected).
         private void OnHudTogglePressed()
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) return;
             _hudVisible = !_hudVisible;
             UpdateHudToggleLabel();
             _session.SendCommand(new JObject { ["cmd"] = "set_hud", ["visible"] = _hudVisible });
@@ -661,7 +676,7 @@ namespace Simulador.Tablet
         // elige el ojo POR lente (overlay de seleccion), no con la card "Ojo a tratar".
         private void ApplyLensTo(string lensId, string eye)
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) return;
             _session.SendCommand(new JObject { ["cmd"] = "apply_lens", ["lens_id"] = lensId, ["eye"] = eye });
             // Actualizacion optimista del estado local (vision_state compartido con la sesion).
             if (eye == "left" || eye == "both")
@@ -748,6 +763,10 @@ namespace Simulador.Tablet
             _editingLensId = lensId;
             _paramRows.Clear();
             _paramDefaults.Clear();
+            // Cambiar de lente en edicion desarma cualquier status/timeout pendiente
+            // de la anterior (ver SetLensStatus) -- evita mostrar "Lente guardada" o
+            // un timeout viejo sobre una lente distinta a la que se esta mirando.
+            if (_ownLensStatus != null) SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "");
             for (int i = _paramsList.childCount - 1; i >= 0; i--) Destroy(_paramsList.GetChild(i).gameObject);
 
             if (!_session.LensesById.TryGetValue(lensId, out var lens) || !(lens["params"] is JObject paramsDef) || !paramsDef.HasValues)
@@ -762,12 +781,14 @@ namespace Simulador.Tablet
             foreach (var k in ParamMeta.ORDER) if (paramsDef[k] != null) ordered.Add(k);
             foreach (var prop in paramsDef.Properties()) if (!ordered.Contains(prop.Name)) ordered.Add(prop.Name);
 
-            // P7: sobre lentes que NO son propias (catalogo base o genericas de un
-            // admin), un Pro solo ajusta los parametros del modo Standard. La lista
-            // completa queda reservada a sus lentes custom ("Crear lente" duplica la
-            // actual para editarla entera). P7.1: si el visor conectado es ADMIN, el
-            // Ajuste fino completo se habilita tambien sobre base/genericas (con
-            // guardado al backend, igual que una propia) -- ver docs/tablet.md.
+            // P7.2: ya no existe la categoria "generica" -- todas las lentes que
+            // NO son propias del visor (custom) son ahora lentes de CATALOGO (de
+            // fabrica o agregadas por un admin, indistinguibles por "origen"). Un
+            // Pro sobre una lente de catalogo solo ajusta los parametros del modo
+            // Standard; la lista completa queda reservada a sus lentes custom
+            // ("Crear lente" duplica la actual para editarla entera). Un visor
+            // ADMIN sigue teniendo el Ajuste fino completo tambien sobre lentes de
+            // catalogo (con guardado Y borrado al backend, ver docs/tablet.md).
             string origen = (string)lens["origen"];
             bool ownCustom = origen == "custom";
             bool isAdmin = _session.IsAdmin;
@@ -794,20 +815,24 @@ namespace Simulador.Tablet
                 : ownCustom
                     ? "Lente propia: todos los parámetros son editables. \"Guardar en la lente\" persiste los valores actuales."
                     : isAdmin
-                        ? (origen == "generic"
-                            ? "Modo administrador: todos los parámetros son editables. Podés guardarlos o eliminar esta lente genérica."
-                            : "Modo administrador: todos los parámetros son editables. Podés guardarlos en esta lente base (no se puede eliminar).")
+                        // P7.2: origen=="generic" ya no llega del backend (esas lentes
+                        // se fusionaron con el catalogo base) -- el admin edita Y
+                        // elimina CUALQUIER lente de catalogo, sin distincion.
+                        ? "Modo administrador: todos los parámetros son editables. Podés guardarlos o eliminar esta lente del catálogo."
                         : "Los ajustes se aplican al ojo que tiene esta lente. Para editar todos los parámetros, creá una lente propia desde \"Crear lente\".";
 
             // Botones de lente propia (guardar cambios / eliminar): las propias
-            // siempre las tienen; P7.1: un visor ADMIN suma "Guardar en la lente"
-            // tambien sobre base/genericas, pero "Eliminar lente" NUNCA sobre una
-            // base (origen null) -- solo sobre genericas o propias.
+            // siempre las tienen; P7.2 -- un visor ADMIN puede EDITAR y tambien
+            // ELIMINAR cualquier lente de catalogo (antes, P7.1, solo dejaba
+            // borrar las "genericas"; al fusionarse esa categoria con el catalogo
+            // base, el admin pasa a gestionar el catalogo entero -- cada
+            // operacion versiona el blob .aN del lado backend, con rollback
+            // desde el panel admin).
             _deleteArmed = false;
             if (_saveLensButton != null)
             {
                 bool canSave = ownCustom || isAdmin;
-                bool canDelete = ownCustom || (isAdmin && origen == "generic");
+                bool canDelete = ownCustom || isAdmin;
                 _saveLensButton.gameObject.SetActive(canSave);
                 _deleteLensButton.gameObject.SetActive(canDelete);
                 if (canDelete && _deleteLensButton.Label != null) _deleteLensButton.Label.text = "Eliminar lente";
@@ -904,7 +929,7 @@ namespace Simulador.Tablet
 
         private void OnScenarioPressed(string scenarioId)
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) return;
             _session.CurrentScenario = scenarioId;
             // P2.3: seleccion por id (clave del diccionario), no por comparar el texto
             // del label del boton -- dos escenarios con el mismo label ya no rompen esto.
@@ -913,129 +938,6 @@ namespace Simulador.Tablet
             foreach (var kv in _stdScenarioButtons)
                 kv.Value.SetOn(kv.Key == scenarioId, false);
             _session.SendCommand(new JObject { ["cmd"] = "load_scenario", ["id"] = scenarioId });
-        }
-
-        // ============================================================
-        // Presets de sesion (P5.2)
-        // ============================================================
-        private JObject CloneEyeState(string eye)
-        {
-            var state = _session.VisionState[eye] as JObject;
-            return state != null ? (JObject)state.DeepClone() : new JObject();
-        }
-
-        private void OnSavePresetPressed()
-        {
-            string name = (_presetNameEdit.text ?? "").Trim();
-            if (string.IsNullOrEmpty(name)) { SetPresetStatus("Ingresá un nombre.", true); return; }
-            // Snapshot de vision_state (lens_id + params por ojo, tal como los manda
-            // el visor) + escenario actual. "Aplicar" reconstruye esto con los
-            // comandos existentes (ver ApplyPreset) -- nada de protocolo nuevo.
-            var preset = new JObject
-            {
-                ["name"] = name,
-                ["scenario"] = _session.CurrentScenario,
-                ["left"] = CloneEyeState("left"),
-                ["right"] = CloneEyeState("right"),
-            };
-            int idx = _presets.FindIndex(pr => (string)pr["name"] == name);
-            if (idx >= 0) _presets[idx] = preset; else _presets.Add(preset);
-            SavePresetsToDisk();
-            RebuildPresetList();
-            _presetNameEdit.text = "";
-            SetPresetStatus("Preset \"" + name + "\" guardado.");
-        }
-
-        private void OnDeletePreset(string name)
-        {
-            _presets.RemoveAll(pr => (string)pr["name"] == name);
-            SavePresetsToDisk();
-            RebuildPresetList();
-            SetPresetStatus("Preset \"" + name + "\" borrado.");
-        }
-
-        private void ApplyPreset(JObject preset)
-        {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
-            ApplyPresetEye("left", preset["left"] as JObject);
-            ApplyPresetEye("right", preset["right"] as JObject);
-            string scenario = (string)preset["scenario"];
-            if (!string.IsNullOrEmpty(scenario))
-                _session.SendCommand(new JObject { ["cmd"] = "load_scenario", ["id"] = scenario });
-            SetPresetStatus("Preset \"" + (string)preset["name"] + "\" aplicado.");
-        }
-
-        // apply_lens (fija los defaults del catalogo) + override_params con el resto
-        // del snapshot ENCIMA (reproduce los overrides que tenia guardados el preset).
-        private void ApplyPresetEye(string eye, JObject state)
-        {
-            if (state == null) return;
-            string lensId = (string)state["lens_id"] ?? "";
-            if (string.IsNullOrEmpty(lensId)) return;
-            _session.SendCommand(new JObject { ["cmd"] = "apply_lens", ["lens_id"] = lensId, ["eye"] = eye });
-            var paramsObj = new JObject();
-            foreach (var kv in state)
-                if (kv.Key != "lens_id") paramsObj[kv.Key] = kv.Value;
-            if (paramsObj.HasValues)
-                _session.SendCommand(new JObject { ["cmd"] = "override_params", ["eye"] = eye, ["params"] = paramsObj });
-        }
-
-        private void RebuildPresetList()
-        {
-            if (_presetList == null) return;
-            for (int i = _presetList.childCount - 1; i >= 0; i--) Destroy(_presetList.GetChild(i).gameObject);
-            if (_presets.Count == 0)
-            {
-                _kit.Label(_presetList, "Sin presets guardados.", LabelKind.Hint, TextAlignmentOptions.Left);
-                return;
-            }
-            foreach (var preset in _presets)
-            {
-                var p = preset;
-                string name = (string)p["name"] ?? "?";
-                var row = _kit.Box(_presetList, "Preset_" + name, false, 6, null, expandW: true);
-                row.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-                var label = _kit.Label(row, name, LabelKind.Body, TextAlignmentOptions.Left);
-                _kit.Size(label.rectTransform, flexW: 1);
-                var applyBtn = _kit.Button(row, "Aplicar", BtnStyle.Ghost, false, 36, 13);
-                applyBtn.OnClick = () => ApplyPreset(p);
-                var delBtn = _kit.Button(row, "Borrar", BtnStyle.Ghost, false, 36, 13);
-                delBtn.OnClick = () => OnDeletePreset(name);
-            }
-        }
-
-        private void SetPresetStatus(string text, bool isError = false)
-        {
-            if (_presetStatus == null) return;
-            _presetStatus.text = text;
-            _presetStatus.color = isError ? _kit.P.Error : _kit.P.TextHint;
-        }
-
-        // Persistencia LOCAL de la tablet, nunca al visor (a diferencia del PIN, no
-        // hay nada sensible aca: son lentes/params/escenario, igual que
-        // lens_overrides.json del lado visor). Archivo corrupto/ausente -> arranca
-        // sin presets, mismo patron que DataManager.LoadLensOverrides.
-        private void LoadPresetsFromDisk()
-        {
-            try
-            {
-                if (!System.IO.File.Exists(PresetsPath)) return;
-                var arr = JArray.Parse(System.IO.File.ReadAllText(PresetsPath));
-                _presets.Clear();
-                foreach (var p in arr) if (p is JObject po) _presets.Add(po);
-            }
-            catch { /* archivo corrupto: se ignora */ }
-        }
-
-        private void SavePresetsToDisk()
-        {
-            try
-            {
-                var arr = new JArray();
-                foreach (var p in _presets) arr.Add(p);
-                System.IO.File.WriteAllText(PresetsPath, arr.ToString(Newtonsoft.Json.Formatting.Indented));
-            }
-            catch { }
         }
 
         // ============================================================
@@ -1055,7 +957,7 @@ namespace Simulador.Tablet
 
         private void SendAstigmatism()
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) return;
             // El GlareController del visor espera magnitud normalizada 0..1 y angulo
             // en radianes; el slider muestra 0-50 px (fiel a Godot) y 0-180°.
             _session.SendCommand(new JObject
@@ -1124,6 +1026,7 @@ namespace Simulador.Tablet
             BuildPinScreen(canvasGo.transform);
             BuildReconnectScreen(canvasGo.transform);
             BuildMainScreen(canvasGo.transform);
+            BuildUnpairConfirm(canvasGo.transform); // overlay de confirmacion (header Pro, boton Desvincular)
             BuildStandardScreen(canvasGo.transform); // P7: UI simplificada (modo standard del visor)
             BuildFullscreenStream(canvasGo.transform);
             BuildUpdateScreen(canvasGo.transform); // ULTIMO: debe quedar arriba de TODAS las demas pantallas/overlays
@@ -1354,6 +1257,48 @@ namespace Simulador.Tablet
             BuildFooter(_mainScreen.transform);
         }
 
+        // Overlay modal de confirmacion para "Desvincular" (header Pro): revocar el
+        // emparejamiento por token es irreversible desde la tablet (hay que volver a
+        // pedir el PIN), asi que un tap sobre el boton discreto del header ya no
+        // dispara _session.Unpair() directo. Reusa el patron scrim + card centrada
+        // de BuildUpdateScreen (fondo semi-opaco + ContentSizeFitter) y el cierre-al-
+        // tocar-el-fondo de BuildStandardLensOverlay.
+        private void BuildUnpairConfirm(Transform parent)
+        {
+            _unpairConfirm = new GameObject("UnpairConfirm", typeof(RectTransform));
+            _unpairConfirm.transform.SetParent(parent, false);
+            Stretch(_unpairConfirm.GetComponent<RectTransform>());
+            _unpairConfirm.SetActive(false);
+
+            var scrim = new GameObject("UnpairScrim", typeof(RectTransform), typeof(Image), typeof(Button));
+            scrim.transform.SetParent(_unpairConfirm.transform, false);
+            Stretch(scrim.GetComponent<RectTransform>());
+            scrim.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f);
+            var scrimBtn = scrim.GetComponent<Button>();
+            scrimBtn.transition = Selectable.Transition.None;
+            scrimBtn.onClick.AddListener(CloseUnpairConfirm);
+
+            var card = _kit.Card(_unpairConfirm.transform, "UnpairCard");
+            card.anchorMin = card.anchorMax = new Vector2(0.5f, 0.5f);
+            card.pivot = new Vector2(0.5f, 0.5f);
+            card.sizeDelta = new Vector2(420, 0);
+            var fit = card.gameObject.AddComponent<ContentSizeFitter>();
+            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            _kit.Label(card, "Desvincular", LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(card, "¿Desvincular la tablet de este visor? Vas a necesitar el PIN para volver a conectarte.",
+                LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Spacer(card, 4, false);
+
+            var row = _kit.Box(card, "UnpairButtons", false, 8, null, expandW: true);
+            var cancelBtn = _kit.Button(row, "Cancelar", BtnStyle.Ghost, false, 48, 16);
+            _kit.Size(cancelBtn.GetComponent<RectTransform>(), flexW: 1);
+            cancelBtn.OnClick = CloseUnpairConfirm;
+            var confirmBtn = _kit.Button(row, "Desvincular", BtnStyle.Accent, false, 48, 16);
+            _kit.Size(confirmBtn.GetComponent<RectTransform>(), flexW: 1);
+            confirmBtn.OnClick = OnUnpairConfirmed;
+        }
+
         private void BuildHeader(Transform parent)
         {
             var header = _kit.Panel(parent, "HeaderBar", p => p.Surface, 0, false, 12, new RectOffset(16, 16, 8, 8));
@@ -1375,7 +1320,6 @@ namespace Simulador.Tablet
             refreshBtn.OnClick = OnRefreshPressed;
             _hudToggleBtn = _kit.Button(header, "Ocultar HUD", BtnStyle.Ghost, false, 44, 14);
             _hudToggleBtn.OnClick = OnHudTogglePressed;
-            _kit.StatusBadge(header, out _statusDot, out _statusText);
             var disconnect = _kit.Button(header, "Desconectar", BtnStyle.Ghost, false, 44, 14);
             disconnect.OnClick = OnDisconnectPressed;
             // Emparejamiento persistente por token (ver docs/networking.md): discreto,
@@ -1431,7 +1375,6 @@ namespace Simulador.Tablet
             BuildLensesCard(content);
             BuildParamsCard(content);
             BuildAstigCard(content);
-            BuildPresetsCard(content);
             BuildCreateLensCard(content);
         }
 
@@ -1486,6 +1429,7 @@ namespace Simulador.Tablet
             _deleteLensButton.OnClick = OnDeleteLensPressed;
             _saveLensButton.gameObject.SetActive(false);
             _deleteLensButton.gameObject.SetActive(false);
+            _ownLensStatus = _kit.Label(_paramsContent, "", LabelKind.Hint, TextAlignmentOptions.Left);
 
             _paramsContent.gameObject.SetActive(false);
             paramsToggle.OnToggled += on => _paramsContent.gameObject.SetActive(on);
@@ -1535,38 +1479,15 @@ namespace Simulador.Tablet
             UpdateAstigLabels();
         }
 
-        // P5.2: presets de sesion (lente por ojo + overrides + escenario), persistidos
-        // localmente en la tablet (persistentDataPath/presets.json). Aplicar reproduce el
-        // snapshot con los comandos existentes (ver ApplyPreset).
-        private void BuildPresetsCard(Transform parent)
-        {
-            var card = _kit.Card(parent, "PresetsCard");
-            var presetsToggle = _kit.Button(card, "Presets", BtnStyle.Ghost, true, 48, 16);
-            var presetsContent = _kit.Box(card, "PresetsContent", true, 8, null, expandW: true);
-
-            _presetList = _kit.Box(presetsContent, "PresetList", true, 6, null, expandW: true);
-
-            var saveRow = _kit.Box(presetsContent, "PresetSaveRow", false, 8, null, expandW: true);
-            _presetNameEdit = _kit.LineEdit(saveRow, "Nombre del preset");
-            var saveBtn = _kit.Button(saveRow, "Guardar", BtnStyle.Accent, false, 40, 14);
-            _kit.Size(saveBtn.GetComponent<RectTransform>(), minW: 100, prefW: 100, flexW: 0);
-            saveBtn.OnClick = OnSavePresetPressed;
-            _presetNameEdit.onSubmit.AddListener(_ => OnSavePresetPressed());
-
-            _presetStatus = _kit.Label(presetsContent, "", LabelKind.Hint, TextAlignmentOptions.Left);
-
-            presetsContent.gameObject.SetActive(false);
-            presetsToggle.OnToggled += on => presetsContent.gameObject.SetActive(on);
-        }
-
         // ============================================================
         // Lentes custom (P7, modo Pro)
         // ============================================================
         // Card "Crear lente": duplica la lente en edicion con los valores ACTUALES
         // (defaults del catalogo + overrides aplicados) como defaults de la lente
         // nueva; min/max se heredan del spec de origen. La lente se persiste en el
-        // backend (privada del visor; "generica" para todos si el visor es admin y
-        // activa el toggle) -- el visor hace el HTTP y contesta lens_saved/lens_error.
+        // backend (privada del visor; agregada al CATALOGO -- visible para todos --
+        // si el visor es admin y activa el toggle, P7.2) -- el visor hace el HTTP y
+        // contesta lens_saved/lens_error.
         private void BuildCreateLensCard(Transform parent)
         {
             var card = _kit.Card(parent, "CreateLensCard");
@@ -1578,10 +1499,13 @@ namespace Simulador.Tablet
             _createNameEdit = _kit.LineEdit(content, "Nombre de la lente nueva");
             _createDescEdit = _kit.LineEdit(content, "Descripción (opcional)");
 
-            // Toggle "generica" -- solo visible si el visor conectado es admin
-            // (se decide en cada hello, ver OnSessionHello).
+            // Toggle "agregar al catalogo" (P7.2: reemplaza la nocion de
+            // "generica" -- el protocolo NO cambia, sigue mandando
+            // scope:"generic"; ver docs/catalogo-lentes.md §P7.2) -- solo visible
+            // si el visor conectado es admin (se decide en cada hello, ver
+            // OnSessionHello).
             _createGenericRow = _kit.Box(content, "GenericRow", false, 8, null, expandW: true).gameObject;
-            _kit.CheckToggle(_createGenericRow.transform, "Genérica (visible para todos los dispositivos)", out _createGenericToggle);
+            _kit.CheckToggle(_createGenericRow.transform, "Agregar al catálogo (para todos)", out _createGenericToggle);
             _createGenericRow.SetActive(false);
 
             var createBtn = _kit.Button(content, "Crear desde la lente en edición", BtnStyle.Accent, false, 44, 15);
@@ -1613,13 +1537,46 @@ namespace Simulador.Tablet
             return result.HasValues ? result : null;
         }
 
+        // Tiempo sin respuesta del visor antes de degradar "Guardando..."/"Creando..."
+        // a un mensaje neutro (el visor puede seguir esperando al backend -- ver
+        // CustomLensClient, timeout HTTP de 8 s -- asi que "sin respuesta" no es
+        // necesariamente un fallo, solo que todavia no llego el lens_saved/lens_error).
+        private const float LensStatusTimeoutS = 5f;
+        // Tiempo que queda visible un resultado final (ok o error) antes de
+        // limpiarse solo -- mismo patron visual que el status de presets retirado.
+        private const float LensStatusClearS = 4f;
+
+        /// <summary>
+        /// Actualiza un label de status de lentes custom (Crear lente / Guardar en
+        /// la lente) y cancela cualquier timeout pendiente del MISMO label antes de
+        /// aplicar el texto nuevo -- evita que un timeout viejo pise un resultado que
+        /// ya llego, o que dos acciones seguidas dejen dos coroutines compitiendo.
+        /// Con <paramref name="delaySeconds"/> > 0 programa un texto de seguimiento
+        /// (<paramref name="thenText"/>) tras ese lapso: se usa tanto para el
+        /// timeout de "sin respuesta" (al enviar el comando) como para la
+        /// auto-limpieza del resultado final (ok/error).
+        /// </summary>
+        private void SetLensStatus(TMP_Text label, ref Coroutine routine, string text, float delaySeconds = 0f, string thenText = null)
+        {
+            if (routine != null) { StopCoroutine(routine); routine = null; }
+            if (label != null) label.text = text;
+            if (delaySeconds > 0f && label != null)
+                routine = StartCoroutine(SetLensStatusAfterDelay(label, delaySeconds, thenText ?? ""));
+        }
+
+        private IEnumerator SetLensStatusAfterDelay(TMP_Text label, float seconds, string text)
+        {
+            yield return new WaitForSeconds(seconds);
+            label.text = text;
+        }
+
         private void OnCreateLensPressed()
         {
-            if (!_session.IsWsOpen) { _createStatus.text = "Sin conexión con el visor."; return; }
+            if (!_session.IsWsOpen) { SetLensStatus(_createStatus, ref _createStatusRoutine, "Sin conexión con el visor."); return; }
             string nombre = (_createNameEdit.text ?? "").Trim();
-            if (nombre.Length == 0) { _createStatus.text = "Poné un nombre para la lente."; return; }
+            if (nombre.Length == 0) { SetLensStatus(_createStatus, ref _createStatusRoutine, "Poné un nombre para la lente."); return; }
             var snapshot = BuildParamsSnapshot();
-            if (snapshot == null) { _createStatus.text = "Aplicá una lente primero (la nueva se crea a partir de ella)."; return; }
+            if (snapshot == null) { SetLensStatus(_createStatus, ref _createStatusRoutine, "Aplicá una lente primero (la nueva se crea a partir de ella)."); return; }
 
             bool generic = _session.IsAdmin && _createGenericToggle != null && _createGenericToggle.IsOn;
             _session.SendCommand(new JObject
@@ -1630,12 +1587,13 @@ namespace Simulador.Tablet
                 ["descripcion"] = (_createDescEdit.text ?? "").Trim(),
                 ["params"] = snapshot,
             });
-            _createStatus.text = "Creando lente...";
+            SetLensStatus(_createStatus, ref _createStatusRoutine, "Creando lente...",
+                LensStatusTimeoutS, "El visor no respondió todavía; puede seguir en curso.");
         }
 
         private void OnSaveLensPressed()
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Sin conexión con el visor."); return; }
             if (!_session.LensesById.TryGetValue(_editingLensId, out var lens)) return;
             var snapshot = BuildParamsSnapshot();
             if (snapshot == null) return;
@@ -1647,12 +1605,13 @@ namespace Simulador.Tablet
                 ["descripcion"] = (string)lens["descripcion"] ?? "",
                 ["params"] = snapshot,
             });
-            SetBadge(_kit.P.Ok, "Guardando lente...");
+            SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Guardando...",
+                LensStatusTimeoutS, "El visor no respondió todavía; puede seguir en curso.");
         }
 
         private void OnDeleteLensPressed()
         {
-            if (!_session.IsWsOpen) { SetBadge(_kit.P.Warn, "Sin conexión"); return; }
+            if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Sin conexión con el visor."); return; }
             // Doble tap para confirmar (sin dialogo modal): el primer tap arma, el
             // segundo ejecuta. Cambiar de lente (BuildParamsEditor) desarma.
             if (!_deleteArmed)
@@ -1663,17 +1622,26 @@ namespace Simulador.Tablet
             }
             _deleteArmed = false;
             _session.SendCommand(new JObject { ["cmd"] = "delete_lens", ["lens_id"] = _editingLensId });
-            SetBadge(_kit.P.Warn, "Eliminando lente...");
+            SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Eliminando...",
+                LensStatusTimeoutS, "El visor no respondió todavía; puede seguir en curso.");
         }
 
         private void OnLensSaved(string op, string lensId)
         {
-            SetBadge(_kit.P.Ok, op == "delete_lens" ? "Lente eliminada" : "Lente guardada");
             if (op == "create_lens")
             {
-                _createStatus.text = "Lente creada. Va a aparecer en la lista al actualizar el catálogo.";
+                SetLensStatus(_createStatus, ref _createStatusRoutine,
+                    "Lente creada ✓. Va a aparecer en la lista al actualizar el catálogo.", LensStatusClearS, "");
                 _createNameEdit.text = "";
                 _createDescEdit.text = "";
+            }
+            else if (op == "update_lens")
+            {
+                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Lente guardada ✓", LensStatusClearS, "");
+            }
+            else if (op == "delete_lens")
+            {
+                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Lente eliminada ✓", LensStatusClearS, "");
             }
             // El catalogo actualizado llega solo: el visor re-sincroniza y
             // re-broadcastea el hello (RebuildLensList via OnSessionHello).
@@ -1685,16 +1653,24 @@ namespace Simulador.Tablet
             {
                 "offline" => "El visor no pudo contactar al backend (sin internet).",
                 "MODE_NOT_PRO" => "Este visor no tiene el modo Pro habilitado.",
-                "NOT_ADMIN" => "Solo un dispositivo administrador puede tocar lentes genéricas.",
+                // P7.2: NOT_ADMIN ahora cubre 3 casos -- crear "para todos"
+                // (scope:"generic"), editar o eliminar cualquier lente del
+                // catalogo sin ser admin. BASE_LENS queda sin uso en un backend
+                // nuevo (P7.2 le permite al admin borrar cualquier lente de
+                // catalogo) pero se mantiene mapeado por compat con un backend
+                // viejo que todavia lo emita.
+                "NOT_ADMIN" => "Solo un dispositivo administrador puede modificar o eliminar lentes del catálogo.",
                 "NOT_OWNER" => "Esta lente pertenece a otro dispositivo.",
                 "BASE_LENS" => "Las lentes base no se pueden eliminar.",
                 "DEVICE_NOT_AUTHORIZED" => "El visor no está habilitado (licencia).",
                 "LENS_LIMIT_REACHED" => "Se alcanzó el tope de lentes.",
                 _ => $"No se pudo guardar la lente ({reason}).",
             };
-            SetBadge(_kit.P.Warn, "Error al guardar lente");
-            if (op == "create_lens" && _createStatus != null) _createStatus.text = msg;
-            else Debug.LogWarning($"[Tablet] {op}: {msg}");
+            Debug.LogWarning($"[Tablet] {op}: {msg}");
+            if (op == "create_lens")
+                SetLensStatus(_createStatus, ref _createStatusRoutine, msg, LensStatusClearS, "");
+            else
+                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, msg, LensStatusClearS, "");
         }
 
         private void BuildFooter(Transform parent)
@@ -1913,6 +1889,10 @@ namespace Simulador.Tablet
             _stdSliderValue = _kit.Label(spHeader, "", LabelKind.Value, TextAlignmentOptions.Right);
             _stdSlider = _kit.Slider(spCol);
             _stdSlider.onValueChanged.AddListener(OnStandardSliderChanged);
+            // Separacion visual entre el slider de magnitud y la fila del eje: el
+            // spacing de 4 del StdSliderCol (compartido con el header de arriba) los
+            // dejaba pegados, leyendose como un solo control en vez de dos.
+            _kit.Spacer(spCol, 12, false);
             // Fila secundaria del eje (solo astigmatismo).
             _stdAxisRow = _kit.Box(spCol, "StdAxisRow", true, 2, null, expandW: true).gameObject;
             var axHeader = _kit.Box(_stdAxisRow.transform, "StdAxisHeader", false, 8, null, expandW: true);

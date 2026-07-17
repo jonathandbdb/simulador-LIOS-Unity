@@ -222,7 +222,19 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   `HudController.cs` (frontera con `Vision/`). **Sin ack ni campo en `vision_state`**: es
   fire-and-forget, igual que `set_astigmatism`/`load_scenario` — el visor no confirma el estado
   resultante, así que la tablet no tiene forma de consultar si el HUD está realmente visible u
-  oculto en este momento (ver Gotchas en `docs/tablet.md`).
+  oculto en este momento (ver Gotchas en `docs/tablet.md`). **La tablet manda este comando en TODO
+  `hello`** (no solo al tocar el botón, nuevo): `TabletController.OnSessionHello` fuerza
+  `set_hud false` en cada hello si `mode == "standard"` (el HUD no tiene sentido en manos del
+  paciente/operador de Standard, que ni siquiera tiene el botón), y re-afirma el `_hudVisible`
+  vigente de la tablet en cada hello si el modo es pro/admin — ver `docs/tablet.md` Decisiones
+  "Toggle del HUD del visor". **Red de seguridad del lado visor (nuevo):** si el cliente que se
+  desconecta (`NetworkController.OnClientDisconnected`) o que manda `"unpair"` estaba autenticado
+  y no queda ninguna otra tablet autenticada, el visor fuerza el HUD visible de nuevo
+  (`ResolveHud()?.gameObject.SetActive(true)`) — evita que una tablet Standard (que fuerza el HUD
+  oculto) deje el visor sin HUD, y por lo tanto sin el PIN visible, para el PRÓXIMO
+  emparejamiento. Ambos puntos ya corren en el hilo principal (`OnClientDisconnected`/
+  `OnTextReceived` se disparan desde `PumpEvents()`), así que tocar la API de Unity ahí no viola el
+  patrón thread→cola→Update.
 - Cualquier otro `cmd` loguea warning; texto no-JSON se descarta con warning.
 
 **Stream binario:** `[1 byte header B/L/R][JPG]`, 768×576, 20 Hz, calidad JPG 85
@@ -233,7 +245,9 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
 ### P7: comandos de lentes custom + modo en el hello
 
 - `hello` suma `"mode"` (`"standard"|"pro"`, de `LicenseManager.AppMode`) e `"is_admin"`.
-  Las lentes del hello serializan `origen` (`null`/`"generic"`/`"custom"`).
+  Las lentes del hello serializan `origen` (`null`/ausente o `"custom"`; P7.2 fusionó la
+  categoría `"generic"` con el catálogo base — ese valor ya no lo emite un backend nuevo, ver
+  `docs/catalogo-lentes.md` §P7.2).
 - Comandos tablet→visor nuevos: `create_lens {scope, nombre, descripcion, params}`,
   `update_lens {lens_id, nombre, descripcion, params}`, `delete_lens {lens_id}`. El visor
   agrega SU `device_id` y hace el HTTP (`Data/CustomLensClient.cs`, timeout 8 s, gate de
@@ -474,9 +488,17 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
     vuelve a "Ocultar HUD". Confirmar en consola del visor que NO aparece `comando desconocido`
     (llegó `{"cmd":"set_hud"}`) y que, si el HUD no existe en la escena, se loguea el warning
     `Net: set_hud recibido pero no se encontro HudController en la escena.` en vez de una excepción.
-    Con el HUD oculto, desconectar la tablet (botón Desconectar) y volver a conectar (mismo PIN o
-    token) → el botón debe volver a mostrar "Ocultar HUD" (reset local, ver `docs/tablet.md`)
-    aunque el HUD del visor siga oculto hasta el próximo toggle — mismatch conocido, ver Pendientes.
+    Con el HUD oculto, desconectar la tablet (botón Desconectar) → el HUD del visor debe
+    REAPARECER SOLO, sin volver a conectar (red de seguridad nueva de
+    `NetworkController.OnClientDisconnected`, ver Protocolo arriba: no queda ninguna tablet
+    autenticada, así que se fuerza visible). Volver a conectar (mismo PIN o token) → el botón debe
+    volver a mostrar "Ocultar HUD" (reset local, ver `docs/tablet.md`), coherente con el HUD ya
+    visible (antes de este cambio el HUD real seguía oculto hasta el próximo toggle — mismatch
+    parcialmente cerrado, ver Pendientes). **Con 2 tablets pro/admin emparejadas:** ocultar el HUD
+    desde una y desconectar esa MISMA tablet → el HUD debe seguir oculto (la otra tablet sigue
+    autenticada, `AuthenticatedClientCount > 0`); desconectar también la segunda → recién ahí
+    reaparece. **Con `"unpair"`:** repetir ocultando el HUD y tocando "Desvincular" en vez de
+    "Desconectar" → mismo resultado (el HUD reaparece si esa era la última tablet autenticada).
 
 ## Pendientes / deuda
 - Sin `MulticastLock` Android en `DiscoveryListener` (documentado como "si hiciera falta se agrega").
@@ -486,14 +508,23 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
 - **HUD del visor todavía no muestra `PairingPin`/`AuthenticatedClientCount`** — ambos expuestos
   como propiedad pública en `NetworkController`, falta que `Vision/` los pinte (fuera de alcance
   de esta tarea).
-- **`set_hud` no tiene estado sincronizado ni persistente** — es fire-and-forget (sin ack, sin
-  campo en `vision_state`): el visor no informa si el HUD terminó visible u oculto, y el botón de
-  la tablet (`_hudVisible`, ver `docs/tablet.md`) es puramente optimista, reseteado a "visible" en
-  cada conexión nueva (`OnSessionConnected`). Si una tablet oculta el HUD y se desconecta, y otra
-  tablet (o la misma, tras reconectar) se conecta después, el botón nuevo arranca en "Ocultar HUD"
-  aunque el HUD real siga oculto de la vez anterior — mismatch aceptado (HUD de diagnóstico, no un
-  control clínico crítico); si hiciera falta cerrarlo, la vía natural es agregar `hud_visible` al
-  `vision_state`/`hello` (mismo patrón que `blend_active`, P2.1).
+- **`set_hud` sigue sin estado sincronizado ni persistente, pero el caso más grave del mismatch ya
+  se cerró (nuevo)** — sigue siendo fire-and-forget (sin ack, sin campo en `vision_state`): el
+  visor no informa si el HUD terminó visible u oculto, y el botón de la tablet (`_hudVisible`, ver
+  `docs/tablet.md`) es puramente optimista, reseteado a "visible" en cada conexión nueva
+  (`OnSessionConnected`). Lo que SÍ se cerró: (1) `TabletController.OnSessionHello` manda
+  `set_hud` explícito según el modo en TODO hello (Standard siempre fuerza `false`; pro/admin
+  reafirma el `_hudVisible` vigente), y (2) `NetworkController.OnClientDisconnected`/`"unpair"`
+  fuerzan el HUD visible de nuevo si el cliente que se va estaba autenticado y no queda ninguna
+  otra tablet autenticada — evita que una tablet Standard (que fuerza el HUD oculto) deje el HUD, y
+  el PIN que muestra, invisible para el PRÓXIMO emparejamiento. Lo que queda sin cerrar: con
+  **2+ tablets pro/admin emparejadas simultáneamente**, el botón de cada una sigue siendo optimista
+  y puede desincronizarse entre sí (una lo oculta, la otra sigue mostrando "Ocultar HUD" aunque el
+  HUD real ya esté oculto) — ese caso no dispara la red de seguridad del disconnect (solo actúa
+  cuando NO queda ninguna tablet autenticada) y sigue siendo un mismatch aceptado (HUD de
+  diagnóstico, no un control clínico crítico); si hiciera falta cerrarlo del todo, la vía natural
+  sigue siendo agregar `hud_visible` al `vision_state`/`hello` (mismo patrón que `blend_active`,
+  P2.1) para que CUALQUIER tablet pueda sincronizar su botón contra el estado real.
 - **Lockout global (no por IP)** — un atacante en la LAN puede agotar el tope a propósito y
   bloquear también al clínico legítimo por hasta 60 s (ver Gotchas y Modelo de amenaza). Aceptado
   para el modelo de amenaza actual (LAN de consultorio, un solo visor); si hiciera falta acotarlo
