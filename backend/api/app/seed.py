@@ -57,6 +57,7 @@ _KNOWN_SEED_VERSIONS = {
     "0.5.0-clinical",
     "0.5.1-clinical",
     "0.6.0-clinical",
+    "0.6.1-clinical",
 }
 
 

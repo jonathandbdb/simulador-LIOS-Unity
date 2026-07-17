@@ -290,15 +290,16 @@ def _merged_version(base_version: str, extras: list[CustomLens]) -> str:
 
 
 def _lens_to_dict(lens: CustomLens) -> dict:
-    """Serializa una CustomLens al contrato compartido de lente, con el campo
-    extra `origen` ("generic"|"custom") que Unity usa para gatear la UI (las
-    lentes del blob base van SIN el campo)."""
+    """Serializa una CustomLens (P7.2: siempre privada de un device — las
+    "genericas" dejaron de vivir en esta tabla, ver mas abajo) al contrato
+    compartido de lente, con el campo extra `origen: "custom"` que Unity usa
+    para gatear la UI (las lentes del blob base van SIN el campo)."""
     return {
         "id": lens.lens_id,
         "nombre": lens.nombre,
         "descripcion": lens.descripcion,
         "params": json.loads(lens.params_json),
-        "origen": "generic" if lens.owner_device_pk is None else "custom",
+        "origen": "custom",
     }
 
 
@@ -307,10 +308,11 @@ def _lens_to_dict(lens: CustomLens) -> dict:
 # ---------------------------------------------------------------------------
 @router.get("/lenses", response_model=LensesResponse)
 def get_lenses(session: SessionDep, device_id: str | None = None) -> LensesResponse:
-    """Catalogo mergeado: base + lentes GENERICAS + (si `device_id` valido y
-    efectivamente activo) las lentes CUSTOM privadas de ese device.
+    """Catalogo mergeado: base (P7.2: incluye las ex-lentes "genericas", que
+    ahora son lentes BASE mas dentro del blob versionado) + (si `device_id`
+    valido y efectivamente activo) las lentes CUSTOM privadas de ese device.
 
-    `device_id` es opcional: la tablet sincroniza anonima (base + genericas).
+    `device_id` es opcional: la tablet sincroniza anonima (solo base).
     Un device_id desconocido o no-activo responde como anonimo — NO 403: el
     sync nunca bloquea, y para un device suspendido esto purga sus customs
     del cache local en el proximo arranque (comportamiento deseado). Este
@@ -324,17 +326,13 @@ def get_lenses(session: SessionDep, device_id: str | None = None) -> LensesRespo
     data = json.loads(catalog.data)
     base_lenses: list[dict] = data.get("catalogo", [])
 
-    extras = list(session.exec(
-        select(CustomLens)
-        .where(CustomLens.owner_device_pk == None)  # noqa: E711  (genericas)
-        .order_by(CustomLens.lens_id)
-    ))
+    extras: list[CustomLens] = []
     if device_id:
         device = session.exec(
             select(Device).where(Device.device_id == device_id)
         ).first()
         if device is not None and _device_effectively_active(device):
-            extras += list(session.exec(
+            extras = list(session.exec(
                 select(CustomLens)
                 .where(CustomLens.owner_device_pk == device.id)
                 .order_by(CustomLens.lens_id)
@@ -367,7 +365,6 @@ def get_lenses(session: SessionDep, device_id: str | None = None) -> LensesRespo
 # id opaco no enumerable, rate limit, danio acotado a lentes).
 # ---------------------------------------------------------------------------
 MAX_CUSTOM_LENSES_PER_DEVICE = 50
-MAX_GENERIC_LENSES = 100
 MAX_LENS_PARAMS = 20
 
 
@@ -426,31 +423,37 @@ def _authorize_lens_write(session: Session, device_id: str, need_admin: bool):
 
 def _catalog_version_for(session: Session, device: Device | None) -> str:
     """Version mergeada post-cambio para ese device (le ahorra al visor
-    adivinar si tiene que re-sincronizar)."""
+    adivinar si tiene que re-sincronizar). P7.2: ya no suma genericas (esa
+    tabla es solo customs por device)."""
     catalog = session.exec(
         select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
     ).first()
     base_version = "unknown"
     if catalog is not None:
         base_version = json.loads(catalog.data).get("version", catalog.version)
-    extras = list(session.exec(
-        select(CustomLens).where(CustomLens.owner_device_pk == None)  # noqa: E711
-    ))
+    extras: list[CustomLens] = []
     if device is not None:
-        extras += list(session.exec(
+        extras = list(session.exec(
             select(CustomLens).where(CustomLens.owner_device_pk == device.id)
         ))
     return _merged_version(base_version, extras)
 
 
 # ---------------------------------------------------------------------------
-# P7.1: edicion de lentes BASE del catalogo por un admin. La base nunca se
-# pisa in-place: PUT clona el catalogo activo en una version nueva `.aN` con
-# el cambio aplicado (rollback manual desde /admin/lenses activando la fila
-# vieja) y DELETE la rechaza siempre (ni siquiera un admin puede borrar una
-# base). El sufijo se calcula sobre la RAIZ de la version activa (sin un
-# `.aN` final, si ya tenia uno) para que ediciones encadenadas den .a1, .a2,
-# ... en vez de .a1.a1.
+# P7.1/P7.2: edicion, alta y borrado de lentes del CATALOGO BASE por un
+# admin. La base nunca se pisa in-place: cada mutacion clona el catalogo
+# activo en una version nueva `.aN` con el cambio aplicado (rollback manual
+# desde /admin/lenses activando la fila vieja). El sufijo se calcula sobre
+# la RAIZ de la version activa (sin un `.aN` final, si ya tenia uno) para
+# que ediciones encadenadas den .a1, .a2, ... en vez de .a1.a1.
+#
+# P7.2 (decision de producto): las lentes "genericas" dejaron de ser una
+# categoria aparte en `custom_lenses` — crear con scope="generic" ahora
+# AGREGA la lente al blob base (`_add_base_lens`) y un admin puede BORRAR
+# cualquier lente del catalogo (`_delete_base_lens`, ya no rechaza siempre
+# con BASE_LENS: el historial de versiones .aN cubre el rollback). El
+# reason "BASE_LENS" queda sin uso pero no se retira del vocabulario del
+# contrato (evita romper un cliente viejo que lo hubiera hardcodeado).
 # ---------------------------------------------------------------------------
 _VERSION_ROOT_RE = re.compile(r"^(.*?)(\.a(\d+))?$")
 
@@ -538,51 +541,148 @@ def _update_base_lens(session: Session, lens_id: str, body: CustomLensUpdate):
     }
 
 
+def _add_base_lens(session: Session, body: CustomLensCreate):
+    """Rama P7.2 de POST /api/lenses/custom con scope="generic": en vez de
+    crear una fila "generica" en `custom_lenses` (modelo viejo, P7), AGREGA
+    la lente nueva al FINAL del array `catalogo` del blob BASE activo, en
+    una version `.aN` nueva (mismo mecanismo de clon-versionado que
+    `_update_base_lens`). Solo un admin puede hacerlo. El id generado
+    conserva el prefijo `generic_` (estable y ya usado por Unity/tests como
+    marca de "creada desde el panel/tablet", aunque ya no viva en
+    `custom_lenses`) — no hay tope (MAX_GENERIC_LENSES se elimino: el blob
+    no tiene limite de tamano)."""
+    catalog = session.exec(
+        select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+    ).first()
+    if catalog is None:
+        raise HTTPException(status_code=503, detail="No hay catalogo de lentes activo.")
+
+    device = _authorize_lens_write(session, body.device_id, need_admin=True)
+    if not isinstance(device, Device):
+        return device
+
+    data = json.loads(catalog.data)
+    existing_ids = {l.get("id") for l in data.get("catalogo", [])}
+    lens_id = None
+    for _ in range(20):
+        # Retry defensivo ante la (improbable) colision del token_hex, mismo
+        # espiritu que el retry de lens_id en la rama privada de abajo.
+        candidate = f"generic_{secrets.token_hex(4)}"
+        if candidate not in existing_ids:
+            lens_id = candidate
+            break
+    if lens_id is None:
+        raise HTTPException(status_code=500, detail="No se pudo generar un id de lente unico.")
+
+    new_lens = {
+        "id": lens_id,
+        "nombre": body.nombre,
+        "descripcion": body.descripcion,
+        "params": body.params,
+    }
+    new_data = json.loads(catalog.data)  # clon independiente para mutar
+    new_data["catalogo"].append(new_lens)
+    new_version = _next_admin_lens_version(session, catalog.version)
+    new_data["version"] = new_version
+
+    catalog.is_active = False
+    session.add(catalog)
+    new_catalog = LensCatalog(
+        version=new_version,
+        data=json.dumps(new_data, ensure_ascii=False),
+        is_active=True,
+    )
+    session.add(new_catalog)
+    session.commit()
+
+    return {
+        "status": "ok",
+        "lens": dict(new_lens),
+        "catalog_version": _catalog_version_for(session, device),
+    }
+
+
+def _delete_base_lens(session: Session, lens_id: str, device_id: str):
+    """Rama P7.2 de DELETE /api/lenses/custom/{lens_id}: `lens_id` coincide
+    con una lente del catalogo BASE activo. Antes (P7.1) esto se rechazaba
+    SIEMPRE con `BASE_LENS`; decision de producto P7.2: un admin SI puede
+    eliminar cualquier lente del catalogo — nueva version `.aN` sin esa
+    lente (mismo mecanismo de clon-versionado; la fila vieja queda de
+    historial/rollback en /admin/lenses, activandola de nuevo restaura la
+    lente borrada)."""
+    catalog = session.exec(
+        select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+    ).first()
+    if catalog is None:
+        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+    data = json.loads(catalog.data)
+    idx = _active_base_lens_index(data, lens_id)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Lente no encontrada.")
+
+    device = _authorize_lens_write(session, device_id, need_admin=True)
+    if not isinstance(device, Device):
+        return device
+
+    new_data = json.loads(catalog.data)  # clon independiente para mutar
+    del new_data["catalogo"][idx]
+    new_version = _next_admin_lens_version(session, catalog.version)
+    new_data["version"] = new_version
+
+    catalog.is_active = False
+    session.add(catalog)
+    new_catalog = LensCatalog(
+        version=new_version,
+        data=json.dumps(new_data, ensure_ascii=False),
+        is_active=True,
+    )
+    session.add(new_catalog)
+    session.commit()
+
+    return {
+        "status": "ok",
+        "catalog_version": _catalog_version_for(session, device),
+    }
+
+
 @router.post("/lenses/custom", status_code=201)
 @limiter.limit("30/minute")
 def create_custom_lens(request: Request, body: CustomLensCreate, session: SessionDep):
-    """Crea una lente custom (scope "private") o generica (scope "generic",
-    solo admin). El lens_id lo genera el server: sin colisiones con el
-    catalogo base ni entre devices, por construccion."""
+    """Crea una lente custom privada (scope "private") o (P7.2) agrega una
+    lente nueva al CATALOGO BASE (scope "generic", solo admin — ver
+    `_add_base_lens`; ya no crea una fila "generica" en `custom_lenses`).
+    El lens_id lo genera el server: sin colisiones con el catalogo base ni
+    entre devices, por construccion."""
     err = _validate_lens_params(body.params)
     if err:
         raise HTTPException(status_code=422, detail=err)
 
-    is_generic = body.scope == "generic"
-    device = _authorize_lens_write(session, body.device_id, need_admin=is_generic)
+    if body.scope == "generic":
+        # P7.2: ya no es una CustomLens, es un alta directa sobre el blob
+        # base (nueva version .aN) — ver _add_base_lens.
+        return _add_base_lens(session, body)
+
+    device = _authorize_lens_write(session, body.device_id, need_admin=False)
     if not isinstance(device, Device):
         return device  # JSONResponse de denegacion
 
-    # Topes de storage (mismo espiritu que MAX_PENDING_DEVICES).
-    if is_generic:
-        count = session.exec(
-            select(func.count()).select_from(CustomLens)
-            .where(CustomLens.owner_device_pk == None)  # noqa: E711
-        ).one()
-        if count >= MAX_GENERIC_LENSES:
-            return JSONResponse(status_code=409, content=VerifyDenied(
-                reason="LENS_LIMIT_REACHED",
-                message=f"Tope de lentes genericas alcanzado ({MAX_GENERIC_LENSES}).",
-            ).model_dump())
-    else:
-        count = session.exec(
-            select(func.count()).select_from(CustomLens)
-            .where(CustomLens.owner_device_pk == device.id)
-        ).one()
-        if count >= MAX_CUSTOM_LENSES_PER_DEVICE:
-            return JSONResponse(status_code=409, content=VerifyDenied(
-                reason="LENS_LIMIT_REACHED",
-                message=f"Tope de lentes propias alcanzado ({MAX_CUSTOM_LENSES_PER_DEVICE}).",
-            ).model_dump())
+    count = session.exec(
+        select(func.count()).select_from(CustomLens)
+        .where(CustomLens.owner_device_pk == device.id)
+    ).one()
+    if count >= MAX_CUSTOM_LENSES_PER_DEVICE:
+        return JSONResponse(status_code=409, content=VerifyDenied(
+            reason="LENS_LIMIT_REACHED",
+            message=f"Tope de lentes propias alcanzado ({MAX_CUSTOM_LENSES_PER_DEVICE}).",
+        ).model_dump())
 
-    prefix = "generic" if is_generic else "custom"
     lens = None
     for _ in range(3):
         # Retry ante la (improbable) colision del token_hex: unique index en
         # lens_id + regeneracion, mismo patron defensivo que el auto-registro.
         candidate = CustomLens(
-            owner_device_pk=None if is_generic else device.id,
-            lens_id=f"{prefix}_{secrets.token_hex(4)}",
+            owner_device_pk=device.id,
+            lens_id=f"custom_{secrets.token_hex(4)}",
             nombre=body.nombre,
             descripcion=body.descripcion,
             params_json=json.dumps(body.params),
@@ -608,9 +708,15 @@ def create_custom_lens(request: Request, body: CustomLensCreate, session: Sessio
 @router.put("/lenses/custom/{lens_id}")
 @limiter.limit("30/minute")
 def update_custom_lens(request: Request, lens_id: str, body: CustomLensUpdate, session: SessionDep):
-    """Edita una lente custom propia, una generica (solo admin), o (P7.1)
-    una lente BASE del catalogo activo (solo admin — ver _update_base_lens).
-    Un Pro no-admin NO puede editar genericas ni bases (requisito de producto)."""
+    """Edita una lente CUSTOM propia (dueño), o (P7.1) una lente del
+    CATALOGO BASE activo, incluidas las ex-"genericas" que ahora viven ahi
+    (solo admin — ver _update_base_lens). Un Pro no-admin NO puede editar
+    lentes base (requisito de producto).
+
+    `is_generic` abajo queda como chequeo defensivo: P7.2 dejo de crear
+    filas de CustomLens con `owner_device_pk is None` (las genericas nuevas
+    van directo al blob), pero una BD migrada desde antes de P7.2 puede
+    tener filas asi hasta que corra la migracion (ver §migraciones)."""
     err = _validate_lens_params(body.params)
     if err:
         raise HTTPException(status_code=422, detail=err)
@@ -645,9 +751,10 @@ def update_custom_lens(request: Request, lens_id: str, body: CustomLensUpdate, s
 @router.delete("/lenses/custom/{lens_id}")
 @limiter.limit("30/minute")
 def delete_custom_lens(request: Request, lens_id: str, device_id: str, session: SessionDep):
-    """Borra una lente custom propia, o una generica si el device es admin.
-    Las lentes BASE del catalogo NUNCA se borran (ni siquiera un admin,
-    P7.1) — devuelve 403 BASE_LENS sin importar quien lo pida.
+    """Borra una lente CUSTOM propia, o (P7.2) cualquier lente del CATALOGO
+    BASE si el device es admin (`_delete_base_lens` — antes, P7.1, esto
+    rechazaba SIEMPRE con `BASE_LENS`; decision de producto: el historial
+    de versiones .aN ya cubre el rollback, ver docs/backend.md).
     `device_id` va por query param (body en DELETE es antipatico para
     UnityWebRequest)."""
     lens = session.exec(
@@ -658,7 +765,7 @@ def delete_custom_lens(request: Request, lens_id: str, device_id: str, session: 
             select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
         ).first()
         if catalog is not None and _active_base_lens_index(json.loads(catalog.data), lens_id) is not None:
-            return _denied("BASE_LENS", "Las lentes base no se pueden eliminar.")
+            return _delete_base_lens(session, lens_id, device_id)
         raise HTTPException(status_code=404, detail="Lente no encontrada.")
 
     is_generic = lens.owner_device_pk is None

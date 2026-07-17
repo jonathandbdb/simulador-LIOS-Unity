@@ -270,8 +270,10 @@ def devices_delete(admin: AdminDep, session: SessionDep, device_pk: int):
     if d is not None:
         # Cascade app-level de sus lentes custom (ademas del ON DELETE CASCADE
         # de Postgres: en los tests SQLite el pragma de FKs esta off por
-        # default, esta capa garantiza el mismo comportamiento). Las lentes
-        # GENERICAS (owner NULL) jamas se ven afectadas, por construccion.
+        # default, esta capa garantiza el mismo comportamiento). P7.2: ya no
+        # hay lentes "genericas" con owner NULL en esta tabla (viven en el
+        # blob base) — el filtro por owner_device_pk == d.id nunca alcanza
+        # nada mas que las lentes propias de ESTE device, por construccion.
         own_lenses = session.exec(
             select(CustomLens).where(CustomLens.owner_device_pk == d.id)
         ).all()
@@ -421,18 +423,22 @@ def lenses_activate(admin: AdminDep, session: SessionDep, catalog_pk: int):
 
 
 # ---------------------------------------------------------------------------
-# Custom lenses (P7) — ver/borrar; la creacion/edicion es de los devices
+# Custom lenses (P7) — ver/borrar; la creacion/edicion es de los devices.
+# P7.2: esta tabla ya solo tiene lentes CUSTOM privadas por device — las
+# "genericas" dejaron de existir aca: pasaron a ser lentes BASE mas del
+# blob versionado (se editan/borran/consultan su historial desde
+# /admin/lenses, mecanismo .aN). Por eso el filtro por scope generic/private
+# desaparecio; solo queda filtrar por dispositivo dueño. El badge
+# "Generica" del template queda como defensivo por si una fila vieja con
+# `owner_device_pk IS NULL` sobrevive (p. ej. colision de id detectada por
+# la migracion 0005, que la deja sin migrar para revision manual).
 # ---------------------------------------------------------------------------
 @router.get("/custom-lenses")
 def custom_lenses_list(
     request: Request, admin: AdminDep, session: SessionDep,
-    scope: str = "all", device_pk: int | None = None,
+    device_pk: int | None = None,
 ):
     query = select(CustomLens).order_by(desc(CustomLens.updated_at))
-    if scope == "generic":
-        query = query.where(CustomLens.owner_device_pk == None)  # noqa: E711
-    elif scope == "private":
-        query = query.where(CustomLens.owner_device_pk != None)  # noqa: E711
     if device_pk is not None:
         query = query.where(CustomLens.owner_device_pk == device_pk)
     lenses = session.exec(query).all()
@@ -451,7 +457,7 @@ def custom_lenses_list(
         rows.append({"lens": lens, "owner": owner, "params_pretty": params_pretty})
     return render(
         request, "custom_lenses.html", admin_user=admin,
-        rows=rows, scope=scope, device_pk=device_pk,
+        rows=rows, device_pk=device_pk,
         devices=sorted(devices_by_pk.values(), key=lambda d: d.name.lower()),
     )
 
