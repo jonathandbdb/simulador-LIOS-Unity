@@ -78,8 +78,8 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
   override > streaming > default; `source` ∈ `"default"|"streaming"|"override"`, para que
   `DataManager` loguee sin duplicar el parseo). `DataManager` llama a estas mismas funciones — no
   hay una reimplementación paralela para los tests.
-- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.6.0-clinical`,
-  3 lentes: `monofocal`, `panoptix`, `vivity`).
+- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.6.1-clinical`,
+  4 lentes: `monofocal`, `panoptix`, `vivity`, `paciente_joven`).
 - `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de `CatalogParser`/`LensEngine`
   + un test de integración sobre el JSON real.
 - `Assets/Tests/EditMode/DataManagerLogicTests.cs` (P6.5 + config-layers) — tests de
@@ -180,6 +180,26 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 > anterior: solo un bump de versión dispara la re-promoción del seed en un backend que ya corrió
 > (ver `docs/backend.md` §Seed del catálogo) — cambiar solo los valores sin tocar la versión habría
 > dejado un backend ya seedeado silenciosamente con los rangos viejos.
+
+> **4ª lente base `paciente_joven` (v0.6.1):** representa la visión neutra (ojo sano, sin LIO
+> implantada) para volver a un punto de partida / comparación desde la tablet, sin necesitar
+> código de UI nuevo — basta agregarla como lente BASE más al catálogo: aparece sola en el
+> ciclado del visor y en la tablet (Pro y Standard). `id: "paciente_joven"`. Todos sus params de
+> disfotopsia/blur están en su valor "apagado" (`desenfoque_max`, `halo_intensity`,
+> `contrast_loss`, `destello_intensity`, `destello_rayos`, `straylight`, `astig_magnitude` = 0;
+> `halo_extra_rings` = 1, el mínimo de pupila) y los 3 focos quedan abiertos (`foco_lejos_m` 6.0,
+> `foco_intermedio_m` 1.0, `foco_cerca_m` 0.35) con `profundidad_foco_m` al máximo del rango (4.0)
+> para que toda distancia caiga dentro de la zona nítida — visión útil a cualquier distancia, sin
+> desenfoque simulado. Con estos valores neutros el gate de `VisionRendererFeature.AddRenderPasses`
+> (`Assets/Scripts/Runtime/Vision/VisionRendererFeature.cs:48`, log `[Vision] Post-proceso gate OFF
+> (todo en cero: se saltea)`) se comporta igual que sin ninguna lente aplicada: saltea los blits de
+> post-proceso, costo de GPU cero. `min`/`max` son los mismos rangos clínicos estándar (v0.6.0) que
+> las otras 3 lentes — no se introdujo ningún rango nuevo. Agregada al FINAL del array `catalogo`
+> (después de `vivity`) para no alterar el ciclado existente de `SimuladorInput`.
+> **Versión bumpeada `0.6.0-clinical` → `0.6.1-clinical`** en AMBOS archivos (mismo mecanismo de
+> siempre: dispara la re-promoción del seed en un backend ya corrido). El catálogo pasa de **3 a
+> 4 lentes base**. Backend (`backend/api/app/seed.py` y `_KNOWN_SEED_VERSIONS`) actualizado en la
+> misma tarea global por @backend-dev — no tocado desde este lado (`Simulador.Runtime`).
 
 ### Orden de carga (`InitializeAsync`)
 
@@ -300,8 +320,8 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 
 1. Editor: Window → General → Test Runner → EditMode → correr `Simulador.Tests.EditMode`:
    `DataLogicTests` (13 — parseo válido/inválido, merge sin pisar existentes, defaults + overrides
-   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.5.0-clinical`/13
-   params por lente) + `DataManagerLogicTests` (**11**, P6.5 + config-layers — armado de URL de
+   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.6.1-clinical`/13
+   params por lente, 4 lentes: `monofocal`/`panoptix`/`vivity`/`paciente_joven`) + `DataManagerLogicTests` (**11**, P6.5 + config-layers — armado de URL de
    sync con/sin trailing slash, round-trip de `lens_overrides.json` con JSON válido e inválido,
    `ExtractBackendUrl` con JSON inválido/sin la clave, y `ResolveBackendUrl` con los 4 casos de
    precedencia: solo streaming, streaming+override, override corrupto, ambos vacíos) = **24 tests
@@ -310,7 +330,7 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
    Test Runner: `Simulador → Run EditMode Tests` (`Assets/Scripts/Editor/EditModeTestRunner.cs`)
    loguea el resumen `passed/failed/skipped` + el detalle de cada falla a la consola — útil para
    verificar desde MCP (`unity_execute_menu_item` + `unity_console_log`) sin abrir la ventana.
-2. Play mode: en consola debe aparecer `DataManager: catalogo vX cargado desde defaults|cache (3
+2. Play mode: en consola debe aparecer `DataManager: catalogo vX cargado desde defaults|cache (4
    lentes)` y luego `sync con backend -> https://vr.conecta.sh/api/lenses` (si el backend de
    producción no responde desde el entorno de desarrollo, el fallo de sync es esperado y no
    bloquea).
@@ -337,15 +357,21 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 ## P7: catálogo mergeado por device (lentes custom/genéricas)
 
 - El backend ahora sirve `GET /api/lenses?device_id=` con **merge**: blob base + lentes
-  genéricas (admin) + lentes custom del device solicitante. `DataManager` del **visor** manda
-  `?device_id=` (`DataManagerLogic.BuildSyncUrl(url, ep, deviceId)`, guard: presencia de
-  `TabletController` en escena ⇒ app tablet ⇒ sync anónima con base+genéricas).
+  custom del device solicitante (histórico: hasta P7.1, las lentes "genéricas" de admin
+  también entraban acá como un tercer grupo del merge — **P7.2 las fusionó con el blob
+  base**, ya NO son un grupo aparte del merge; ver §P7.2 más abajo). `DataManager` del
+  **visor** manda `?device_id=` (`DataManagerLogic.BuildSyncUrl(url, ep, deviceId)`, guard:
+  presencia de `TabletController` en escena ⇒ app tablet ⇒ sync anónima con solo base).
 - **Versión mergeada**: `"{base}+x{hash}"` solo si hay extras; sin extras el string es la
   versión base literal (los caches existentes no se invalidan gratis). Cualquier
-  alta/edición/borrado de lentes cambia el hash ⇒ el próximo sync reemplaza cache.
-- **`LensDef.Origen`** (`origen` en JSON): `null` = blob base, `"generic"` = de admin (global),
+  alta/edición/borrado de lentes CUSTOM cambia el hash ⇒ el próximo sync reemplaza cache
+  (una alta/edición/borrado de lente de ADMIN, P7.2, cambia la versión BASE en sí, no el hash
+  de extras).
+- **`LensDef.Origen`** (`origen` en JSON): `null`/ausente = blob base (P7.2: incluye las
+  lentes de admin, que hasta P7.1 llevaban `"generic"` — ese valor **ya no se emite**),
   `"custom"` = propia de ESTE visor. La tablet gatea la UI con esto (badge en la card, gating
-  del Ajuste fino, botones guardar/eliminar — ver docs/tablet.md).
+  del Ajuste fino, botones guardar/eliminar — ver docs/tablet.md; la UI que asumía
+  `"generic"` ya se actualizó en P7.2, ver §P7.2 más abajo).
 - El flujo de creación/edición va por WS (`create/update/delete_lens`, ver docs/networking.md):
   el visor hace el HTTP (`Data/CustomLensClient.cs`), re-sincroniza
   (`DataManager.RefreshFromBackend()`, que ahora SÍ tiene caller) y el hello re-broadcasteado
@@ -361,8 +387,9 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 - Un visor **admin** ahora puede EDITAR una lente BASE (monofocal/panoptix/vivity) desde la
   tablet — el cambio se persiste en el backend (`PUT /api/lenses/custom/{lens_id}` con el
   `id` de una lente base en vez de un `custom_xxxxxxxx`/`generic_xxxxxxxx`) y queda visible
-  para TODOS los devices en el próximo sync. Las bases **nunca se borran** (`DELETE` sobre
-  un id de base rechaza siempre con `reason:"BASE_LENS"`, ver `docs/backend.md` §P7.1).
+  para TODOS los devices en el próximo sync. (Histórico P7.1: las bases nunca se borraban,
+  `DELETE` rechazaba siempre con `reason:"BASE_LENS"` — **P7.2 cambió esto: un admin SI puede
+  borrar cualquier lente del catálogo**, ver §P7.2 más abajo.)
   **El schema JSON del contrato NO cambia**: la lente editada se sigue sirviendo con la
   misma forma `{id, nombre, descripcion, params}` y SIN campo `origen` (sigue siendo una
   lente base, no una custom/genérica) — `CatalogParser`/`CatalogModel` de Unity no
@@ -375,6 +402,43 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
   backend nuevo/reseteado y la base de comparación en diff/MD5 entre Unity y el repo, pero
   ya no son garantía de "lo que el visor ve hoy" si el backend tiene ediciones de admin
   encima.
+
+## P7.2: las lentes "genéricas" se fusionan con el catálogo BASE — CAMBIO DE CONTRATO (backend + Unity, resuelto)
+
+> Esta sección documenta el cambio de contrato hecho del lado backend
+> (`backend/api/app/routers.py`, ver `docs/backend.md` §P7.2) y su consumo del lado Unity
+> (`TabletController.cs`/`LensCardView.cs`, ver `docs/tablet.md` §"P7.1→P7.2 — gating por
+> procedencia × admin"), ya implementado por @unity-dev. `CatalogParser.cs`/`CatalogModel.cs` NO
+> necesitaron cambios (el schema JSON no cambió de forma, `origen` sigue siendo un string
+> opcional) — el trabajo fue enteramente en la UI de la tablet que ramificaba sobre
+> `origen == "generic"`.
+
+- **Qué cambia para el consumidor de `GET /api/lenses`**: el campo `"origen":"generic"`
+  **deja de aparecer** en cualquier lente. Antes, una lente creada por un admin (visible para
+  todos) llevaba `origen:"generic"`; ahora, esa misma acción (crear con `scope:"generic"` vía
+  `POST /api/lenses/custom`) la agrega directo al array `catalogo` del blob BASE — se sirve
+  **sin campo `origen`**, indistinguible de `monofocal`/`panoptix`/etc. `"origen":"custom"`
+  (lentes privadas de UN visor) sigue existiendo igual que antes.
+- **Qué se resolvió en el lado Unity** (tarea de seguimiento de @unity-dev, ya cerrada):
+  - `CatalogParser`/`CatalogModel.cs`: sin cambios, tal como se anticipó (`origen` sigue siendo
+    un string opcional; el schema no cambió de forma).
+  - Tablet (`docs/tablet.md` §"P7.1→P7.2"): la decisión de producto fue que **YA NO hace falta
+    distinguir** "base de fábrica" de "genérica de admin" — el admin gestiona el catálogo
+    entero por igual. `TabletController.BuildParamsEditor` simplificó `canDelete` a `ownCustom
+    || isAdmin` (antes exigía además `origen == "generic"`); el toggle del alta se renombró
+    "Agregar al catálogo (para todos)" (protocolo sin cambios, sigue mandando
+    `scope:"generic"`); `LensCardView` mantiene la rama `origen == "generic"` solo como
+    tolerancia con un backend viejo no migrado (nunca la emite un backend P7.2).
+  - `DELETE` de una lente de catálogo (antes rechazaba siempre con `reason:"BASE_LENS"`,
+    P7.1): la tablet ya ofrece "Eliminar lente" sobre CUALQUIER lente de catálogo si el visor
+    es admin (incluidas las bases de fábrica); `OnLensError` generalizó el mensaje de
+    `NOT_ADMIN` para cubrir editar/eliminar/crear-para-todos y mantiene `BASE_LENS` mapeado
+    solo por compatibilidad con un backend viejo.
+- **Qué NO cambia**: el shape de `POST`/`PUT`/`DELETE /api/lenses/custom` (`{status, lens?,
+  catalog_version}`), los códigos de error existentes (`DEVICE_NOT_FOUND`,
+  `DEVICE_NOT_AUTHORIZED`, `MODE_NOT_PRO`, `NOT_ADMIN`, `NOT_OWNER`, `LENS_LIMIT_REACHED`),
+  el flujo por WS (`create/update/delete_lens`) ni la mecánica de versión mergeada
+  (`"{base}+x{hash}"`).
 
 ## Pendientes / deuda
 

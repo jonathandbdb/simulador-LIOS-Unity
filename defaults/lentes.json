@@ -1,5 +1,5 @@
 {
-  "version": "0.6.0-clinical",
+  "version": "0.6.1-clinical",
   "catalogo": [
     {
       "id": "monofocal",
@@ -59,6 +59,26 @@
         "straylight":         { "default": 0.45, "min": 0.0, "max": 1.0 },
         "astig_magnitude":    { "default": 0.0,  "min": 0.0, "max": 1.0 },
         "astig_axis_deg":     { "default": 0.0,  "min": 0.0, "max": 180.0 }
+      }
+    },
+    {
+      "id": "paciente_joven",
+      "nombre": "Paciente joven (vision neutra)",
+      "descripcion": "Cristalino sano, sin lente intraocular. Vision nitida a todas las distancias, sin halos, destellos, perdida de contraste ni encandilamiento. Punto de partida / comparacion.",
+      "params": {
+        "foco_lejos_m":       { "default": 6.0, "min": 2.0, "max": 9.0 },
+        "foco_intermedio_m":  { "default": 1.0, "min": 0.0, "max": 2.0 },
+        "foco_cerca_m":       { "default": 0.35,"min": 0.0, "max": 0.6 },
+        "profundidad_foco_m": { "default": 4.0, "min": 0.0, "max": 4.0 },
+        "desenfoque_max":     { "default": 0.0, "min": 0.0, "max": 2.0 },
+        "halo_intensity":     { "default": 0.0, "min": 0.0, "max": 1.0 },
+        "halo_extra_rings":   { "default": 1.0, "min": 1.0, "max": 6.0 },
+        "contrast_loss":      { "default": 0.0, "min": 0.0, "max": 1.0 },
+        "destello_intensity": { "default": 0.0, "min": 0.0, "max": 1.0 },
+        "destello_rayos":     { "default": 0.0, "min": 0.0, "max": 16.0 },
+        "straylight":         { "default": 0.0, "min": 0.0, "max": 1.0 },
+        "astig_magnitude":    { "default": 0.0, "min": 0.0, "max": 1.0 },
+        "astig_axis_deg":     { "default": 0.0, "min": 0.0, "max": 180.0 }
       }
     }
   ]

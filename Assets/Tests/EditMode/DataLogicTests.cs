@@ -218,8 +218,8 @@ namespace Simulador.Tests
             Assert.IsTrue(File.Exists(path), $"Falta {path}");
             var cat = CatalogParser.Parse(File.ReadAllText(path));
             Assert.IsNotNull(cat);
-            Assert.AreEqual("0.6.0-clinical", cat.Version);
-            Assert.AreEqual(3, cat.Catalogo.Count);
+            Assert.AreEqual("0.6.1-clinical", cat.Version);
+            Assert.AreEqual(4, cat.Catalogo.Count);
 
             var pan = cat.Catalogo.Find(l => l.Id == "panoptix");
             Assert.IsNotNull(pan);
@@ -290,6 +290,20 @@ namespace Simulador.Tests
                 Assert.AreEqual(0f, l.Params["astig_axis_deg"].Min, 1e-4f, $"{l.Id}.astig_axis_deg min");
                 Assert.AreEqual(180f, l.Params["astig_axis_deg"].Max, 1e-4f, $"{l.Id}.astig_axis_deg max");
             }
+
+            // v0.6.1: 4ta lente base "paciente_joven" (vision neutra, sin LIO) -- todos los
+            // params de disfotopsia/blur en su valor "apagado" para que el gate del
+            // RendererFeature saltee los blits (ver docs/catalogo-lentes.md).
+            var joven = cat.Catalogo.Find(l => l.Id == "paciente_joven");
+            Assert.IsNotNull(joven, "deberia existir la lente paciente_joven");
+            Assert.AreEqual(0f, joven.Params["desenfoque_max"].Default, 1e-4f);
+            Assert.AreEqual(0f, joven.Params["contrast_loss"].Default, 1e-4f);
+            Assert.AreEqual(0f, joven.Params["straylight"].Default, 1e-4f);
+            Assert.AreEqual(0f, joven.Params["astig_magnitude"].Default, 1e-4f);
+            Assert.AreEqual(0f, joven.Params["halo_intensity"].Default, 1e-4f);
+            Assert.AreEqual(0f, joven.Params["destello_intensity"].Default, 1e-4f);
+            Assert.AreEqual(0f, joven.Params["destello_rayos"].Default, 1e-4f);
+            Assert.AreEqual(1f, joven.Params["halo_extra_rings"].Default, 1e-4f);
         }
     }
 }
