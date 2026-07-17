@@ -370,16 +370,17 @@ escena** (sin script de runtime, footprint cero de código): un GameObject raíz
 `ScenarioContainer/Consultorio`, así que **se enciende/apaga solo con el escenario** (ScenarioManager
 activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni toggle nuevo).
 
-- **Layout**: 12 filas × 5 letras, progresión logMAR en pasos de 0.1, de **logMAR 1.0 (20/200)** arriba
-  a **logMAR 0.0 (20/20)** y una fila extra **-0.1 (20/16)** abajo. Cada fila etiquetada al margen
-  izquierdo con logMAR + Snellen (20/x). Letras **Sloan** (C D H K N O R S V Z). Alto contraste: texto
-  negro (TMP SDF, unlit) sobre panel blanco **unlit** (`Assets/Materials/OptotypeBackground.mat`, URP
-  Unlit doble cara) → contraste garantizado, la iluminación de la sala no lo lava.
+- **Layout**: 11 filas × 5 letras, progresión logMAR en pasos de 0.1, de **logMAR 1.0 (20/200)** arriba
+  a **logMAR 0.0 (20/20)** abajo (se quitó la fila extra -0.1/20/16 que originalmente cerraba la
+  cartilla — por debajo del límite clínico útil a la distancia de diseño). Cada fila etiquetada al
+  margen izquierdo con logMAR + Snellen (20/x). Letras **Sloan** (C D H K N O R S V Z). Alto contraste:
+  texto negro (TMP SDF, unlit) sobre panel blanco **unlit** (`Assets/Materials/OptotypeBackground.mat`,
+  URP Unlit doble cara) → contraste garantizado, la iluminación de la sala no lo lava.
 - **El post-proceso de visión ALCANZA las letras (P4.5-fix)**: por defecto los `TextMeshPro` usan el
   material de fuente `Inter-SemiBold SDF Material` en **cola Transparent (renderQueue 3000)**, y el pass
   se inyecta en `BeforeRenderingTransparents` → las letras se dibujaban DESPUÉS del pass y quedaban
   NÍTIDAS mientras la sala se veía borrosa/astigmática (bug clínico: la cartilla debe leerse BAJO los
-  efectos de la LIO, no exenta). Fix: los 24 TMP (`row_*` + `label_*`) usan un material dedicado
+  efectos de la LIO, no exenta). Fix: los 22 TMP (`row_*` + `label_*`) usan un material dedicado
   **`Assets/Materials/OptotypeText.mat`** (copia del material de fuente, mismo shader
   `TextMeshPro/Mobile/Distance Field` y mismo atlas `Inter-SemiBold SDF Atlas`) con **`renderQueue = 2450`**
   (rango opaco, ≤2500). Así las letras se dibujan en la fase opaca (después del panel opaco en 2000, que
@@ -399,7 +400,7 @@ activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni tog
   de la altura/postura del usuario → la distancia efectiva puede variar ~±1% (≈ ±0.005 logMAR,
   despreciable clínicamente). Verificado: cap-height renderizado del renglón 20/20 =
   **5.818 mm** = target `h(0.0)=2·4·tan(2.5 arcmin)=5.818 mm` ✓. Alturas por fila a 4 m: 20/200=5.82 cm,
-  20/100=2.92 cm, 20/40=1.16 cm, 20/20=5.82 mm, 20/16=4.62 mm. El tamaño de fuente TMP se calibra con
+  20/100=2.92 cm, 20/40=1.16 cm, 20/20=5.82 mm (última fila). El tamaño de fuente TMP se calibra con
   `fontSize = h(L)/ratio`, `ratio = capHeight/fontSize = 0.07554` medido de la fuente.
 - **Limitación tipográfica (desvío documentado)**: no hay fuente Sloan en el proyecto → se usa
   `Inter-SemiBold SDF` (la TMP geométrica de la tablet, `Assets/Resources/TabletFonts`). El **layout
