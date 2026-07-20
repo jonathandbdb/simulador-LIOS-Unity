@@ -37,8 +37,8 @@ namespace Simulador.Vision
         {
             if (text == null) return;
             var dm = DataManager.Instance;
-            string l = dm != null ? Safe(dm.Left.LensId) : "?";
-            string r = dm != null ? Safe(dm.Right.LensId) : "?";
+            string l = dm != null ? LensLabel(dm, dm.Left.LensId) : "?";
+            string r = dm != null ? LensLabel(dm, dm.Right.LensId) : "?";
             string sc = scenarios != null ? Safe(scenarios.Current) : "?";
             string ha = glare != null ? (glare.halosEnabled ? "ON" : "off") : "?";
             // Convencion clinica: OD primero, OI despues (solo orden de presentacion;
@@ -62,5 +62,19 @@ namespace Simulador.Vision
         }
 
         private static string Safe(string s) => string.IsNullOrEmpty(s) ? "-" : s;
+
+        /// <summary>
+        /// Etiqueta legible de la lente para el HUD: el nombre que le puso el admin
+        /// (LensDef.Nombre, clave "nombre" de lentes.json) resuelto por id via
+        /// DataManager.GetLens. Fallback al id crudo si la lente no esta en el catalogo
+        /// (borrada del catalogo pero todavia aplicada al ojo: caso borde real, Refresh
+        /// corre cada ~0.4 s) o si el nombre viniera vacio. Sin id -> "-" (como Safe).
+        /// </summary>
+        private static string LensLabel(DataManager dm, string lensId)
+        {
+            if (string.IsNullOrEmpty(lensId)) return "-";
+            string nombre = dm.GetLens(lensId)?.Nombre;
+            return string.IsNullOrEmpty(nombre) ? lensId : nombre;
+        }
     }
 }

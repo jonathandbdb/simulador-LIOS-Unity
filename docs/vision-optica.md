@@ -270,7 +270,14 @@ Render por frame (URP RenderGraph):
 - `Assets/Scripts/Runtime/Vision/HudController.cs` — HUD world-space anclado a la cámara: FPS,
   escenario, lente por ojo (**convención clínica: `OD (B)` primero, `OI (A)` después** — solo orden
   de presentación; el mapeo de botones no cambia: A cicla OI, B cicla OD), estado de halos (UI
-  legacy, sin TMP). Última línea de emparejamiento:
+  legacy, sin TMP). **La lente se muestra por su NOMBRE legible** (`LensDef.Nombre`, la clave
+  `"nombre"` que le pone el admin en `lentes.json`, ej. "PanOptix Trifocal"), NO por el `LensId`
+  crudo: el helper `LensLabel(dm, lensId)` resuelve el nombre vía `DataManager.GetLens(lensId)?.Nombre`
+  y hace **fallback al id crudo** si la lente ya no está en el catálogo (borrada pero todavía
+  aplicada al ojo — caso borde real, `Refresh()` corre cada ~0.4 s) o si el nombre viniera vacío;
+  id vacío sigue mostrándose como "-". `EyeState` NO lleva el nombre (es contrato de red, ver
+  `docs/networking.md`): la resolución id→nombre es un lookup local del HUD contra el catálogo del
+  `DataManager`. Última línea de emparejamiento:
   sin tablet autenticada muestra `PIN tablet: NNNNNN` (de `NetworkController.Instance.PairingPin`)
   para que el clínico lo tipee en la tablet; con al menos una autenticada
   (`NetworkController.AuthenticatedClientCount > 0`) pasa a `Tablet conectada` y deja de exponer el
