@@ -92,6 +92,13 @@ class CustomLensUpdate(BaseModel):
     params: dict[str, dict]
 
 
+class LensReorderRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    # Ids del catalogo BASE en el nuevo orden. max_length acota el payload
+    # (el catalogo real hoy tiene un puñado de lentes; 200 es margen sano).
+    order: list[str] = Field(max_length=200)
+
+
 class LogEvent(BaseModel):
     event: str = Field(min_length=1, max_length=64)
     detail: str = Field(default="", max_length=2048)
@@ -777,6 +784,103 @@ def delete_custom_lens(request: Request, lens_id: str, device_id: str, session: 
 
     session.delete(lens)
     session.commit()
+    return {
+        "status": "ok",
+        "catalog_version": _catalog_version_for(session, device),
+    }
+
+
+# ---------------------------------------------------------------------------
+# P7.3: reorden del catalogo BASE (drag & drop desde el panel/tablet). Mismo
+# patron de clon-versionado `.aN` que P7.1/P7.2 (_update_base_lens/
+# _add_base_lens/_delete_base_lens): nunca se pisa in-place. Las lentes
+# CUSTOM por device NO participan de este orden — `get_lenses` siempre las
+# agrega DESPUES de las lentes base, sin importar como esten en
+# `custom_lenses`.
+# ---------------------------------------------------------------------------
+def _validate_lens_order(base_ids: list[str], order: list[str]) -> str | None:
+    """Valida que `order` sea una permutacion EXACTA de `base_ids` (mismos
+    ids, sin duplicados, sin desconocidos, sin faltantes). Devuelve un
+    mensaje de error especifico (duplicado/desconocido/faltante) o None si
+    es valida."""
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    for lens_id in order:
+        if lens_id in seen:
+            duplicates.append(lens_id)
+        seen.add(lens_id)
+    if duplicates:
+        return f"order contiene id(s) duplicados: {sorted(set(duplicates))}."
+
+    base_set = set(base_ids)
+    unknown = [lens_id for lens_id in order if lens_id not in base_set]
+    if unknown:
+        return f"order contiene id(s) desconocidos (no estan en el catalogo): {unknown}."
+
+    missing = [lens_id for lens_id in base_ids if lens_id not in seen]
+    if missing:
+        return f"order no incluye id(s) del catalogo: {missing}."
+
+    return None
+
+
+@router.post("/lenses/reorder")
+@limiter.limit("30/minute")
+def reorder_lenses(request: Request, body: LensReorderRequest, session: SessionDep):
+    """Reordena el array `catalogo` del catalogo BASE activo segun `order`
+    (lista de ids en el nuevo orden). Solo un admin puede hacerlo (mismo
+    `_authorize_lens_write(need_admin=True)` que editar/agregar/borrar una
+    lente base). `order` debe ser una permutacion EXACTA de los ids
+    actualmente activos: mismo largo, sin duplicados, sin ids desconocidos
+    y sin faltantes (422 con detalle de que fallo si no).
+
+    Si `order` ya coincide con el orden actual, es un no-op: responde
+    ok sin clonar una version `.aN` nueva (evita quemar historial por un
+    reorden que no cambia nada). Si cambia, usa el mismo mecanismo de
+    clon-versionado que el resto de las mutaciones del catalogo base
+    (`_next_admin_lens_version`): la fila vieja se desactiva pero nunca se
+    borra (rollback manual desde /admin/lenses).
+
+    Las lentes CUSTOM por device no entran en este orden — no viven en este
+    array, y `get_lenses` las agrega siempre al final del merge."""
+    catalog = session.exec(
+        select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+    ).first()
+    if catalog is None:
+        raise HTTPException(status_code=503, detail="No hay catalogo de lentes activo.")
+
+    device = _authorize_lens_write(session, body.device_id, need_admin=True)
+    if not isinstance(device, Device):
+        return device
+
+    data = json.loads(catalog.data)
+    base_lenses: list[dict] = data.get("catalogo", [])
+    base_ids = [l.get("id") for l in base_lenses]
+
+    err = _validate_lens_order(base_ids, body.order)
+    if err:
+        raise HTTPException(status_code=422, detail=err)
+
+    if body.order == base_ids:
+        # No-op: el orden pedido es igual al actual, no se quema un .aN.
+        return {"status": "ok", "catalog_version": _catalog_version_for(session, device)}
+
+    new_data = json.loads(catalog.data)  # clon independiente para mutar
+    by_id = {l.get("id"): l for l in new_data["catalogo"]}
+    new_data["catalogo"] = [by_id[lens_id] for lens_id in body.order]
+    new_version = _next_admin_lens_version(session, catalog.version)
+    new_data["version"] = new_version
+
+    catalog.is_active = False
+    session.add(catalog)
+    new_catalog = LensCatalog(
+        version=new_version,
+        data=json.dumps(new_data, ensure_ascii=False),
+        is_active=True,
+    )
+    session.add(new_catalog)
+    session.commit()
+
     return {
         "status": "ok",
         "catalog_version": _catalog_version_for(session, device),

@@ -405,6 +405,145 @@ def test_delete_base_lens_requires_admin(client):
 
 
 # ---------------------------------------------------------------------------
+# P7.3: reorden del catalogo BASE (POST /api/lenses/reorder). Mismo mecanismo
+# de clon-versionado .aN que P7.1/P7.2.
+# ---------------------------------------------------------------------------
+def test_admin_reorder_base_lenses_versions_and_history(client):
+    from app.database import engine
+    from app.models import LensCatalog
+    from sqlmodel import Session, select as sql_select
+
+    def _active_raw_version():
+        with Session(engine) as s:
+            cat = s.exec(
+                sql_select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+            ).first()
+            return cat.version
+
+    _add_device("DEV_REORDER_ADM", app_mode="pro", is_admin=True)
+    # Agregamos 2 lentes propias controladas: la BD es compartida entre tests
+    # de este archivo (otros ya borraron/agregaron lentes base), asi que no
+    # podemos asumir cuantas lentes "de fabrica" sobreviven en este punto de
+    # la sesion de pytest — solo que estas 2 estan garantizadas.
+    id_a = _create_lens(client, "DEV_REORDER_ADM", scope="generic", nombre="Reorder A").json()["lens"]["id"]
+    id_b = _create_lens(client, "DEV_REORDER_ADM", scope="generic", nombre="Reorder B").json()["lens"]["id"]
+
+    before = client.get("/api/lenses").json()
+    before_ids = [l["id"] for l in before["catalogo"]]
+    assert id_a in before_ids and id_b in before_ids
+    assert len(before_ids) >= 2
+    before_version = _active_raw_version()
+
+    reversed_order = list(reversed(before_ids))
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_ADM", "order": reversed_order,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "ok"
+    assert "catalog_version" in body
+
+    # Nueva version .aN (mismo mecanismo que las otras mutaciones de base).
+    assert _active_raw_version() != before_version
+    assert ".a" in _active_raw_version()
+
+    merged = client.get("/api/lenses").json()
+    assert [l["id"] for l in merged["catalogo"]] == reversed_order
+    assert merged["version"].startswith(_active_raw_version())
+
+    # La fila vieja queda de historial/rollback, con el orden original intacto.
+    with Session(engine) as s:
+        old = s.exec(sql_select(LensCatalog).where(LensCatalog.version == before_version)).first()
+        assert old is not None and old.is_active is False
+
+    # Segundo reorden (volver al orden original): encadena a un .aN mas.
+    mid_version = _active_raw_version()
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_ADM", "order": before_ids,
+    })
+    assert r.status_code == 200
+    assert _active_raw_version() != mid_version
+    assert _active_raw_version() != before_version
+    assert [l["id"] for l in client.get("/api/lenses").json()["catalogo"]] == before_ids
+
+
+def test_reorder_noop_does_not_create_new_version(client):
+    from app.database import engine
+    from app.models import LensCatalog
+    from sqlmodel import Session, select as sql_select
+
+    def _active_row():
+        with Session(engine) as s:
+            return s.exec(
+                sql_select(LensCatalog).where(LensCatalog.is_active == True)  # noqa: E712
+            ).first()
+
+    _add_device("DEV_REORDER_NOOP", app_mode="pro", is_admin=True)
+    current_ids = [l["id"] for l in client.get("/api/lenses").json()["catalogo"]]
+    before_row = _active_row()
+    before_id, before_version = before_row.id, before_row.version
+
+    with Session(engine) as s:
+        count_before = len(s.exec(sql_select(LensCatalog)).all())
+
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_NOOP", "order": current_ids,
+    })
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+    after_row = _active_row()
+    assert after_row.id == before_id
+    assert after_row.version == before_version
+    with Session(engine) as s:
+        count_after = len(s.exec(sql_select(LensCatalog)).all())
+    assert count_after == count_before  # no se creo ninguna fila nueva
+
+
+def test_reorder_requires_admin(client):
+    _add_device("DEV_REORDER_PRO", app_mode="pro", is_admin=False)
+    current_ids = [l["id"] for l in client.get("/api/lenses").json()["catalogo"]]
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_PRO", "order": list(reversed(current_ids)),
+    })
+    assert r.status_code == 403
+    assert r.json()["reason"] == "NOT_ADMIN"
+
+
+def test_reorder_invalid_order_rejected(client):
+    _add_device("DEV_REORDER_VAL", app_mode="pro", is_admin=True)
+    # Mismo motivo que en test_admin_reorder_base_lenses_versions_and_history:
+    # no asumimos cuantas lentes base sobreviven en la BD compartida, solo
+    # que estas 2 propias estan garantizadas.
+    _create_lens(client, "DEV_REORDER_VAL", scope="generic", nombre="Val A")
+    _create_lens(client, "DEV_REORDER_VAL", scope="generic", nombre="Val B")
+    current_ids = [l["id"] for l in client.get("/api/lenses").json()["catalogo"]]
+    assert len(current_ids) >= 2
+
+    # Id desconocido.
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_VAL", "order": current_ids + ["no_existe"],
+    })
+    assert r.status_code == 422
+
+    # Id duplicado (y por lo tanto falta otro).
+    dup_order = [current_ids[0]] + current_ids
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_VAL", "order": dup_order,
+    })
+    assert r.status_code == 422
+
+    # Falta un id (largo corto).
+    r = client.post("/api/lenses/reorder", json={
+        "device_id": "DEV_REORDER_VAL", "order": current_ids[:-1],
+    })
+    assert r.status_code == 422
+
+    # Nada se cambio con ninguno de los intentos invalidos.
+    assert [l["id"] for l in client.get("/api/lenses").json()["catalogo"]] == current_ids
+
+
+# ---------------------------------------------------------------------------
 # Merge y versionado de GET /api/lenses
 # ---------------------------------------------------------------------------
 def test_lenses_merge_and_versioning(client):

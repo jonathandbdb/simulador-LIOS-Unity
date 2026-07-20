@@ -28,7 +28,7 @@ Stack: FastAPI 0.115 + uvicorn (Python 3.12), SQLModel, Postgres 16, MinIO, Cadd
 | `defaults/lentes.json` | Semilla del catálogo (v`0.5.1-clinical`, P6.9: rangos clínicos por foco — `foco_cerca_m` 0.15–1m, `foco_intermedio_m` 1–3m, `foco_lejos_m` 3–9m, antes 0–20 los tres —, 3 lentes: monofocal, panoptix, vivity; 13 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg`). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/MD5 en cada actualización). Detalle clínico de P6.9 (incluida la discrepancia deliberada con el texto descriptivo de panoptix/vivity) en `docs/catalogo-lentes.md`. |
 | `backend/.env.example` | Plantilla de `.env`: DOMAIN/SCHEME/PORT, PUBLIC_BASE_URL, POSTGRES_*, MINIO_*, S3_BUCKET, JWT_SECRET, ADMIN_DEFAULT_*, CORS_ORIGINS, LOG_LEVEL, LOG_RETENTION_DAYS (default 30). |
 | `backend/api/requirements-dev.txt` | Deps de test (`pytest`, `httpx`) además de `requirements.txt`. No se instala en la imagen de producción. |
-| `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit, persistencia de `last_apk_version` en device nuevo/existente y no-pisado con valor ausente/vacío), `test_admin_smoke.py` (login admin, aprobar/rechazar devices, smoke de `/admin/devices` mostrando `last_apk_version`), `test_admin_versions.py`, `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`), `test_log_retention.py` (`purge_old_logs` borra viejos y conserva recientes, throttle de `_maybe_purge_logs`, `POST /api/log` dispara la purga), `test_custom_lenses.py` (P7/P7.1/P7.2: modo pro/admin, CRUD de lentes custom y su matriz de autorización, alta de lentes de admin directo al catálogo BASE (`scope="generic"`, P7.2) y borrado de CUALQUIER lente del catálogo por un admin con historial `.aN` — ver P7.2 abajo —, merge/versionado de `GET /api/lenses`, panel `/admin/custom-lenses` y reemplazo de hardware, edición de lentes BASE por un admin con encadenado `.aN`; sus tests de manipulación del catálogo BASE se ubican ANTES de `test_lenses_merge_skips_base_id_collision` a propósito, ver comentario en el archivo), `test_generic_lens_migration.py` (P7.2: la migración `0005` — movida/no-op idempotente/colisión saltada — cargada por ruta con `importlib` ya que el archivo empieza con un dígito, ejecutada directo contra una `Connection` sin correr Alembic de verdad). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. **51 tests** al cerrar P7.2 (47 previos − 1 reemplazado + 2 de borrado de catálogo + 3 de migración). |
+| `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit, persistencia de `last_apk_version` en device nuevo/existente y no-pisado con valor ausente/vacío), `test_admin_smoke.py` (login admin, aprobar/rechazar devices, smoke de `/admin/devices` mostrando `last_apk_version`), `test_admin_versions.py`, `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`), `test_log_retention.py` (`purge_old_logs` borra viejos y conserva recientes, throttle de `_maybe_purge_logs`, `POST /api/log` dispara la purga), `test_custom_lenses.py` (P7/P7.1/P7.2: modo pro/admin, CRUD de lentes custom y su matriz de autorización, alta de lentes de admin directo al catálogo BASE (`scope="generic"`, P7.2) y borrado de CUALQUIER lente del catálogo por un admin con historial `.aN` — ver P7.2 abajo —, merge/versionado de `GET /api/lenses`, panel `/admin/custom-lenses` y reemplazo de hardware, edición de lentes BASE por un admin con encadenado `.aN`, y (P7.3) reorden del catálogo BASE (`POST /api/lenses/reorder`) con validación de permutación exacta, no-op sin gastar `.aN` y rollback por historial; sus tests de manipulación del catálogo BASE se ubican ANTES de `test_lenses_merge_skips_base_id_collision` a propósito, ver comentario en el archivo), `test_generic_lens_migration.py` (P7.2: la migración `0005` — movida/no-op idempotente/colisión saltada — cargada por ruta con `importlib` ya que el archivo empieza con un dígito, ejecutada directo contra una `Connection` sin correr Alembic de verdad). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. **55 tests** al cerrar P7.3 (51 previos al cierre de P7.2 + 4 de reorden del catálogo base). |
 
 ```
 Quest / Tablet ──HTTP──▶ caddy :8080/:443 ──▶ api :8000 ──▶ db (Postgres 16)
@@ -309,6 +309,45 @@ python -m pytest -v
   específicamente (distinto de `"custom"` o ausente) queda muerta y debe revisarse en el
   lado Unity (`docs/tablet.md`/`docs/catalogo-lentes.md` §P7). El shape de `POST`/`PUT`/
   `DELETE` (`{status, lens?, catalog_version}`) no cambia.
+
+## P7.3: reorden del catálogo BASE (drag & drop desde la tablet)
+
+- **Nuevo endpoint `POST /api/lenses/reorder`** (30/min/IP, mismo rate limit que
+  `/api/lenses/custom`): permite a un admin fijar el ORDEN del array `catalogo` del blob BASE
+  activo — es el orden en el que Unity recibe las lentes en `GET /api/lenses` (drag & drop
+  desde el panel/tablet). Body `LensReorderRequest = {device_id, order}` donde `order` es la
+  lista de ids del catálogo BASE en el nuevo orden (`list[str]`, `max_length=200` como tope
+  sano de payload). Autorización idéntica a `_update_base_lens`/`_add_base_lens`/
+  `_delete_base_lens`: `_authorize_lens_write(need_admin=True)` (mismo shape de denegación:
+  `DEVICE_NOT_FOUND` / `DEVICE_NOT_AUTHORIZED` / `NOT_ADMIN`).
+- **Validación de permutación exacta** (`_validate_lens_order`): `order` debe tener
+  EXACTAMENTE los mismos ids que el catálogo activo — sin duplicados, sin ids desconocidos,
+  sin faltantes. Cualquier desvío → 422 con `detail` describiendo la causa puntual (mensajes
+  distintos para duplicado / desconocido / faltante, en ese orden de chequeo). Las lentes
+  CUSTOM por device NO participan de este orden: no viven en este array, y `get_lenses`
+  siempre las agrega DESPUES de las lentes base en el merge, sin importar cómo estén
+  ordenadas en `custom_lenses`.
+- **No-op sin gastar `.aN`**: si `order` ya coincide con el orden activo (comparación de listas
+  ítem a ítem), responde `{status:"ok", catalog_version}` SIN clonar una versión nueva de
+  `LensCatalog` — evita quemar historial por un reorden que en la práctica no cambia nada
+  (p. ej. el admin abre y cierra el editor de drag & drop sin soltar ningún cambio). Si cambia,
+  usa el MISMO mecanismo de clon-versionado que `_update_base_lens`/`_add_base_lens`/
+  `_delete_base_lens` (`_next_admin_lens_version`): la fila vieja se desactiva pero nunca se
+  borra (rollback manual desde `/admin/lenses`, igual que el resto de P7.1/P7.2). Respuesta:
+  `{status:"ok", catalog_version}` (sin `lens`, mismo shape que `DELETE`).
+- **Verificado en vivo** contra el backend local con Postgres real (no solo SQLite de tests):
+  `POST /api/lenses/reorder` con el orden invertido de las 4 lentes activas (`monofocal`,
+  `panoptix`, `vivity`, `paciente_joven`) → `0.6.1-clinical` pasó a `0.6.1-clinical.a1` y
+  `GET /api/lenses` devolvió el array en el nuevo orden; repetir el mismo POST con el mismo
+  orden respondió `ok` sin generar `.a2`; un `order` con un id desconocido → 422; un device no
+  registrado → 403 `DEVICE_NOT_FOUND`; `/admin/lenses` muestra ambas versiones
+  (`0.6.1-clinical` desactivada, `0.6.1-clinical.a1` activa) — mismo mecanismo de rollback
+  que P7.1/P7.2.
+- **Impacto en Unity (contrato)**: NINGUNO. No cambia el schema de `lentes.json` ni el shape
+  de `GET /api/lenses` (sigue siendo `{version, catalogo:[...]}`); el array `catalogo` ya se
+  serializaba en el orden en que vive dentro del blob, así que `CatalogParser.cs` no necesita
+  ningún cambio de código — simplemente puede empezar a recibir un orden distinto de lentes
+  si un admin lo pidió desde la tablet.
 
 ## Pendientes / deuda
 
