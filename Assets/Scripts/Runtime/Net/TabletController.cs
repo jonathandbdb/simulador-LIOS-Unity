@@ -667,7 +667,37 @@ namespace Simulador.Tablet
                 var card = LensCardView.Create(_kit, _lensList, id, (string)lo["nombre"],
                     (string)lo["descripcion"], OnLensSelected, (string)lo["origen"]);
                 _lensCards[id] = card;
+                // P8: drag-reorder con long-press (ver LensCardReorder), solo para
+                // un visor ADMIN y solo sobre lentes de CATALOGO -- mismo criterio
+                // que "ownCustom"/"fullEdit" de BuildParamsEditor (origen !=
+                // "custom" trata la tolerancia legacy "generic" igual que
+                // catalogo). Las lentes propias NUNCA reciben este componente:
+                // quedan siempre despues en la lista y el drag las clampea afuera.
+                if (_session.IsAdmin && card.Origen != "custom")
+                    LensCardReorder.Attach(card.gameObject, OnLensesReordered);
             }
+        }
+
+        // P8: ack del drag-reorder de catalogo (admin). El nuevo orden ya se ve
+        // en la UI (SetSiblingIndex en vivo durante el drag, ver
+        // LensCardReorder); esto solo lo persiste server-side. El visor lo
+        // traduce a POST /api/lenses/reorder y, al exito, re-sincroniza +
+        // re-broadcastea el hello (mismo camino que create/update/delete_lens,
+        // ver docs/networking.md) -- ese hello trae el orden YA confirmado por el
+        // backend, asi que no hace falta un ack explicito de "reorder ok"
+        // (silencioso, igual que apply_lens/load_scenario). Un lens_error
+        // (p.ej. NOT_ADMIN si el modo cambio entre el hello y este drag, o
+        // permutacion invalida) se muestra con el mecanismo existente
+        // (OnLensError, cae a _ownLensStatus) y el rollback visual es gratis: el
+        // proximo hello reconstruye RebuildLensList con el orden real.
+        private void OnLensesReordered(List<string> order)
+        {
+            if (!_session.IsWsOpen) return;
+            _session.SendCommand(new JObject
+            {
+                ["cmd"] = "reorder_lenses",
+                ["order"] = JArray.FromObject(order),
+            });
         }
 
         private void OnLensSelected(string lensId) => ApplyLensTo(lensId, _selectedEye);

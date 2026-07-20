@@ -106,6 +106,13 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
 }
 ```
 
+> **(P8) El orden del array `catalogo` es admin-reordenable desde la tablet** (drag-reorder con
+> long-press, ver `docs/tablet.md` §"P8" y el comando `reorder_lenses` en `docs/networking.md`):
+> `POST /api/lenses/reorder` persiste una permutación de los ids de catálogo (las lentes
+> `"custom"` no participan, siempre quedan después). Como ese orden define el ciclado A/B del
+> visor (comentario de arriba), reordenar desde la tablet cambia en qué secuencia el visor cicla
+> las lentes con los botones físicos — no solo el orden de la lista en la UI de la tablet.
+
 Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`):
 
 | Clave | Unidad / rango | Significado |

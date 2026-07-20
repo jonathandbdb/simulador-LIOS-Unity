@@ -258,6 +258,42 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   `DataManager.RefreshFromBackend()` y el catálogo nuevo llega en un **re-broadcast de hello**
   (suscripción a `CatalogSyncedWithBackend` en `Start`, des-suscripta en `OnDestroy`).
 
+### P8: `reorder_lenses` — drag-reorder de catálogo desde la tablet (admin)
+
+Pedido explícito: el admin arrastra una card en la tablet (long-press + drag, ver
+`docs/tablet.md` §"P8: drag-reorder de catálogo") para reordenar las lentes de CATÁLOGO (las
+custom no participan — siempre quedan después, ver `docs/catalogo-lentes.md`). El nuevo orden
+debe persistir para todos los dispositivos, no solo la tablet que lo hizo.
+
+- Tablet → visor: `{"cmd":"reorder_lenses","order":["id1","id2",...]}` — `order` son los ids de
+  las lentes de catálogo en el orden visual final (después del drag), permutación exacta del
+  array `catalogo` actual. Mismo patrón de autenticación que el resto de comandos (solo se procesa
+  tras `auth_ok`, ver "Protocolo de mensajes" arriba).
+- Visor: `NetworkController.OnTextReceived` valida el shape mínimo (`"order"` debe ser un array
+  no vacío; si no, responde `lens_error` local con `reason:"invalid_order"` SIN llamar al
+  backend) y reusa `RunLensCommand` (P7, mismo método que `create/update/delete_lens`, extendido
+  con una 4ª rama): agrega su `device_id` y hace `POST {backendUrl}/api/lenses/reorder` con
+  `{"device_id":"...","order":[...]}` (`Data/CustomLensClient.Reorder`, mismo timeout 8 s y gate
+  de inalcanzable `responseCode==0` que el resto de `CustomLensClient`).
+- Backend: 200 → `{"status":"ok","catalog_version":"..."}` (versiona la BASE, igual que una
+  edición/borrado de admin — no el hash de extras, ver `docs/catalogo-lentes.md` §P7). Denegado
+  (no-admin u otro) → JSON con `reason` (p.ej. `NOT_ADMIN`). Permutación inválida (no es
+  exactamente el conjunto actual de ids de catálogo) → HTTP 422.
+- Al éxito: el visor re-sincroniza (`DataManager.RefreshFromBackend()`) y el catálogo con el
+  orden nuevo llega en el **mismo re-broadcast de hello** que create/update/delete_lens
+  (`CatalogSyncedWithBackend`) — no hay un mensaje de confirmación dedicado. `RunLensCommand`
+  igual manda un `{"type":"lens_saved","op":"reorder_lenses","lens_id":""}` al cliente que lo
+  pidió (mismo código que las otras 3 mutaciones, `lens_id` no aplica y queda vacío) — la tablet
+  lo ignora sin problema: `TabletController.OnLensSaved` solo reacciona a
+  `create_lens`/`update_lens`/`delete_lens`, así que un `op` desconocido es un no-op silencioso
+  (no hace falta filtrarlo del lado visor).
+- Al fallo (denegado, 422, backend inalcanzable, o el guard de shape local): `lens_error` con
+  `{"op":"reorder_lenses","reason":...}` — la tablet lo muestra con el mecanismo existente
+  (`OnLensError`), y como `op != "create_lens"` cae al label general (`_ownLensStatus`, ver
+  `docs/tablet.md`). El rollback visual del lado tablet es gratis: el drag ya movió las cards
+  localmente vía `SetSiblingIndex`, y el próximo `hello`/reconexión reconstruye la lista con el
+  orden REAL del backend (que no cambió si el comando falló).
+
 ## Modelo de threading
 - **Server:** un thread `WSAccept` acepta clientes + un thread `WSRead{id}` por cliente + un thread
   `WSPing{id}` por cliente (keep-alive: ping cada 5 s, cierra si no hay actividad en 15 s; el mismo
@@ -499,6 +535,23 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
     autenticada, `AuthenticatedClientCount > 0`); desconectar también la segunda → recién ahí
     reaparece. **Con `"unpair"`:** repetir ocultando el HUD y tocando "Desvincular" en vez de
     "Desconectar" → mismo resultado (el HUD reaparece si esa era la última tablet autenticada).
+13. **`reorder_lenses` (P8, requiere visor ADMIN + backend accesible):** desde la tablet, hacer
+    long-press + drag sobre una card de catálogo (gesto detallado en `docs/tablet.md` §"P8") y
+    soltar en una posición distinta → la consola del visor debe loguear `Net: reorder_lenses OK
+    (catalogo reordenado).` (NO `comando desconocido`) y, poco después,
+    `Net: catalogo v... re-sincronizado; re-broadcast de hello.` (mismo log que cualquier otra
+    mutación P7). Confirmar el orden nuevo con una SEGUNDA tablet conectada (o tras
+    Desconectar/reconectar la misma): debe reflejar el orden reordenado, no el original. **Con un
+    visor NO admin** (forzar `is_admin:false` del lado backend/tablet para la prueba): el comando
+    ni debería poder dispararse desde la UI (gating del lado tablet), pero si se fuerza a mano vía
+    `websocat` con un cliente autenticado no-admin, el visor debe responder `lens_error` con
+    `reason:"NOT_ADMIN"` sin tocar el catálogo. **Permutación inválida** (mandar `order` con un id
+    que no existe, o repetido, o incompleto vía `websocat`): el visor debe recibir un HTTP 422 del
+    backend y responder `lens_error` a la tablet (reason variará según cómo el backend serialice
+    el error de validación — ver `docs/tablet.md` sobre el mensaje genérico de fallback).
+    **`order` vacío o ausente:** el visor debe loguear el warning `Net: reorder_lenses con "order"
+    invalido o vacio.` y responder `lens_error` con `reason:"invalid_order"` SIN llegar a golpear
+    el backend (confirmar que no aparece ningún log de sync/HTTP para ese intento).
 
 ## Pendientes / deuda
 - Sin `MulticastLock` Android en `DiscoveryListener` (documentado como "si hiciera falta se agrega").

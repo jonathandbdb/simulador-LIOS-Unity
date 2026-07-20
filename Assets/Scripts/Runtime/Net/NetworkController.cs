@@ -583,19 +583,38 @@ namespace Simulador.Net
                     // autenticable) y le contesta lens_saved/lens_error al cliente.
                     StartCoroutine(RunLensCommand(id, type, cmd));
                     break;
+                case "reorder_lenses":
+                    // P8: drag-reorder de catalogo desde la tablet (admin). Guard
+                    // de shape minimo antes de gastar un viaje HTTP: el backend es
+                    // quien valida la permutacion de verdad (422 si no es exacta,
+                    // ver docs/networking.md).
+                    if (!(cmd["order"] is JArray reorderArr) || reorderArr.Count == 0)
+                    {
+                        Debug.LogWarning("Net: reorder_lenses con \"order\" invalido o vacio.");
+                        _server?.SendTextTo(id, BuildLensError("invalid_order", "reorder_lenses"));
+                        break;
+                    }
+                    StartCoroutine(RunLensCommand(id, "reorder_lenses", cmd));
+                    break;
                 default:
                     Debug.LogWarning("Net: comando desconocido: " + type);
                     break;
             }
         }
 
-        // ---------------- Lentes custom (P7) ----------------
+        // ---------------- Lentes custom (P7) / reorder de catalogo (P8) ----------------
 
         /// <summary>
-        /// Ejecuta un comando create/update/delete_lens contra el backend y responde
-        /// al cliente. Al exito ademas re-sincroniza el catalogo (RefreshFromBackend);
-        /// el hello con el catalogo nuevo se re-broadcastea cuando la sync termina
-        /// (suscripcion a CatalogSyncedWithBackend en Start).
+        /// Ejecuta un comando create/update/delete_lens/reorder_lenses contra el
+        /// backend y responde al cliente. Al exito ademas re-sincroniza el
+        /// catalogo (RefreshFromBackend); el hello con el catalogo nuevo se
+        /// re-broadcastea cuando la sync termina (suscripcion a
+        /// CatalogSyncedWithBackend en Start). reorder_lenses reusa este mismo
+        /// camino (P8, drag-reorder desde la tablet): el "lens_saved" que se
+        /// manda al exito lleva lens_id vacio (no aplica a un reorder) y la
+        /// tablet lo ignora sin problema (OnLensSaved solo reacciona a
+        /// create/update/delete_lens) -- el feedback de error SI se muestra, via
+        /// el mismo lens_error/OnLensError.
         /// </summary>
         private IEnumerator RunLensCommand(int clientId, string type, JObject cmd)
         {
@@ -635,9 +654,19 @@ namespace Simulador.Net
                 yield return CustomLensClient.Update(dm.BackendUrl, (string)cmd["lens_id"] ?? "",
                     payload.ToString(Newtonsoft.Json.Formatting.None), OnDone);
             }
-            else // delete_lens
+            else if (type == "delete_lens")
             {
                 yield return CustomLensClient.Delete(dm.BackendUrl, (string)cmd["lens_id"] ?? "", deviceId, OnDone);
+            }
+            else // reorder_lenses (P8): permutacion de las lentes de CATALOGO; las
+                 // custom no participan (ver docs/catalogo-lentes.md).
+            {
+                var payload = new JObject
+                {
+                    ["device_id"] = deviceId,
+                    ["order"] = cmd["order"] as JArray ?? new JArray(),
+                };
+                yield return CustomLensClient.Reorder(dm.BackendUrl, payload.ToString(Newtonsoft.Json.Formatting.None), OnDone);
             }
 
             if (code == 200 || code == 201)
@@ -649,7 +678,10 @@ namespace Simulador.Net
                     lensId = (string)resp.SelectToken("lens.id") ?? (string)cmd["lens_id"];
                 }
                 catch (Exception) { lensId = (string)cmd["lens_id"]; }
-                Debug.Log($"Net: {type} OK (lente {lensId ?? "?"}).");
+                if (type == "reorder_lenses")
+                    Debug.Log("Net: reorder_lenses OK (catalogo reordenado).");
+                else
+                    Debug.Log($"Net: {type} OK (lente {lensId ?? "?"}).");
                 _server?.SendTextTo(clientId, new JObject
                 {
                     ["type"] = "lens_saved",

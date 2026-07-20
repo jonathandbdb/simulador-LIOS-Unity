@@ -23,7 +23,8 @@ se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica. Lo
 | `Assets/Scripts/Runtime/Tablet/TabletUiKit.cs` | Fábrica de widgets uGUI temables: `Label`, `Button`, `Panel`/`Card`, `Slider`, `LineEdit` (TMP_InputField), `CheckToggle`, `RawImage`, `ScrollColumn`, `Box`/`Spacer`/`Size`. Genera el sprite de esquinas redondeadas por código (9-slice cacheado por radio) y registra un callback de "repaint" por widget para retematizar en caliente. |
 | `Assets/Scripts/Runtime/Tablet/TabletPalette.cs` | Paletas Dark (consola médica, teal) y Light (historia clínica, azul); port verbatim de las constantes del `theme_builder.gd` de Godot. |
 | `Assets/Scripts/Runtime/Tablet/TabletButton.cs` | Botón custom (hereda `Selectable`): fill + borde + texto con color por estado (normal/hover/pressed), modo toggle y callbacks `OnClick`/`OnToggled`. Reemplaza el `ColorBlock` de uGUI. |
-| `Assets/Scripts/Runtime/Tablet/LensCardView.cs` | Card de lente: nombre, descripción clínica, chips OD/OI que marcan en qué ojo(s) está aplicada; tap = aplicar. |
+| `Assets/Scripts/Runtime/Tablet/LensCardView.cs` | Card de lente: nombre, descripción clínica, chips OD/OI que marcan en qué ojo(s) está aplicada; tap = aplicar. Expone `Origen` (P8, público) para que `LensCardReorder` sepa si la card es de catálogo o propia sin re-parsear el hello. |
+| `Assets/Scripts/Runtime/Tablet/LensCardReorder.cs` (nuevo, P8) | Drag-reorder con long-press de las cards de lente de CATÁLOGO, agregado solo si el visor conectado es admin (ver Decisiones "Drag-reorder de catálogo (P8)"). |
 | `Assets/Scripts/Runtime/Tablet/ParamRowView.cs` | Fila de ajuste fino: label + valor formateado + slider + hint clínico. `SetValueSilent` sincroniza sin re-emitir. |
 | `Assets/Scripts/Runtime/Tablet/ScrollFriendlySlider.cs` (nuevo, usabilidad táctil) | Subclase de `Slider` que le cede el drag vertical al `ScrollRect` padre en vez de consumirlo (ver Decisiones "Usabilidad táctil"). Usada por `TabletUiKit.Slider()` en vez del `Slider` estándar. |
 | `Assets/Scripts/Runtime/Tablet/KeyboardAvoider.cs` (nuevo, usabilidad táctil) | Componente hermano de todo `TMP_InputField` (`TabletUiKit.LineEdit()` lo agrega solo): evita que el teclado nativo de Android tape el campo dentro de una columna scrolleable, agrandando el `Content` del `ScrollRect` con un espaciador y scrolleando al enfocar (ver Decisiones "Teclado nativo tapa los campos fuera del PIN"). Inerte si no hay `ScrollRect` ancestro. |
@@ -703,6 +704,94 @@ TabletController.Start()
   badge "Genérica" (`origen == "generic"`) queda solo como tolerancia con un backend viejo no
   migrado a P7.2 — un backend nuevo ya no emite ese valor, así que en la práctica no aparece.
 
+## P8: drag-reorder de catálogo (admin)
+
+Pedido explícito: el admin quiere poder reordenar las lentes de la lista manteniendo apretada una
+card y arrastrándola arriba/abajo, con el nuevo orden persistido para todos (no solo local a esta
+tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato de
+`GET /api/lenses` (por qué las custom siempre quedan después del catálogo base) en
+`docs/catalogo-lentes.md`.
+
+- **Gating: solo admin, solo lentes de catálogo** — `TabletController.RebuildLensList` agrega
+  `LensCardReorder` a una card SOLO si `_session.IsAdmin` y `card.Origen != "custom"` (mismo
+  criterio que `ownCustom`/`fullEdit` de `BuildParamsEditor`: la tolerancia legacy `"generic"` se
+  trata igual que catálogo, no solo `null`/ausente strict — consistencia con el resto de P7.2 en
+  vez de una regla nueva). Las lentes propias (`"custom"`) NUNCA reciben el componente: quedan
+  siempre después en la lista (contrato del backend, ver `docs/catalogo-lentes.md`) y el drag las
+  clampea afuera sin tocarlas.
+- **Long-press (450 ms) + arbitraje de gesto con el `ScrollRect`, mismo patrón que
+  `ScrollFriendlySlider`** → `LensCardReorder` vive en el MISMO GameObject que el
+  `TabletButton` de la card (que ya tiene `IPointerClickHandler` para el tap = aplicar lente), e
+  implementa `IBeginDragHandler`/`IDragHandler`/`IEndDragHandler` sin condición: eso hace que
+  `pointerDrag` SIEMPRE resuelva a esta card (no al `ScrollRect` ancestro, que es lo que pasaría
+  si esta card no tuviera ningún `IDragHandler` propio). `OnPointerDown` arranca un timer de
+  `LongPressSeconds` (const nombrada, 0.45f); si el dedo se mueve lo suficiente para disparar
+  `OnBeginDrag` ANTES de que el timer arme el modo reorden, se cancela el timer y el gesto se
+  reenvía al `ScrollRect` (`ExecuteEvents.ExecuteHierarchy` con begin/drag/end, idéntico al truco
+  de `ScrollFriendlySlider`) — el scroll normal de la lista sigue intacto. El umbral de
+  movimiento es el `EventSystem.pixelDragThreshold` que ya fija `TabletController.BuildUI()`
+  (~10dp): no se agrega ningún umbral nuevo.
+- **El click de "aplicar lente" se suprime a mano en cualquier drag real, a diferencia de un
+  scroll sobre una card SIN este componente** → normalmente Unity evita solo el click al soltar
+  tras un drag, PERO solo porque `pointerPress` (la card) y `pointerDrag` (el `ScrollRect`) son
+  GameObjects distintos — acá son el MISMO GameObject (`pointerDrag` resuelve a la propia card,
+  ver punto anterior), así que esa protección nativa no aplica. `OnBeginDrag` pone
+  `eventData.eligibleForClick = false` en AMBAS ramas (reenviado al scroll o manejado como
+  reorden) para replicar ese comportamiento — sin esto, cualquier drag sobre una card con este
+  componente aplicaría la lente al soltar, incluido un simple scroll de la lista.
+- **Armado + soltar SIN llegar a arrastrar tampoco aplica la lente (decisión de producto, fix de
+  revisión)** → si el admin mantiene los 450 ms (la card se resalta, modo reorden armado) y
+  suelta sin mover el dedo, `OnBeginDrag` nunca corre (no hay drag real, el umbral de movimiento
+  no se superó), así que `eligibleForClick` queda intacto. `OnPointerUp` lo suprime a mano en ese
+  caso puntual (`if (_armed) eventData.eligibleForClick = false;`) — soltar en modo armado SOLO
+  cancela (quita el resaltado, no aplica la lente, no manda nada), a diferencia de un tap corto
+  SIN armar (que sigue aplicando la lente normal, ahí no se toca `eligibleForClick`). Un drag real
+  ya fuerza esto desde antes (rama de arriba); esta es la rama que faltaba cubrir.
+- **Feedback visual del armado reusa colores YA resueltos por el kit, sin colores nuevos** →
+  al armar (pasados los 450 ms sin exceder el umbral), `SetArmed` mezcla `TabletButton.PressedFill`
+  con `PressedBorder` (que para `Card`/`CardActive` es `p.Accent`, ver `TabletUiKit.StyleButton`)
+  vía `TabletPalette.Mix` — necesario porque `TabletButton` YA muestra el look "pressed" nativo
+  desde el instante del toque (por `Selectable.OnPointerDown`), así que reusar el mismo
+  `PressedFill` sin mezclar no se vería como un cambio. Suma un escalado leve (`localScale` 1.02×)
+  como segunda señal. `Repaint()` (público, ya existía en `TabletButton`) restaura el estado real
+  al desarmar — no hizo falta cachear el color original ni tocar `TabletButton.cs`.
+- **Reorden en vivo por `SetSiblingIndex`, comparado en espacio de PANTALLA** → armado + drag,
+  cada `OnDrag` compara la Y del puntero contra el hermano inmediato de cada lado (un paso a la
+  vez) usando `RectTransformUtility.WorldToScreenPoint(cam, rt.position)` en vez de convertir a
+  espacio local del padre — evita depender del pivot/ancla exactos de `_lensList`
+  (`VerticalLayoutGroup`, reacomoda solo al resto de la lista en cuanto cambia el sibling index).
+  `cam` es `eventData.pressEventCamera` (`null` para el `Canvas` `ScreenSpaceOverlay` de la
+  tablet — `WorldToScreenPoint` con cámara `null` devuelve XY directo, correcto para Overlay).
+  Clampeado a `[0, K-1]` (`K` = cantidad de cards de catálogo, recalculado en vivo recorriendo los
+  hermanos desde el principio hasta la primera `"custom"`, ver `CatalogIdsInOrder`) — las cards
+  propias nunca se comparan ni se tocan.
+- **Al soltar, solo manda el comando si el orden realmente cambió** → `OnEndDrag` compara la
+  lista de ids de catálogo en orden visual contra la que había al empezar el drag
+  (`_orderAtDragStart`, `List<string>.SequenceEqual`); si es igual (el admin arrastró y volvió a
+  soltar en el mismo lugar) no manda nada. Si cambió, `TabletController.OnLensesReordered` manda
+  `{"cmd":"reorder_lenses","order":[...]}` (protocolo en `docs/networking.md`) — silencioso al
+  éxito (el próximo hello ya trae el orden confirmado por el backend); si vuelve un `lens_error`
+  se muestra con el mecanismo existente (`OnLensError`, cae a `_ownLensStatus` porque
+  `op != "create_lens"`) y el rollback visual es gratis (el próximo hello reconstruye
+  `RebuildLensList` con el orden real, sin necesidad de revertir el `SetSiblingIndex` a mano).
+- **Robustez ante un `hello` a mitad de gesto** → `RebuildLensList` destruye TODAS las cards
+  (incluida la que se estaba arrastrando) si llega un `hello` mientras el admin reordena.
+  `LensCardReorder.OnDisable` cancela el timer de armado y limpia `_armed`/`_dragging` (defensivo:
+  `Destroy()` ya para las coroutines solas). No se intenta además "cerrar" prolijamente un
+  reenvío de drag en curso hacia el `ScrollRect` en ese instante exacto (el `ScrollRect` podría
+  quedar sin su `endDrag` si el `hello` llega justo entre un `beginDrag` reenviado y el
+  `endDrag`) — ventana extremadamente angosta (requiere que llegue un hello justo durante un
+  drag de OTRO admin sobre la lista de lentes) y de bajo impacto (a lo sumo el scroll queda con
+  velocidad residual hasta el próximo toque); // SIM: atajo deliberado — no se hardened el
+  `ScrollRect` ante ese borde, dado lo angosto de la ventana y que no deja estado propio colgado.
+- **Limitación v1 aceptada: sin auto-scroll cerca de los bordes de la lista** → si el catálogo
+  tiene más lentes que las visibles en la columna, arrastrar hasta el borde superior/inferior de
+  "Lentes intraoculares" NO hace scrollear la lista sola (a diferencia de apps con reorder + auto-
+  scroll). Para un catálogo largo, el admin reordena en más de un drag (soltar, scrollear a mano,
+  volver a agarrar la card). Aceptado explícitamente para v1; si el catálogo crece mucho, la vía
+  natural es detectar la Y del puntero cerca de los bordes del `ScrollRect.viewport` en `OnDrag` y
+  aplicar una velocidad de scroll continua mientras se mantenga ahí.
+
 ## Gotchas
 - **El botón "Ocultar/Mostrar HUD" no refleja el estado real del HUD, solo el de ESTA tablet en
   ESTA sesión de red:** `_hudVisible` se resetea a `true` en cada conexión nueva
@@ -1067,8 +1156,35 @@ TabletController.Start()
     catálogo.") debe aparecer en el mismo label y limpiarse solo. **Cambiar de lente en edición
     mientras hay un status visible** → el status debe limpiarse de inmediato (no debe quedar
     "Guardando..." de la lente anterior pegado sobre la nueva).
+19. **Drag-reorder de catálogo (nuevo, `LensCardReorder`, requiere un visor ADMIN):** en la card
+    "Lentes intraoculares", tocar y mantener apretada una card de catálogo (no una propia) sin
+    mover el dedo → a los ~450 ms debe verse un resaltado claro (tinte hacia el acento + leve
+    escalado). Sin soltar, arrastrar verticalmente → la card debe moverse entre sus hermanas
+    (`SetSiblingIndex`, sin animación de "seguir al dedo": salta de posición) sin poder pasar
+    nunca por debajo de las cards "Propia" (si hay alguna). Soltar → si el orden final es
+    distinto del inicial, la consola del visor NO debe mostrar `comando desconocido` (llegó
+    `{"cmd":"reorder_lenses"}`) y el orden debe sobrevivir un "Actualizar"/reconexión (persistido
+    en el backend). Repetir tocando y soltando SIN mover (short-press) → debe aplicar la lente
+    normalmente (el tap corto no se rompió). **Long-press armado + soltar SIN arrastrar** (nuevo,
+    fix de revisión): mantener apretada una card de catálogo hasta ver el resaltado (~450 ms) y
+    soltar el dedo SIN haberlo movido en ningún momento → debe SOLO cancelar (el resaltado
+    desaparece, no debe aplicarse la lente, no debe mandarse ningún comando — confirmar que la
+    consola del visor no recibe nada nuevo). Repetir tocando, esperando el resaltado, y
+    ARRASTRANDO HORIZONTALMENTE apenas — el reorden vertical no debería activarse con un
+    movimiento puramente horizontal fuerte antes de armar (cede al scroll si hay margen; si no
+    hay movimiento vertical dominante, en la práctica no pasa nada visible). **Antes de armar**
+    (mover el dedo verticalmente ANTES de los 450 ms) → debe scrollear la columna normal, sin
+    mover ninguna card ni aplicar la lente al soltar. **Con un visor NO admin o sobre una card
+    "Propia"**: mantener apretada → NO debe aparecer el resaltado ni debe poder arrastrarse (el
+    componente ni se agrega); el tap sigue aplicando la lente. **`hello` a mitad de drag**
+    (difícil de reproducir a mano; con 2 tablets, hacer que la OTRA dispare un `create_lens`
+    mientras la primera arrastra) → no debe verse ninguna excepción en consola ni quedar la
+    columna con un scroll "pegado".
 
 ## Pendientes / deuda
+- **Drag-reorder de catálogo (P8) sin auto-scroll** (ver "Limitación v1 aceptada" en Decisiones):
+  arrastrar cerca de los bordes de la columna "Lentes intraoculares" no la hace scrollear sola;
+  para catálogos largos el admin reordena en más de un drag. Aceptado explícitamente para v1.
 - El lockout es global del lado del visor (no por tablet/IP): si otro cliente en la LAN agotó el
   tope, esta tablet también ve `auth_locked` aunque nunca haya fallado (ver `docs/networking.md`
   § Gotchas/Modelo de amenaza). El `PinScreen` ya muestra el `retry_in_s`, pero no distingue "fallé

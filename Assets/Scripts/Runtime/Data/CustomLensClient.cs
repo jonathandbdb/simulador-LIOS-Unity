@@ -38,6 +38,15 @@ namespace Simulador.Data
                 DataManagerLogic.BuildSyncUrl(backendUrl, "/api/lenses/custom/" + Uri.EscapeDataString(lensId ?? ""), deviceId),
                 null, onDone);
 
+        /// <summary>
+        /// POST /api/lenses/reorder — permuta las lentes de CATALOGO (admin, P8:
+        /// drag-reorder desde la tablet, ver docs/networking.md). Las lentes
+        /// custom no participan de esta permutacion.
+        /// </summary>
+        public static IEnumerator Reorder(string backendUrl, string bodyJson, Action<long, string> onDone)
+            => Send(UnityWebRequest.kHttpVerbPOST,
+                DataManagerLogic.BuildSyncUrl(backendUrl, "/api/lenses/reorder"), bodyJson, onDone);
+
         private static IEnumerator Send(string verb, string url, string bodyJson, Action<long, string> onDone)
         {
             using var req = new UnityWebRequest(url, verb);

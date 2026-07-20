@@ -13,6 +13,12 @@ namespace Simulador.Tablet
     public class LensCardView : MonoBehaviour
     {
         public string LensId;
+        // P8: "origen" crudo del catalogo (null/ausente = catalogo, "custom" =
+        // propia de este visor; "generic" solo tolerancia legacy, ver P7.2 en
+        // docs/catalogo-lentes.md). Lo consume LensCardReorder para saber que
+        // cards son reordenables y donde termina el rango de catalogo (K) sin
+        // tener que re-parsear el JSON del hello.
+        public string Origen;
         private TabletUiKit _kit;
         private TabletButton _btn;
         private GameObject _chipOd, _chipOi;
@@ -26,6 +32,7 @@ namespace Simulador.Tablet
             var view = root.AddComponent<LensCardView>();
             view._kit = kit;
             view.LensId = id;
+            view.Origen = origen;
 
             var bg = root.AddComponent<Image>();
             bg.sprite = TabletUiKit.Rounded(10); bg.type = Image.Type.Sliced;
