@@ -98,6 +98,9 @@ namespace Simulador.Tablet
         private RectTransform _paramsContent, _paramsList;
         private TMP_Text _editingLensLabel;
         private TabletButton _resetButton;
+        // D1: nombre editable de la lente en edicion (visible solo si canSave, ver
+        // BuildParamsEditor); reemplaza el "nombre" crudo del catalogo al guardar.
+        private TMP_InputField _lensNameEdit;
         private string _editingLensId = "";
         private readonly Dictionary<string, ParamRowView> _paramRows = new();
         private readonly Dictionary<string, float> _paramDefaults = new();
@@ -618,6 +621,16 @@ namespace Simulador.Tablet
             _session.SendCommand(new JObject { ["cmd"] = "refresh" });
         }
 
+        // B3: boton "Recentrar" (header Pro y StdTopBar de Standard) -- pide
+        // {"cmd":"recenter"} para recalibrar la posicion del paciente en el
+        // escenario actual. Fire-and-forget como refresh/set_hud (sin ack); accion
+        // clinica no destructiva, sin gating de admin.
+        private void OnRecenterPressed()
+        {
+            if (!_session.IsWsOpen) return;
+            _session.SendCommand(new JObject { ["cmd"] = "recenter" });
+        }
+
         // Boton "Ocultar HUD" / "Mostrar HUD" (header): comando "set_hud" (ver
         // docs/networking.md), togglea el HUD de diagnostico del visor (FPS/lentes/
         // halos/PIN). Fire-and-forget como set_astigmatism/load_scenario -- no hay
@@ -803,6 +816,7 @@ namespace Simulador.Tablet
             {
                 _resetButton.interactable = false;
                 _editingLensLabel.text = "Esta lente no tiene parámetros editables.";
+                if (_lensNameEdit != null) _lensNameEdit.gameObject.SetActive(false);
                 return;
             }
 
@@ -866,6 +880,15 @@ namespace Simulador.Tablet
                 _saveLensButton.gameObject.SetActive(canSave);
                 _deleteLensButton.gameObject.SetActive(canDelete);
                 if (canDelete && _deleteLensButton.Label != null) _deleteLensButton.Label.text = "Eliminar lente";
+                if (_lensNameEdit != null)
+                {
+                    _lensNameEdit.gameObject.SetActive(canSave);
+                    // Un "hello" (p.ej. refresh, re-sync tras otra operacion) puede
+                    // re-invocar este editor mientras el usuario esta tipeando el
+                    // nombre -- no pisar lo tipeado si el campo tiene foco.
+                    if (canSave && !_lensNameEdit.isFocused)
+                        _lensNameEdit.SetTextWithoutNotify((string)lens["nombre"] ?? _editingLensId);
+                }
             }
         }
 
@@ -1343,6 +1366,8 @@ namespace Simulador.Tablet
             _kit.Label(header, "Escenario:", LabelKind.Subtitle, TextAlignmentOptions.Right);
             _scenarioList = _kit.Box(header, "ScenarioList", false, 6, null, expandW: false);
             _scenarioList.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
+            var recenterBtn = _kit.Button(header, "Recentrar", BtnStyle.Ghost, false, 44, 14);
+            recenterBtn.OnClick = OnRecenterPressed;
             _kit.Spacer(header, 0, true);
             _themeToggle = _kit.Button(header, "Modo claro", BtnStyle.Ghost, false, 44, 14);
             _themeToggle.OnClick = () => ApplyTheme(!_isDark);
@@ -1449,6 +1474,13 @@ namespace Simulador.Tablet
             _resetButton = _kit.Button(_paramsContent, "Restaurar valores", BtnStyle.Ghost, false, 44, 15);
             _resetButton.OnClick = OnResetParamsPressed;
             _resetButton.interactable = false;
+
+            // D1: nombre editable de la lente en edicion -- mismo patron que
+            // _createNameEdit (Crear lente), limite de caracteres igual al
+            // max_length del backend. Solo visible si canSave (ver BuildParamsEditor).
+            _lensNameEdit = _kit.LineEdit(_paramsContent, "Nombre de la lente");
+            _lensNameEdit.characterLimit = 80;
+            _lensNameEdit.gameObject.SetActive(false);
 
             // P7: acciones sobre la lente custom PROPIA en edicion (ocultas para
             // lentes base/genericas; ver BuildParamsEditor).
@@ -1624,6 +1656,10 @@ namespace Simulador.Tablet
         private void OnSaveLensPressed()
         {
             if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Sin conexión con el visor."); return; }
+            // D3: el nombre lo decide el campo editable (D1/D2), no el "nombre" crudo
+            // del catalogo -- mismo patron de validacion que OnCreateLensPressed.
+            string nombre = (_lensNameEdit.text ?? "").Trim();
+            if (nombre.Length == 0) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Poné un nombre para la lente."); return; }
             if (!_session.LensesById.TryGetValue(_editingLensId, out var lens)) return;
             var snapshot = BuildParamsSnapshot();
             if (snapshot == null) return;
@@ -1631,7 +1667,7 @@ namespace Simulador.Tablet
             {
                 ["cmd"] = "update_lens",
                 ["lens_id"] = _editingLensId,
-                ["nombre"] = (string)lens["nombre"] ?? _editingLensId,
+                ["nombre"] = nombre,
                 ["descripcion"] = (string)lens["descripcion"] ?? "",
                 ["params"] = snapshot,
             });
@@ -1878,6 +1914,11 @@ namespace Simulador.Tablet
             var lensBtn = _kit.Button(topBar, "Lente", BtnStyle.Accent, false, 48, 15);
             _kit.Size(lensBtn.GetComponent<RectTransform>(), minW: 140, prefW: 140, flexW: 0);
             lensBtn.OnClick = OpenStandardLensOverlay;
+            // B3: mismo comando que el header Pro -- sin gating de admin, accion
+            // clinica no destructiva.
+            var recenterStdBtn = _kit.Button(topBar, "Recentrar", BtnStyle.Neutral, false, 48, 15);
+            _kit.Size(recenterStdBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
+            recenterStdBtn.OnClick = OnRecenterPressed;
             var exitBtn = _kit.Button(topBar, "Salir", BtnStyle.Neutral, false, 48, 15);
             _kit.Size(exitBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
             // "Salir" en Standard desconecta y vuelve al discovery (ConnectScreen),

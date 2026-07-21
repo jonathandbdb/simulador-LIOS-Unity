@@ -96,15 +96,17 @@ TabletController.Start()
   título "Reconectando", host destino, estado (cuenta atrás del backoff o "Reconectando… (intento
   N)") y botón Cancelar (corta el loop y vuelve al `ConnectScreen`). Ver StartReconnectLoop/
   DoReconnectAttempt/OnWsDisconnected y Decisiones abajo.
-- **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), toggle de tema
-  claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), botón **"Ocultar
-  HUD"/"Mostrar HUD"** (toggle del HUD de diagnóstico del visor vía comando `set_hud`, ver
-  Decisiones "Toggle del HUD del visor"), botón Desconectar y botón **Desvincular**, que ahora abre
-  un popup de confirmación (`UnpairConfirm`, ver Decisiones "Popup de confirmación de Desvincular")
-  antes de revocar el token de esta tablet en el visor y olvidar el emparejamiento local con el
-  host actual (ver Decisiones "Emparejamiento persistente por token"). **Sin badge de estado** (ver
-  Decisiones "Header sin badge de estado"): llegar a esta pantalla ya implica sesión conectada y
-  autenticada.
+- **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), botón
+  **"Recentrar"** (junto al selector de escenarios — manda `{"cmd":"recenter"}`, ver
+  `docs/networking.md`; recalibra la posición del paciente en el escenario actual, sin gating de
+  admin), toggle de tema claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver
+  Decisiones), botón **"Ocultar HUD"/"Mostrar HUD"** (toggle del HUD de diagnóstico del visor vía
+  comando `set_hud`, ver Decisiones "Toggle del HUD del visor"), botón Desconectar y botón
+  **Desvincular**, que ahora abre un popup de confirmación (`UnpairConfirm`, ver Decisiones "Popup
+  de confirmación de Desvincular") antes de revocar el token de esta tablet en el visor y olvidar
+  el emparejamiento local con el host actual (ver Decisiones "Emparejamiento persistente por
+  token"). **Sin badge de estado** (ver Decisiones "Header sin badge de estado"): llegar a esta
+  pantalla ya implica sesión conectada y autenticada.
 - **Panel de stream (izquierda):** uno o dos panes con `RawImage` dentro de un `AspectRatioFitter`
   4:3 (768/576). El split lo decide `blend_active` del `vision_state` (P2.1 — fuente única de
   verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente, **OD arriba /
@@ -116,7 +118,9 @@ TabletController.Start()
 - **Columna scrolleable (derecha):** cards "Ojo a tratar" (Ambos / OD / OI), "Lentes intraoculares"
   (LensCardViews del catálogo), "Ajuste fino" (colapsable, ParamRowViews de la lente en edición +
   Restaurar valores — desde P4.4 incluye `astig_magnitude`/`astig_axis_deg`, persistentes por
-  lente) y "Astigmatismo" (colapsable: hint de precedencia + switch + sliders LIVE de magnitud
+  lente; campo **"Nombre de la lente"** editable cuando `canSave` (`ownCustom || isAdmin`), ver
+  "Renombrado de lente en edición" más abajo) y "Astigmatismo" (colapsable: hint de precedencia +
+  switch + sliders LIVE de magnitud
   0–50 px y eje 0–180°, no persistente — ver Decisiones "Dos controles de astigmatismo"). La card
   "Comparar A / B" (P5.1) se retiró en P6.8 — ver Decisiones "Stream a pantalla completa, retiro de
   Comparar A/B". La card "Presets" (P5.2) tuvo el mismo destino — ver Decisiones "Retiro de los
@@ -218,6 +222,19 @@ TabletController.Start()
   — no hizo falta tocar `TabletController`/`ParamRowView` (ya toleran claves nuevas del catálogo).
   Detalle óptico y el pipeline per-eye que consumen en `Vision/`: `docs/vision-optica.md` y
   `docs/catalogo-lentes.md`.
+- **`cataract_yellow` en `ParamMeta` + `STANDARD_PARAMS` (v0.7.0)** → el catálogo (`0.7.0-clinical`)
+  agregó el tinte de catarata del cristalino NATIVO (no de la LIO, ver `docs/catalogo-lentes.md`).
+  `ParamMeta` le da label ("Catarata (tinte amarillo)"), hint clínico y formato `F2` sin unidad, y
+  lo agrega a `STANDARD_PARAMS` (whitelist que restringe "Ajuste fino" en modo Pro cuando la lente
+  NO es propia, ver "P7.1→P7.2 — gating por procedencia" más abajo) porque "mostrar el avance de
+  la catarata al paciente" es un caso de uso clínico simple, no exige edición completa. **Gotcha:
+  `STANDARD_PARAMS` NO alimenta el carrusel de 5 íconos del modo Standard** (`StandardCarousel` en
+  `TabletController.cs` es una lista hardcodeada aparte, ver "P7: modos Standard/Pro" — los únicos
+  2 consumidores de `STANDARD_PARAMS`/`IsStandardParam` son la whitelist de "Ajuste fino"); agregar
+  `cataract_yellow` NO agrega un ícono nuevo al carrusel Standard (haría falta un glifo propio y
+  una entrada en `StandardCarousel`, fuera del alcance pedido para esta tarea — ver Pendientes). El
+  param SÍ aparece en "Ajuste fino" (Pro completo para admin/dueño de custom, y en la vista
+  restringida de un Pro no-admin sobre una lente de catálogo).
 - **Dos controles de astigmatismo, distinta vida (P4.4, deliberado — sin refactor esta tanda)** →
   la card "Astigmatismo" (switch + sliders px/°, `set_astigmatism`) es un ajuste LIVE que NO
   persiste y se pisa apenas cambia la lente o llega un `override_params`; los nuevos
@@ -580,6 +597,24 @@ TabletController.Start()
   correlación de request (no hay un id por comando): con un solo comando en vuelo por label esto
   no importa; si se mandaran 2 comandos casi simultáneos sobre el mismo label, el más reciente
   gana (mismo criterio simple que ya usaba `_createStatus`, no se agregó tracking de requests).
+- **Renombrado de lente en edición (`_lensNameEdit`, nuevo)** → hasta esta tarea "Guardar en la
+  lente" (`OnSaveLensPressed`) mandaba `update_lens` con el `"nombre"` CRUDO del catálogo
+  (`(string)lens["nombre"]`): no había forma de renombrar una lente propia ni una de catálogo
+  (admin) desde la tablet, solo de ajustar sus parámetros. `BuildParamsCard` agrega un
+  `TMP_InputField` ("Nombre de la lente", `characterLimit = 80` = `max_length` del backend) en la
+  card "Ajuste fino", mismo patrón que `_createNameEdit` de "Crear lente". **Gating idéntico al de
+  "Guardar en la lente"/"Eliminar lente"** (`canSave = ownCustom || isAdmin`, `BuildParamsEditor`):
+  visible y precargado con el nombre actual solo si `canSave`; oculto para una lente de catálogo
+  vista por un Pro no-admin (mismo criterio que el resto de "Ajuste fino" restringido). **No pisa
+  lo que el operador está tipeando**: si llega un `hello` (p.ej. `refresh`, re-sync tras otra
+  mutación) mientras el campo tiene foco (`_lensNameEdit.isFocused`), `BuildParamsEditor` NO
+  reemplaza el texto — evita perder un nombre a medio escribir por un evento de red que no tiene
+  nada que ver con lo que el operador está haciendo en ese instante. **Validación no-vacío**
+  (`OnSaveLensPressed`, mismo patrón que `OnCreateLensPressed`): nombre vacío/solo espacios →
+  "Poné un nombre para la lente." sin mandar el comando. El flujo de guardado/feedback
+  (`update_lens` → `lens_saved`/`lens_error` → `SetLensStatus`) no cambió, solo el origen del
+  campo `"nombre"` del payload. **El borrado (`OnDeleteLensPressed`/`delete_lens`) no se tocó** —
+  sigue operando por `lens_id`, ajeno al nombre.
 
 ## P7: modos Standard/Pro (UI por modo del visor)
 
@@ -587,8 +622,9 @@ TabletController.Start()
   exponen. **Sin campo (visor viejo) ⇒ default `"pro"`** (UI completa, no-breaking). El routing
   vive en `OnSessionHello`: standard ⇒ `ShowStandardScreen()`, resto ⇒ `ShowMainScreen()`.
 - **Pantalla Standard** (`BuildStandardScreen`): stream a pantalla completa (panes OD-primero,
-  mismas Texture2D del stream normal), barra superior (escenarios + botón **Lente** + **Salir**)
-  y **carrusel de 5 íconos circulares** (`TabletUiKit.CircleIcon` + glifos por código:
+  mismas Texture2D del stream normal), barra superior (escenarios + botón **Recentrar** + botón
+  **Lente** + **Salir** — "Recentrar" manda el mismo `{"cmd":"recenter"}` que el header Pro, sin
+  gating de admin, ver `docs/networking.md`) y **carrusel de 5 íconos circulares** (`TabletUiKit.CircleIcon` + glifos por código:
   astigmatismo, halos, dilatación, destellos, rayos — `ParamMeta.STANDARD_PARAMS`). Tocar un
   ícono abre UN slider grande (astigmatismo suma el slider del eje); los sliders emiten
   `override_params` (misma vía persistente que "Ajuste fino": sobreviven updates). El botón
@@ -1180,8 +1216,35 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
     (difícil de reproducir a mano; con 2 tablets, hacer que la OTRA dispare un `create_lens`
     mientras la primera arrastra) → no debe verse ninguna excepción en consola ni quedar la
     columna con un scroll "pegado".
+20. **Botón "Recentrar" (nuevo, 2 dispositivos):** con la tablet conectada en modo Pro, tocar
+    "Recentrar" (header, junto al selector de escenarios) → el paciente debe recalibrarse en el
+    visor (efecto observable en el HMD/Editor); la consola del visor NO debe mostrar `comando
+    desconocido` (ver `docs/networking.md`). Repetir en modo Standard con el botón de la
+    `StdTopBar` (junto a "Lente"/"Salir") → mismo efecto. Sin `vision_state` ni ack de por medio
+    (fire-and-forget): no hay feedback visual en la tablet más allá de que el botón responda al
+    tap.
+21. **Renombrado de lente en edición (nuevo, `_lensNameEdit`):** en modo Pro, aplicar una lente
+    propia (`origen == "custom"`) → en "Ajuste fino" debe aparecer el campo "Nombre de la lente"
+    precargado con el nombre actual. Borrarlo y tocar "Guardar en la lente" → debe rechazar con
+    "Poné un nombre para la lente." SIN mandar el comando (confirmar que la consola del visor no
+    recibe `update_lens`). Escribir un nombre nuevo y guardar → `update_lens` debe viajar con ESE
+    nombre (no el viejo); al repoblarse el catálogo (`hello` re-broadcasteado) la card de la lente
+    y el HUD del visor deben reflejar el nombre nuevo. **Con un visor ADMIN sobre una lente de
+    CATÁLOGO** (no propia): el campo también debe aparecer y funcionar igual (canSave = isAdmin).
+    **Con un Pro NO-admin sobre una lente de catálogo**: el campo NO debe aparecer (mismo gating
+    que "Guardar en la lente"/"Eliminar lente"). **No pisar lo tipeado:** con el campo enfocado y
+    texto a medio escribir, forzar un `refresh` (botón "Actualizar") o un `hello` (otra tablet
+    modificando algo) → el texto tipeado debe seguir intacto, no debe resetearse al nombre viejo.
+    **El borrado no cambió:** "Eliminar lente" sigue funcionando igual, sin relación con este campo.
 
 ## Pendientes / deuda
+- **`cataract_yellow` no tiene ícono en el carrusel Standard (v0.7.0)** — está en
+  `ParamMeta.STANDARD_PARAMS` (afecta la whitelist de "Ajuste fino" en modo Pro) pero
+  `TabletController.StandardCarousel` sigue con los mismos 5 íconos (astigmatismo/halos/
+  dilatación/destellos/rayos): agregar un 6º ícono "Catarata" exige un glifo propio
+  (`BuildStandardGlyph`) y no estaba en el alcance de esta tarea (solo `ParamMeta.cs`). Si el
+  caso de uso clínico lo requiere, la vía natural es sumar `("cataract_yellow", "Catarata")` a
+  `StandardCarousel` + un glifo simple (p.ej. un círculo con relleno) en `BuildStandardGlyph`.
 - **Drag-reorder de catálogo (P8) sin auto-scroll** (ver "Limitación v1 aceptada" en Decisiones):
   arrastrar cerca de los bordes de la columna "Lentes intraoculares" no la hace scrollear sola;
   para catálogos largos el admin reordena en más de un drag. Aceptado explícitamente para v1.
