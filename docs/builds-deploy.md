@@ -484,6 +484,21 @@ producción, el activo más irreemplazable del proyecto.
   con un driver Vulkan sano, seguiría buildeando en GLES3 igual (el swap no distingue modelos);
   reevaluar si algún día hace falta lo contrario.
 
+- **`unity_build` / `unity_execute_menu_item` (Build Tablet) devuelven `Timed out after 30s
+  waiting for main thread` en builds Android reales, pero el build SIGUE corriendo** — no es un
+  fallo. `BuildPipeline.BuildPlayer` bloquea el hilo principal de Unity durante varios minutos
+  (IL2CPP/Gradle); el bridge MCP tiene un timeout de 30s para la respuesta del tool, pero no
+  cancela la operación en curso. Verificado en vivo (release 0.4.5, 2026-07-21): tanto el build
+  del visor (`unity_build`) como el de la tablet (`unity_execute_menu_item` →
+  `Simulador/Build Tablet (Android)`) devolvieron ese timeout y, sin embargo, el APK apareció
+  completo y correcto minutos después. Durante el build, `unity_editor_ping`/
+  `unity_get_compilation_errors` también pueden devolver "bridge not reachable" (el hilo
+  principal está ocupado) — no confundir con el Editor caído. **Protocolo correcto:** tras el
+  timeout, esperar (sleeps cortos, reintentando `unity_editor_ping` cada 1-2 min) y verificar el
+  artefacto por filesystem (mtime/tamaño del APK en `builds/` o `Builds/Android/`) en vez de
+  reintentar el build o asumir fallo. Solo tratar como fallo real si tras varios minutos el APK no
+  aparece o el log muestra un `BuildReport` con `summary.result == Failed`.
+
 ## Cómo probar
 
 1. **Tablet, camino feliz:** en el editor (target Android activo) ejecutar `Simulador → Build Tablet (Android)`. Esperar el log `[TabletBuild] Succeeded — 0 errores...` con la ruta `Builds/Android/Simulador.apk`.
