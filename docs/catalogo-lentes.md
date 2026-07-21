@@ -78,8 +78,8 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
   override > streaming > default; `source` ∈ `"default"|"streaming"|"override"`, para que
   `DataManager` loguee sin duplicar el parseo). `DataManager` llama a estas mismas funciones — no
   hay una reimplementación paralela para los tests.
-- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.6.1-clinical`,
-  4 lentes: `monofocal`, `panoptix`, `vivity`, `paciente_joven`).
+- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.7.0-clinical`,
+  5 lentes: `monofocal`, `panoptix`, `vivity`, `paciente_joven`, `catarata`).
 - `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de `CatalogParser`/`LensEngine`
   + un test de integración sobre el JSON real.
 - `Assets/Tests/EditMode/DataManagerLogicTests.cs` (P6.5 + config-layers) — tests de
@@ -113,7 +113,7 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
 > visor (comentario de arriba), reordenar desde la tablet cambia en qué secuencia el visor cicla
 > las lentes con los botones físicos — no solo el orden de la lista en la UI de la tablet.
 
-Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`):
+Params clínicos actuales (14 por lente en `Assets/StreamingAssets/lentes.json`):
 
 | Clave | Unidad / rango | Significado |
 |---|---|---|
@@ -130,6 +130,7 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 | `straylight` | 0–1 | escala del velo de disability glare por ojo |
 | `astig_magnitude` | 0–1 (default 0) | magnitud normalizada del astigmatismo residual (misma escala del shader) |
 | `astig_axis_deg` | grados, 0–180 (default 0) | eje del astigmatismo (notación oftálmica; C# lo pasa a radianes) |
+| `cataract_yellow` | 0–1 (default 0, 0.6 en `catarata`) | tinte/amarilleo del cristalino cataratico NATIVO (no de la LIO); alimenta `_CataractL/R` (shader/binder de `Vision/`, ver `docs/vision-optica.md`) |
 
 > **Astigmatismo residual (P4.4, v0.5.0):** default **0 en las 3 lentes** — una LIO no genera
 > astigmatismo per se; el knob representa el astigmatismo residual del PACIENTE (córneal/quirúrgico)
@@ -206,6 +207,32 @@ Params clínicos actuales (13 por lente en `Assets/StreamingAssets/lentes.json`)
 > **Versión bumpeada `0.6.0-clinical` → `0.6.1-clinical`** en AMBOS archivos (mismo mecanismo de
 > siempre: dispara la re-promoción del seed en un backend ya corrido). El catálogo pasa de **3 a
 > 4 lentes base**. Backend (`backend/api/app/seed.py` y `_KNOWN_SEED_VERSIONS`) actualizado en la
+> misma tarea global por @backend-dev — no tocado desde este lado (`Simulador.Runtime`).
+
+> **5ª lente base `catarata` + param `cataract_yellow` (v0.7.0):** representa el cristalino
+> cataratico NATIVO pre-operatorio (sin LIO implantada) — punto de partida clínico para mostrarle
+> al paciente su visión actual antes de elegir una lente, mismo criterio de "lente base más al
+> catálogo, sin código de UI nuevo" que `paciente_joven` (v0.6.1). `id: "catarata"`. Focos:
+> `foco_lejos_m` 6.0 (foco único, sin presbicia corregida), `foco_intermedio_m`/`foco_cerca_m` en
+> 0 (sin foco intermedio ni cercano — la catarata nuclear no da multifocalidad). Disfotopsias/blur
+> moderados: `desenfoque_max` 0.6, `halo_intensity` 0.2, `halo_extra_rings` 3.0,
+> `contrast_loss` 0.30, `destello_intensity` 0.2, `destello_rayos` 4.0, `straylight` **0.85**
+> (encandilamiento marcado ante sol/faros, el rasgo clínico más característico de la catarata).
+> **`cataract_yellow` (param nuevo, 0–1, ver tabla arriba) default 0.6** en `catarata` (catarata
+> nuclear moderada) y **0.0 en las 4 lentes existentes** (`monofocal`/`panoptix`/`vivity`/
+> `paciente_joven` — ninguna representa un cristalino cataratico, el tinte no aplica). `min`/`max`
+> son los mismos rangos clínicos estándar (v0.6.0) que las otras lentes; no se introdujo ningún
+> rango nuevo salvo el propio de `cataract_yellow` (0–1 en las 5). Agregada al FINAL del array
+> `catalogo` (después de `paciente_joven`) para no alterar el ciclado existente de
+> `SimuladorInput`. El shader/binder que consume `cataract_yellow` (`_CataractL/R`) y el gate de
+> `VisionRendererFeature` con esta 5ª lente: ver `docs/vision-optica.md` (implementado por
+> @vision-optics en la misma tarea global). Del lado tablet, `ParamMeta` agrega la entrada clínica
+> (label "Catarata (tinte amarillo)") y lo suma a `STANDARD_PARAMS` — el caso de uso "mostrar el
+> avance de la catarata al paciente" es del modo Standard (ver `docs/tablet.md`).
+> **Versión bumpeada `0.6.1-clinical` → `0.7.0-clinical`** en `Assets/StreamingAssets/lentes.json`
+> (mismo mecanismo de siempre: dispara la re-promoción del seed en un backend ya corrido). El
+> catálogo pasa de **4 a 5 lentes base** y de **13 a 14 params** por lente. Backend
+> (`backend/api/app/seed.py`, `defaults/lentes.json` y `_KNOWN_SEED_VERSIONS`) actualizado en la
 > misma tarea global por @backend-dev — no tocado desde este lado (`Simulador.Runtime`).
 
 ### Orden de carga (`InitializeAsync`)
@@ -326,18 +353,20 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
 ## Cómo probar
 
 1. Editor: Window → General → Test Runner → EditMode → correr `Simulador.Tests.EditMode`:
-   `DataLogicTests` (13 — parseo válido/inválido, merge sin pisar existentes, defaults + overrides
-   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.6.1-clinical`/13
-   params por lente, 4 lentes: `monofocal`/`panoptix`/`vivity`/`paciente_joven`) + `DataManagerLogicTests` (**11**, P6.5 + config-layers — armado de URL de
+   `DataLogicTests` (14 — parseo válido/inválido, merge sin pisar existentes, defaults + overrides
+   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.7.0-clinical`/14
+   params por lente, 5 lentes: `monofocal`/`panoptix`/`vivity`/`paciente_joven`/`catarata`,
+   incluidos los spot-checks de `cataract_yellow`) + `DataManagerLogicTests` (**11**, P6.5 +
+   config-layers — armado de URL de
    sync con/sin trailing slash, round-trip de `lens_overrides.json` con JSON válido e inválido,
    `ExtractBackendUrl` con JSON inválido/sin la clave, y `ResolveBackendUrl` con los 4 casos de
-   precedencia: solo streaming, streaming+override, override corrupto, ambos vacíos) = **24 tests
+   precedencia: solo streaming, streaming+override, override corrupto, ambos vacíos) = **25 tests
    de este documento, todos verdes** (la suite completa de `Simulador.Tests.EditMode` puede reportar
    más si corre junto a `PairingStoreTests`, de networking, fuera de este documento). Sin ventana de
    Test Runner: `Simulador → Run EditMode Tests` (`Assets/Scripts/Editor/EditModeTestRunner.cs`)
    loguea el resumen `passed/failed/skipped` + el detalle de cada falla a la consola — útil para
    verificar desde MCP (`unity_execute_menu_item` + `unity_console_log`) sin abrir la ventana.
-2. Play mode: en consola debe aparecer `DataManager: catalogo vX cargado desde defaults|cache (4
+2. Play mode: en consola debe aparecer `DataManager: catalogo vX cargado desde defaults|cache (5
    lentes)` y luego `sync con backend -> https://vr.conecta.sh/api/lenses` (si el backend de
    producción no responde desde el entorno de desarrollo, el fallo de sync es esperado y no
    bloquea).

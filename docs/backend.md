@@ -25,7 +25,7 @@ Stack: FastAPI 0.115 + uvicorn (Python 3.12), SQLModel, Postgres 16, MinIO, Cadd
 | `backend/api/app/seed.py` | Seed idempotente en startup: admin user, catálogo desde `/seed/lentes.json`, `Version` dummy **por cada app** (`visor`, `tablet`), device de test `DEV_TEST_001`. Logging (`logging`, no `print()`). |
 | `backend/api/app/admin/` | Panel admin: `router.py` (login, dashboard, CRUD devices/lenses/versions, logs con filtros/CSV), `auth.py` (JWT en cookie httpOnly), `templating.py` + `i18n.py` (Jinja2, es/en), `storage.py` (boto3 → MinIO), `files.py` (proxy público `/files/<key>`). |
 | `backend/api/app/templates/` | `base/login/dashboard/devices/lenses/versions/logs.html` (Jinja2 + HTMX). |
-| `defaults/lentes.json` | Semilla del catálogo (v`0.5.1-clinical`, P6.9: rangos clínicos por foco — `foco_cerca_m` 0.15–1m, `foco_intermedio_m` 1–3m, `foco_lejos_m` 3–9m, antes 0–20 los tres —, 3 lentes: monofocal, panoptix, vivity; 13 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg`). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/MD5 en cada actualización). Detalle clínico de P6.9 (incluida la discrepancia deliberada con el texto descriptivo de panoptix/vivity) en `docs/catalogo-lentes.md`. |
+| `defaults/lentes.json` | Semilla del catálogo (v`0.7.0-clinical`: 5 lentes — monofocal, panoptix, vivity, paciente_joven, catarata (nueva) —; 14 params clínicos por lente con default/min/max, incluye `straylight`, `astig_magnitude`, `astig_axis_deg` y el nuevo `cataract_yellow` (filtro amarillo de catarata, 0–1)). Idéntico en contenido al embebido de Unity `Assets/StreamingAssets/lentes.json` (verificado por diff/hash SHA256 en cada actualización). Detalle clínico en `docs/catalogo-lentes.md` (sección de @unity-dev — el shader/binder que consume `cataract_yellow` se implementa en una tarea aparte). |
 | `backend/.env.example` | Plantilla de `.env`: DOMAIN/SCHEME/PORT, PUBLIC_BASE_URL, POSTGRES_*, MINIO_*, S3_BUCKET, JWT_SECRET, ADMIN_DEFAULT_*, CORS_ORIGINS, LOG_LEVEL, LOG_RETENTION_DAYS (default 30). |
 | `backend/api/requirements-dev.txt` | Deps de test (`pytest`, `httpx`) además de `requirements.txt`. No se instala en la imagen de producción. |
 | `backend/api/tests/` | Tests pytest + `TestClient` contra SQLite en memoria (sin Docker): `test_public_api.py` (manifest, lenses, verify válido/inválido/rate-limit, persistencia de `last_apk_version` en device nuevo/existente y no-pisado con valor ausente/vacío), `test_admin_smoke.py` (login admin, aprobar/rechazar devices, smoke de `/admin/devices` mostrando `last_apk_version`), `test_admin_versions.py`, `test_migrations.py` (adopción de Alembic: estampa `_INITIAL_REVISION`, no `head`), `test_log_retention.py` (`purge_old_logs` borra viejos y conserva recientes, throttle de `_maybe_purge_logs`, `POST /api/log` dispara la purga), `test_custom_lenses.py` (P7/P7.1/P7.2: modo pro/admin, CRUD de lentes custom y su matriz de autorización, alta de lentes de admin directo al catálogo BASE (`scope="generic"`, P7.2) y borrado de CUALQUIER lente del catálogo por un admin con historial `.aN` — ver P7.2 abajo —, merge/versionado de `GET /api/lenses`, panel `/admin/custom-lenses` y reemplazo de hardware, edición de lentes BASE por un admin con encadenado `.aN`, y (P7.3) reorden del catálogo BASE (`POST /api/lenses/reorder`) con validación de permutación exacta, no-op sin gastar `.aN` y rollback por historial; sus tests de manipulación del catálogo BASE se ubican ANTES de `test_lenses_merge_skips_base_id_collision` a propósito, ver comentario en el archivo), `test_generic_lens_migration.py` (P7.2: la migración `0005` — movida/no-op idempotente/colisión saltada — cargada por ruta con `importlib` ya que el archivo empieza con un dígito, ejecutada directo contra una `Connection` sin correr Alembic de verdad). `conftest.py` fuerza `DATABASE_URL=sqlite:///:memory:` y noopea `run_migrations`/`ensure_bucket` (usa `init_db()` en su lugar); `seed()` sí corre real. **55 tests** al cerrar P7.3 (51 previos al cierre de P7.2 + 4 de reorden del catálogo base). |
@@ -61,7 +61,7 @@ La URL que usa Unity está hardcodeada en `Assets/Scripts/Runtime/Data/DataManag
 
 ### Seed del catálogo
 
-`_seed_lens_catalog` lee `/seed/lentes.json` (volumen desde `defaults/lentes.json`; fallback inline mínimo si no está montado). Lógica de promoción: si el catálogo activo en BD tiene una versión listada en `_KNOWN_SEED_VERSIONS` (`0.0.1-seed`, `0.1.0-fallback`, `0.2.0-noche`, `0.3.0-clinical`, `0.4.0-clinical`, `0.4.0-fallback`, `0.5.0-clinical`, `0.5.1-clinical`, `0.6.0-clinical`, `0.6.1-clinical`) se considera seed no editado y se reemplaza por la versión nueva del JSON; si NO está en esa lista (p. ej. cualquier versión `.aN` de edición admin, ver P7.1 abajo), se asume edición manual del admin y **no se pisa**. El fallback inline (1 lente, sin `straylight` ni `astig_*`) usa su propia versión `0.4.0-fallback` — nunca la versión clínica real — precisamente para que, si el volumen aparece más tarde con el catálogo completo, la promoción se dispare (versiones distintas) en vez de hacer short-circuit por igualdad de versión con contenido mentido. **Cada versión nueva de `defaults/lentes.json` debe agregarse a `_KNOWN_SEED_VERSIONS`** (`backend/api/app/seed.py`) o no se auto-promueve (verificado en vivo al pasar de `0.4.0-clinical` a `0.5.0-clinical`: `docker compose logs api` mostró el reemplazo del catálogo y `GET /api/lenses` devolvió la versión nueva con `astig_magnitude`/`astig_axis_deg`).
+`_seed_lens_catalog` lee `/seed/lentes.json` (volumen desde `defaults/lentes.json`; fallback inline mínimo si no está montado). Lógica de promoción: si el catálogo activo en BD tiene una versión listada en `_KNOWN_SEED_VERSIONS` (`0.0.1-seed`, `0.1.0-fallback`, `0.2.0-noche`, `0.3.0-clinical`, `0.4.0-clinical`, `0.4.0-fallback`, `0.5.0-clinical`, `0.5.1-clinical`, `0.6.0-clinical`, `0.6.1-clinical`, `0.7.0-clinical`) se considera seed no editado y se reemplaza por la versión nueva del JSON; si NO está en esa lista (p. ej. cualquier versión `.aN` de edición admin, ver P7.1 abajo), se asume edición manual del admin y **no se pisa**. El fallback inline (1 lente, sin `straylight` ni `astig_*`) usa su propia versión `0.4.0-fallback` — nunca la versión clínica real — precisamente para que, si el volumen aparece más tarde con el catálogo completo, la promoción se dispare (versiones distintas) en vez de hacer short-circuit por igualdad de versión con contenido mentido. **Cada versión nueva de `defaults/lentes.json` debe agregarse a `_KNOWN_SEED_VERSIONS`** (`backend/api/app/seed.py`) o no se auto-promueve (verificado en vivo al pasar de `0.4.0-clinical` a `0.5.0-clinical`: `docker compose logs api` mostró el reemplazo del catálogo y `GET /api/lenses` devolvió la versión nueva con `astig_magnitude`/`astig_axis_deg`).
 
 ## Decisiones y porqués
 
@@ -224,6 +224,37 @@ python -m pytest -v
   `paciente_joven` + 1 genérica), con los valores editados por admin intactos
   (`monofocal.foco_lejos_m.default == 6.201871`, `panoptix.astig_magnitude.default ==
   0.709078431`) y la versión mergeada pasando a `0.6.0-clinical.a17+x...`.
+- **(5ª lente base `catarata` + param `cataract_yellow`, rollout a prod sin pisar ediciones
+  admin, 2026-07-21)**: mismo problema y misma solución que el rollout de `paciente_joven`
+  de arriba, con una variante: entre la verificación previa a la tarea (`0.6.0-clinical.a33`)
+  y la migración real, el catálogo de prod siguió recibiendo ediciones en vivo (el drag-reorder
+  P7.3/P8 desde la tablet) y quedó en `0.6.0-clinical.a35` (id 37, orden reordenado
+  `paciente_joven, monofocal, generic_a209ba91, panoptix, vivity`) — la migración se calculó
+  contra ese estado REAL leído en el momento de correr (no contra el `.a33` de la verificación
+  previa), confirmando que el mecanismo de `_next_admin_lens_version` (root + mayor sufijo
+  `.aN` existente + 1) es robusto a edición concurrente mientras se recalcule en el momento de
+  escribir, nunca hardcodeado. Pasos: 1) `pg_dump` completo a `/root/backups/` del VPS antes de
+  tocar nada; 2) deploy por SFTP de `defaults/lentes.json` (`0.7.0-clinical`) y
+  `backend/api/app/seed.py` (con `0.7.0-clinical` en `_KNOWN_SEED_VERSIONS`) + rebuild de la
+  imagen `api` (el `Dockerfile` hace `COPY app ./app` en build, así que un simple
+  `restart` NO recoge un `seed.py` nuevo — hace falta `docker compose build api && docker
+  compose up -d api`); log del arranque confirmó `[seed] catalogo activo v0.6.0-clinical.a35
+  NO es seed conocido; se respeta` (el deploy de archivos por sí solo no tocó nada); 3) script
+  Python one-shot (`docker exec backend-api-1 python ...`, mismo engine/modelos SQLModel que la
+  app) que: calcula el diff completo EN MEMORIA antes de escribir nada en la BD (si hay
+  cualquier modificación no esperada, aborta sin commit), agrega `cataract_yellow` (`{default:
+  0.0, min: 0.0, max: 1.0}`) al FINAL de los `params` de cada lente que no lo tuviera
+  (incluida `generic_a209ba91`, la lente creada por el profesional que no existe en los
+  defaults — verificada intacta salvo esa adición), agrega la lente `catarata` copiada
+  verbatim de `/seed/lentes.json` al final del array, y solo entonces desactiva la fila vieja y
+  activa una fila nueva con versión `.aN` calculada en el momento (`0.6.0-clinical.a35` → `id=38,
+  0.6.0-clinical.a36`, NO se usó `0.7.0-clinical` limpio por la misma razón que el rollout de
+  `paciente_joven`: esa versión está en `_KNOWN_SEED_VERSIONS`). `custom_lenses` no se tocó
+  (count antes/después: 1/1). Verificado en vivo: `GET /api/lenses` en prod pasó de 5 a 6
+  lentes, las 5 preexistentes con `cataract_yellow=0.0` y `catarata` con `cataract_yellow=0.6`,
+  ninguna con campo `origen`, orden preexistente preservado y `catarata` al final; sin errores
+  en `docker compose logs api`. La fila `.a35` (id 37) queda desactivada para rollback manual
+  desde `/admin/lenses`, igual que siempre.
 - **Panel**: página nueva `/admin/custom-lenses` (listar/filtrar por device/borrar, params
   read-only; P7.2: perdió el filtro por scope generic/private — esa tabla ya solo tiene
   customs privadas, ver más abajo); `devices_delete` borra las customs del device (cascade
@@ -357,5 +388,6 @@ python -m pytest -v
 - UI de cambio de contraseña del admin (hoy solo vía `.env` + reseed).
 - Uploads del panel acumulan el archivo completo en memoria; multipart si los binarios crecen.
 - ~~(P6.9) Agregar `"0.5.1-clinical"` a `_KNOWN_SEED_VERSIONS`~~ — **resuelto**: el set ya
-  incluye `0.5.1-clinical`, `0.6.0-clinical` y `0.6.1-clinical` (agregada al sumar la 4ª
-  lente base `paciente_joven`). Ver §Seed del catálogo arriba.
+  incluye `0.5.1-clinical`, `0.6.0-clinical`, `0.6.1-clinical` y `0.7.0-clinical` (este último
+  agregado al sumar el param `cataract_yellow` y la 5ª lente base `catarata`). Ver §Seed del
+  catálogo arriba.

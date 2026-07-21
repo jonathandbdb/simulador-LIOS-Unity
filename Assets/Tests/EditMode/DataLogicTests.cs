@@ -218,8 +218,8 @@ namespace Simulador.Tests
             Assert.IsTrue(File.Exists(path), $"Falta {path}");
             var cat = CatalogParser.Parse(File.ReadAllText(path));
             Assert.IsNotNull(cat);
-            Assert.AreEqual("0.6.1-clinical", cat.Version);
-            Assert.AreEqual(4, cat.Catalogo.Count);
+            Assert.AreEqual("0.7.0-clinical", cat.Version);
+            Assert.AreEqual(5, cat.Catalogo.Count);
 
             var pan = cat.Catalogo.Find(l => l.Id == "panoptix");
             Assert.IsNotNull(pan);
@@ -265,10 +265,11 @@ namespace Simulador.Tests
             // el texto descriptivo de panoptix/vivity sigue mencionando 60cm/67cm.
             Assert.AreEqual(1.0f, pan.Params["foco_intermedio_m"].Default, 1e-4f);
             Assert.AreEqual(1.0f, cat.Catalogo.Find(l => l.Id == "vivity").Params["foco_intermedio_m"].Default, 1e-4f);
-            // Las 3 lentes deben tener los 13 params clinicos (P4.4 agrego astig_magnitude
-            // y astig_axis_deg a los 11 anteriores, incluyendo straylight).
+            // Las 5 lentes deben tener los 14 params clinicos (P4.4 agrego astig_magnitude
+            // y astig_axis_deg a los 11 anteriores, incluyendo straylight; v0.7.0 sumo
+            // cataract_yellow).
             foreach (var l in cat.Catalogo)
-                Assert.AreEqual(13, l.Params.Count, $"{l.Id} deberia tener 13 params");
+                Assert.AreEqual(14, l.Params.Count, $"{l.Id} deberia tener 14 params");
 
             var mono = cat.Catalogo.Find(l => l.Id == "monofocal");
             var viv = cat.Catalogo.Find(l => l.Id == "vivity");
@@ -304,6 +305,27 @@ namespace Simulador.Tests
             Assert.AreEqual(0f, joven.Params["destello_intensity"].Default, 1e-4f);
             Assert.AreEqual(0f, joven.Params["destello_rayos"].Default, 1e-4f);
             Assert.AreEqual(1f, joven.Params["halo_extra_rings"].Default, 1e-4f);
+
+            // v0.7.0: cataract_yellow (tinte de catarata del cristalino nativo, no de
+            // la LIO) presente en las 5 lentes, min/max 0-1 en todas; default 0 salvo
+            // en la nueva lente base "catarata" (0.6, ver docs/catalogo-lentes.md).
+            foreach (var l in cat.Catalogo)
+            {
+                Assert.IsTrue(l.Params.ContainsKey("cataract_yellow"), $"{l.Id} deberia tener cataract_yellow");
+                Assert.AreEqual(0f, l.Params["cataract_yellow"].Min, 1e-4f, $"{l.Id}.cataract_yellow min");
+                Assert.AreEqual(1f, l.Params["cataract_yellow"].Max, 1e-4f, $"{l.Id}.cataract_yellow max");
+                float expectedDefault = l.Id == "catarata" ? 0.6f : 0.0f;
+                Assert.AreEqual(expectedDefault, l.Params["cataract_yellow"].Default, 1e-4f, $"{l.Id}.cataract_yellow default");
+            }
+
+            // v0.7.0: 5ta lente base "catarata" (cristalino cataratico pre-operatorio,
+            // sin LIO) -- spot-checks clinicos, ver docs/catalogo-lentes.md.
+            var catarata = cat.Catalogo.Find(l => l.Id == "catarata");
+            Assert.IsNotNull(catarata, "deberia existir la lente catarata");
+            Assert.AreEqual(0.85f, catarata.Params["straylight"].Default, 1e-4f);
+            Assert.AreEqual(0.30f, catarata.Params["contrast_loss"].Default, 1e-4f);
+            Assert.AreEqual(0f, catarata.Params["foco_intermedio_m"].Default, 1e-4f);
+            Assert.AreEqual(0f, catarata.Params["foco_cerca_m"].Default, 1e-4f);
         }
     }
 }

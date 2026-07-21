@@ -102,6 +102,16 @@ namespace Simulador.Tablet
                 Hint = "Orientacion del eje de mayor borrosidad (0-180°). Solo relevante si hay astigmatismo residual (>0).",
                 Unit = "°", Fmt = "F0",
             },
+            // v0.7.0: tinte de catarata del cristalino NATIVO (no un artefacto de la
+            // LIO) -- separado del resto de disfotopsias porque modela el cristalino
+            // sin operar, no la lente implantada. Alimenta el shader/binder de
+            // @vision-optics (_CataractL/R). Ver docs/catalogo-lentes.md.
+            ["cataract_yellow"] = new Entry
+            {
+                Label = "Catarata (tinte amarillo)",
+                Hint = "Amarilleo del cristalino catarático: filtra la luz azul y lava los colores. 0 = medio transparente, 1 = catarata brunescente avanzada.",
+                Unit = "", Fmt = "F2",
+            },
         };
 
         // P7: whitelist del modo STANDARD — los unicos parametros visibles/editables
@@ -112,6 +122,9 @@ namespace Simulador.Tablet
             "astig_magnitude", "astig_axis_deg",
             "halo_intensity", "halo_extra_rings",
             "destello_intensity", "destello_rayos",
+            // v0.7.0: mostrar el avance de la catarata al paciente es un caso de uso
+            // del modo Standard (no requiere edicion completa de una lente propia).
+            "cataract_yellow",
         };
 
         /// <summary>True si el parametro esta permitido en el modo Standard (P7).</summary>
@@ -130,6 +143,7 @@ namespace Simulador.Tablet
             "destello_intensity", "destello_rayos",
             "straylight",
             "contrast_loss",
+            "cataract_yellow",
         };
 
         public static string LabelFor(string p) => META.TryGetValue(p, out var m) ? m.Label : p;
