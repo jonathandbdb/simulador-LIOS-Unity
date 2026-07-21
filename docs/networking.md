@@ -204,6 +204,12 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   `"eye"`; default `"both"` si falta, misma convención que `apply_lens`/`override_params`).
 - `{"cmd":"load_scenario","id":"consultorio|ruta_noche"}` → `ScenarioManager.SwitchTo` (P2.3 — el
   visor también acepta el campo legacy `"scenario"` con el mismo valor, por compat).
+- `{"cmd":"recenter"}` → `ScenarioManager.RecenterPatient()` (recalibra la posición del paciente en
+  el escenario actual). Fire-and-forget como `set_astigmatism`/`load_scenario`: sin ack ni campo en
+  `vision_state`. Cualquier sesión autenticada puede mandarlo (sin gating de admin — es una acción
+  clínica no destructiva). La corrección **no persiste** tras un `load_scenario` posterior (recentra
+  contra el escenario activo en ESE momento, no guarda un offset). Botón "Recentrar" en la tablet
+  (header Pro y `StdTopBar` de Standard, ver `docs/tablet.md`).
 - `{"cmd":"refresh"}` (P5.4) → el visor responde al MISMO cliente (`SendTextTo`, no broadcast) con
   el payload EXACTO de un `hello` (`BuildHello()` reusado tal cual). Permite reconstruir
   catálogo/escenarios/vision_state sin reconectar/re-autenticar — útil si el clínico sabe que el
@@ -552,6 +558,13 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
     **`order` vacío o ausente:** el visor debe loguear el warning `Net: reorder_lenses con "order"
     invalido o vacio.` y responder `lens_error` con `reason:"invalid_order"` SIN llegar a golpear
     el backend (confirmar que no aparece ningún log de sync/HTTP para ese intento).
+14. **`recenter`:** con la tablet conectada, tocar "Recentrar" (header Pro o `StdTopBar` de
+    Standard) → la consola del visor NO debe mostrar `comando desconocido` (confirma que llegó
+    `{"cmd":"recenter"}`) y el paciente debe recalibrarse en el escenario actual (efecto observable
+    en el visor/HMD, sin ack a la tablet — fire-and-forget). Repetir en ambos escenarios
+    (`consultorio`/`ruta_noche`). Sin `ScenarioManager` en la escena (caso degenerado, no debería
+    pasar en producción): el visor debe loguear `[Net] recenter sin ScenarioManager wired.` sin
+    excepción.
 
 ## Pendientes / deuda
 - Sin `MulticastLock` Android en `DiscoveryListener` (documentado como "si hiciera falta se agrega").

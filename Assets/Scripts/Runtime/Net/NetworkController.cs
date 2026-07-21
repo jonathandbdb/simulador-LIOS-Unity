@@ -531,6 +531,15 @@ namespace Simulador.Net
                         _scenarios.SwitchTo(sid);
                     }
                     break;
+                case "recenter":
+                    // Boton "Recentrar" de la tablet: fire-and-forget, sin ack (mismo
+                    // patron que load_scenario) -- recalibra la posicion del paciente
+                    // en el escenario actual. Corre en el hilo principal (viene de la
+                    // cola drenada por PumpEvents/Update), asi que tocar ScenarioManager
+                    // aca es seguro.
+                    if (_scenarios != null) _scenarios.RecenterPatient();
+                    else Debug.LogWarning("[Net] recenter sin ScenarioManager wired.");
+                    break;
                 case "refresh":
                     // P5.4: refresh en caliente. Reusa BuildHello() (mismo payload EXACTO
                     // que el "hello" inicial: catalogo + vision_state + escenarios) para

@@ -94,6 +94,30 @@ namespace Simulador.Vision
             SwitchTo(Order[(i + 1) % Order.Count]);
         }
 
+        /// <summary>
+        /// Recentra al paciente en la pose de diseno del escenario actual (comando 'recenter'
+        /// desde la tablet). Con TrackingOriginMode Device el origen queda fijado por la pose del
+        /// visor al arrancar; esto corrige llevando la CAMARA (el ojo) a la pose de diseno.
+        /// Yaw-only (jamas pitch/roll al rig). El orden importa: rotar primero alrededor de la
+        /// camara (que no se mueve en ese paso) y trasladar despues. No persiste tras load_scenario.
+        /// </summary>
+        public void RecenterPatient()
+        {
+            if (!xrOrigin || !xrCamera) return;
+            bool night = Current == "ruta_noche";
+            Vector3 originPos = night ? rutaOriginPos : consultorioOriginPos;
+            float targetYaw = (night ? rutaOriginEuler : consultorioOriginEuler).y;
+            Transform cam = xrCamera.transform;
+            // Ojo de diseno = origen del escenario + CameraYOffset (leido del Camera Offset,
+            // padre de la camara: en modo Device su localPosition.y == CameraYOffset).
+            Vector3 targetEye = originPos + Vector3.up * cam.parent.localPosition.y;
+            // 1) yaw: rotar el rig alrededor de la camara (la camara no se mueve en este paso)
+            xrOrigin.RotateAround(cam.position, Vector3.up, Mathf.DeltaAngle(cam.eulerAngles.y, targetYaw));
+            // 2) posicion: llevar la camara exactamente al ojo de diseno
+            xrOrigin.position += targetEye - cam.position;
+            Debug.Log($"[Vision] ScenarioManager: recenter en {Current}");
+        }
+
         public void SwitchTo(string id)
         {
             bool night = id == "ruta_noche";
