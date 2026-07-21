@@ -36,6 +36,7 @@ namespace Simulador.Vision
             { "profundidad_foco_m", ("_ProfundidadFocoL", "_ProfundidadFocoR") },
             { "desenfoque_max",     ("_DesenfoqueMaxL", "_DesenfoqueMaxR") },
             { "contrast_loss",      ("_ContrastLossL", "_ContrastLossR") },
+            { "cataract_yellow",    ("_CataractL", "_CataractR") },
         };
 
         // Blend demo opt-in: corre tras el despacho inicial, dentro de la coroutine Start de la base.
@@ -65,7 +66,11 @@ namespace Simulador.Vision
             // proxy del blur (si 0, no hay desenfoque posible; si >0, lo decide el shader).
             float des = state.Params.TryGetValue("desenfoque_max", out var d) ? d : 0f;
             float con = state.Params.TryGetValue("contrast_loss", out var c) ? c : 0f;
-            float act = Mathf.Max(des, con);
+            // cataract_yellow DEBE entrar al gate: el tinte se aplica en el pass 1, asi que si el
+            // gate lo ignora, con desenfoque_max=0 y contrast_loss=0 la feature no inyecta el pass
+            // y el tinte desaparece (efecto uniforme por ojo sin senal en VisionActivity => apagado).
+            float cat = state.Params.TryGetValue("cataract_yellow", out var ca) ? ca : 0f;
+            float act = Mathf.Max(Mathf.Max(des, con), cat);
             if (left) VisionActivity.ParamsL = act; else VisionActivity.ParamsR = act;
         }
     }

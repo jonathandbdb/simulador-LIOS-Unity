@@ -33,6 +33,7 @@ Shader "Simulador/VisionPostProcess"
         float _ProfundidadFocoL, _ProfundidadFocoR;   // ancho de zona nitida (m)
         float _DesenfoqueMaxL, _DesenfoqueMaxR;        // 0..1
         float _ContrastLossL, _ContrastLossR;          // 0..0.6
+        float _CataractL, _CataractR;                  // 0..1 tinte amarillo de catarata (transmitancia)
 
         // === Libro en la mano (Sprint 10 / F5). 0 => sin libro (no-op). ===
         float _BookDistanceM;
@@ -231,6 +232,18 @@ Shader "Simulador/VisionPostProcess"
                 // Perdida de contraste: compresion alrededor de pivote BAJO (no levanta negros).
                 float contrast = eyeIdx == 0 ? _ContrastLossL : _ContrastLossR;
                 color = (color - CONTRAST_PIVOT) * (1.0 - contrast) + CONTRAST_PIVOT;
+
+                // Tinte amarillo de catarata (transmitancia del cristalino envejecido/brunescente):
+                // filtro de ABSORCION multiplicativo, fuerte en azul y casi nulo en rojo (el cristalino
+                // amarillea con la edad). Triple (1.0, 0.86, 0.55) = proyeccion perceptual a sRGB
+                // normalizada a rojo=1 [Pokorny, Smith & Lutze 1987, "Aging of the human lens",
+                // Applied Optics 26(8):1437-1440]. Implica ~13% de caida de luminancia Rec.709: modela
+                // la perdida de transmitancia TOTAL, por eso NO se agrega termino extra de luminancia.
+                // MULTIPLICATIVO, no aditivo: el cristalino no emite; la luz dispersada ya la modela el
+                // velo/straylight. Va DESPUES del contraste y ANTES del velo a proposito: si fuera
+                // despues del velo, doble-amarillearia el _GlareVeilTint calido que el velo ya aplica.
+                float cataract = saturate(eyeIdx == 0 ? _CataractL : _CataractR);
+                color *= lerp(half3(1.0, 1.0, 1.0), half3(1.0, 0.86, 0.55), cataract);
 
                 // Encandilamiento (disability glare): velo de luminancia ADITIVO (straylight)
                 // por ojo. Aditivo => levanta los negros y baja el contraste como el velo real;

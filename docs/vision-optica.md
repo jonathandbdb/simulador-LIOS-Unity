@@ -34,7 +34,7 @@ Render por frame (URP RenderGraph):
   por ojo). Loguea `[Vision] Post-proceso gate ON/OFF` solo en las transiciones.
 - `Assets/Scripts/Runtime/Vision/VisionActivity.cs` — estado agregado "hay efecto" por ojo para el
   gate. Lo escriben (con estado C# ya conocido, NO leyendo el material): `VisionParamsBinder`
-  (`ParamsL/R = max(desenfoque_max, contrast_loss)`), `GlareController` (`AstigL/R`),
+  (`ParamsL/R = max(desenfoque_max, contrast_loss, cataract_yellow)`), `GlareController` (`AstigL/R`),
   `DisabilityGlareController` (`VeilL/R` = velo **suavizado** actual, no el target). `AnyActive` es
   el OR con epsilon 0.001 sobre los 6 campos. Criterio conservador: `desenfoque_max > 0` mantiene el
   pass aunque todo esté en foco (no se sabe per-pixel sin correr el shader). Sin histéresis: el velo
@@ -61,8 +61,12 @@ Render por frame (URP RenderGraph):
   del catálogo a uniforms por ojo: `foco_lejos_m→_FocoLejosL/_FocoLejosR`,
   `foco_intermedio_m→_FocoIntermedioL/R`, `foco_cerca_m→_FocoCercaL/R`,
   `profundidad_foco_m→_ProfundidadFocoL/R`, `desenfoque_max→_DesenfoqueMaxL/R`,
-  `contrast_loss→_ContrastLossL/R`. Además aplica un blend demo al arrancar
+  `contrast_loss→_ContrastLossL/R`, `cataract_yellow→_CataractL/R` (tinte amarillo de catarata,
+  ver §Post-proceso). Además aplica un blend demo al arrancar
   (`applyDemoBlendOnStart`: monofocal OI / panoptix OD).
+  **Gate (C2.2):** `cataract_yellow` entra al agregado `VisionActivity.ParamsL/R` junto con
+  `desenfoque_max` y `contrast_loss` (`max` de los tres). Sin esto, con blur y contraste en 0 el
+  gate de CPU apagaría el pass y el tinte desaparecería (es un efecto uniforme por ojo del pass 1).
 - `Assets/Scripts/Runtime/Vision/GlareController.cs` — DataManager→shader globals de los billboards
   (hereda `VisionStateBinder`; `ApplyEyeState` delega en `SetEyeGlobals`):
   `halo_intensity→glare_halo_l/r`, `halo_extra_rings→glare_pupil_l/r` (en mm 1–6 desde v0.6.0; se normaliza `(v-1)/5` a 0–1 acá antes de publicar — ver `docs/catalogo-lentes.md`),
@@ -118,6 +122,21 @@ Render por frame (URP RenderGraph):
   cuando hay velo intenso mirado de frente (proxy `VisionActivity.Veil`), reduciendo el desenfoque por
   efecto estenopeico. En `Start` arranca ya en el target (sin rampa al cargar). Verificado:
   1→0.012 a día (rápido), 0→0.74→~1 a noche (más lento).
+  **Recentrado del paciente (`RecenterPatient()`, B1):** método público (comando `recenter` de la
+  tablet; el comando WS y el botón los agrega @unity-dev) que lleva la **cámara** (el ojo) a la pose
+  de diseño del escenario actual. Con `TrackingOriginMode.Device` el origen del rig queda **fijado
+  por la pose del visor al arrancar** (donde estaba el paciente al ponerse el casco), así que la
+  cabeza puede quedar descentrada respecto de la silla/asiento de diseño; `recenter` corrige eso.
+  Algoritmo (yaw-only, **el orden importa**): (1) rota el rig alrededor de la cámara
+  (`xrOrigin.RotateAround(cam.position, up, Δyaw)`) — la cámara no se mueve en este paso, solo cambia
+  su orientación al yaw de diseño; (2) traslada el rig para llevar la cámara al ojo de diseño
+  `originPos + up·CameraYOffset` (el offset se lee de `cam.parent.localPosition.y`, el Camera Offset;
+  en modo Device su `localPosition.y == CameraYOffset`, verificado = 1.1176). **Nunca toca pitch/roll
+  del rig** (mareo). **Limitación conocida:** no persiste tras `load_scenario` — `SwitchTo` reposiciona
+  el rig por pose serializada, no reaplica el recentrado; hay que volver a mandar `recenter` tras un
+  cambio de escenario si el paciente sigue descentrado. Verificado en play (consultorio): desde una
+  pose arbitraria del rig, la cámara aterriza en `(0.274, 1.1176, -0.500)` con error 0 y yaw de
+  diseño con error 0.
 - `Assets/Scripts/Runtime/Vision/NightTraffic.cs` — tráfico bidireccional: instancia prefabs de
   `Assets/Prefabs/Cars` (frente del auto = +Z local) en dos carriles (`laneX=±2.6 m`); carril
   derecho se aleja (se ven pilotos), izquierdo viene de frente (faros). Tramo entre `startZ=70` y
@@ -238,9 +257,11 @@ Render por frame (URP RenderGraph):
   la dirección del sol, verificar que siga cayendo dentro de la abertura de la ventana (fuera de ella
   se pintan sobre… nada, no hay quad). `_SunDirWS` (material) y `SunSkyAnchor.sunDirection` DEBEN
   coincidir (disco, glare y velo a la misma dirección).
-  **Gotcha:** `Consultorio` tiene scale 0.37 → `EnlargedWindow` compensa con localScale 1/0.37
-  (sus mallas están en metros de mundo); el cuarto del FBX está rotado ~62° (las paredes NO están
-  alineadas a los ejes del mundo).
+  **Gotcha (actualizado — cirugía de escala):** `Consultorio` está ahora a **scale 1** (metros
+  reales); tras preservar exactas las poses de mundo, `EnlargedWindow`, `DayWindow` y `OptotipoETDRS`
+  quedaron también a **scale 1** (ya no compensan el 0.37 viejo con localScale 1/0.37). El cuarto del
+  FBX **sigue rotado ~62°** (las paredes NO están alineadas a los ejes del mundo — este gotcha sigue
+  vigente).
 - `Assets/Scripts/Runtime/Vision/SunSkyAnchor.cs` — ancla las fuentes del sol
   (`SunGlare`/`SunGlare2`, hijos del GameObject `SunSky` bajo `Consultorio/DayWindow`) a una
   DIRECCIÓN de cielo fija en el mundo: cada `LateUpdate` reposiciona el objeto a
@@ -303,14 +324,16 @@ PSF combinada, no el cilindro sobre la imagen nítida.
    `MAX_DEFOCUS_D = 1.5 D` (error que satura el blur). De noche `blur ×= lerp(1, 1.35, _PupilScene)`.
 5. Box blur de 4 taps bilineales en diagonales, radio `BLUR_RADIUS_PX(7) × blur`. Escribe a temp.
 
-**Pass 1 — cilindro + contraste + velo, `temp→source`** (`_BlitTexture` = temp = imagen ya
-esfero-desenfocada):
+**Pass 1 — cilindro + contraste + tinte catarata + velo, `temp→source`** (`_BlitTexture` = temp =
+imagen ya esfero-desenfocada):
 6. Astigmatismo POR OJO: smear direccional de 7 taps gaussianos a lo largo del eje
    (`glare_astig_angle_l/r`), largo `ASTIG_BLUR_PX(22 px) × glare_astig_l/r` (selección por
    `eyeIdx`, respeta `_StreamForceEye`). `DirBlur` samplea **temp** (la imagen desenfocada), no el
    original: el cilindro hereda el defocus de la esfera.
 7. Contraste: `color = (color − 0.22) × (1 − contrast_loss) + 0.22` (pivote bajo: no levanta negros).
-8. Velo de encandilamiento (aditivo, después del contraste — ver siguiente sección).
+8. Tinte amarillo de catarata (MULTIPLICATIVO, después del contraste y ANTES del velo — ver
+   siguiente sección "Tinte amarillo de catarata").
+9. Velo de encandilamiento (aditivo, después del contraste — ver "Disability glare").
 
 Coste: cuando astig = 0 el pass 1 es 1 tap (copia) y el pass 0 hasta 5 taps; con astig activo el
 pass 1 sube a 7 taps. Antes (monolítico) el pass 0 hacía ~12 taps y el pass 1 era copia (~13 total);
@@ -322,6 +345,31 @@ satura el blur) y `CONTRAST_PIVOT = 0.22`. Se eligieron a ojo; la calibración c
 **defocus curves** publicadas (agudeza vs desenfoque) de cada LIO: PanOptix trifocal — Kohnen et al.
 [7]; Vivity EDOF — McCabe et al. [8]; y una monofocal de referencia. Tarea futura (recalibración),
 fuera de esta tanda.
+
+### Tinte amarillo de catarata (`cataract_yellow`) — C2
+
+Modela la **transmitancia del cristalino envejecido/brunescente**: con la edad el cristalino
+amarillea y absorbe fuerte en azul y casi nada en rojo (base de la catarata nuclear amarilla).
+Es un filtro de absorción **MULTIPLICATIVO** en el pass 1:
+
+```
+cataract = saturate(eye==L ? _CataractL : _CataractR)   // 0..1
+color   *= lerp(half3(1,1,1), half3(1.0, 0.86, 0.55), cataract)
+```
+
+- **Triple (1.0, 0.86, 0.55)** = proyección perceptual del espectro de transmitancia del cristalino
+  senil a primarios sRGB, **normalizada a rojo = 1** [11]. A `cataract = 1` implica una caída de
+  luminancia Rec.709 de `1 − (0.2126·1 + 0.7152·0.86 + 0.0722·0.55) ≈ 13%`: **modela la pérdida de
+  transmitancia TOTAL** del cristalino, por eso NO se agrega término extra de luminancia.
+- **Multiplicativo, NO aditivo:** el cristalino no emite luz; solo absorbe. La luz dispersada
+  (straylight) ya la modela el velo/disability glare — son mecanismos distintos.
+- **Orden: después del contraste y ANTES del velo.** Deliberado: si fuera después del velo,
+  doble-amarillearía el `_GlareVeilTint` cálido que el velo ya aplica (straylight aditivo con su
+  propio tinte). El tinte de catarata debe filtrar la imagen, no el velo.
+- **Referencia:** Pokorny, Smith & Lutze (1987) [11]. **Aproximación perceptual PENDIENTE de
+  calibración** (mismo status que `CONTRAST_PIVOT`/`DOF_M_TO_D`): el triple sRGB se eligió por
+  plausibilidad perceptual, no por integración espectral contra un observador CIE + transmitancia
+  medida. Recalibración fina = tanda futura.
 
 ### Disability glare (velo por ojo) — CIE general disability glare equation
 
@@ -400,9 +448,12 @@ activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni tog
   letra de agudeza logMAR L subtiende en altura `θ(L) = 5·10^L` arcmin (5 arcmin = 20/20). Altura
   física de la letra: **`h(L) = 2·D·tan(θ(L)/2) = 2·D·tan(2.5·10^L arcmin)`** (arcmin→rad ×π/10800).
   **Distancia de diseño: D = 4.0 m** (estándar ETDRS): las alturas de letra están calibradas para
-  4.0 m exactos desde la posición del ojo medida en Editor (`camPos≈(0.274, 1.118, -0.500)`) hasta la
-  cartilla (`(0.274, 1.118, 3.500)`, a la derecha de la ventana → pared sólida detrás, sin cielo/sol
-  que lave; no interfiere con el libro ni la ventana). Ojo: la posición REAL del ojo depende del
+  4.0 m exactos desde la posición del ojo medida en Editor (`camPos≈(0.274, 1.1176, -0.500)`) hasta la
+  cartilla (`(0.274, 1.1176, 3.500)`, a la derecha de la ventana → pared sólida detrás, sin cielo/sol
+  que lave; no interfiere con el libro ni la ventana). **Con la cirugía de escala (Consultorio a
+  scale 1) las locales del optotipo son ahora directamente los metros de diseño** `(0.274, 1.1176,
+  3.5)` — antes iban escaladas por el 0.37 del padre. El ojo de diseño `(0.274, 1.1176, -0.500)` es
+  además el destino de `ScenarioManager.RecenterPatient()` (ver zona del rig). Ojo: la posición REAL del ojo depende del
   origen sentado del rig (`ScenarioManager.consultorioOriginPos=(-0.35,-0.05,-0.40)`, mirando +X) y
   de la altura/postura del usuario → la distancia efectiva puede variar ~±1% (≈ ±0.005 logMAR,
   despreciable clínicamente). Verificado: cap-height renderizado del renglón 20/20 =
@@ -596,3 +647,6 @@ activa `Consultorio` de día y lo desactiva de noche — no hace falta UI ni tog
 - **[10]** Ferris, F.L. III, Kassoff, A., Bresnick, G.H., Bailey, I. (1982). *New visual acuity charts
   for clinical research.* Am J Ophthalmol 94(1):91–96. (Diseño de la cartilla ETDRS: progresión
   logMAR 0.1, 5 letras Sloan por fila, espaciado proporcional.) Base del optotipo del consultorio.
+- **[11]** Pokorny, J., Smith, V.C., Lutze, M. (1987). *Aging of the human lens.* Applied Optics
+  26(8):1437–1440. (Transmitancia espectral del cristalino vs edad: absorción creciente en el azul,
+  casi nula en el rojo.) Base del triple sRGB del tinte amarillo de catarata (`cataract_yellow`).
