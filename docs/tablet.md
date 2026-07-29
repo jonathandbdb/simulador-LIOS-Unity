@@ -235,6 +235,23 @@ TabletController.Start()
   una entrada en `StandardCarousel`, fuera del alcance pedido para esta tarea — ver Pendientes). El
   param SÍ aparece en "Ajuste fino" (Pro completo para admin/dueño de custom, y en la vista
   restringida de un Pro no-admin sobre una lente de catálogo).
+- **`cataract_scatter` en `ParamMeta` + `STANDARD_PARAMS` (v0.8.0)** → mismo precedente que
+  `cataract_yellow` (arriba): el catálogo (`0.8.0-clinical`) agregó la dispersión intraocular
+  (straylight) del cristalino catarático NATIVO, separada del tinte porque es un mecanismo
+  óptico distinto (van den Berg/C-Quant) que degrada la nitidez a TODA distancia y agrega un
+  velo difuso sin depender de una fuente de glare en el campo. `ParamMeta` le da label
+  ("Catarata (dispersión)"), hint clínico con los 3 puntos de referencia (0 = medio claro, 0.6 =
+  nuclear moderada ~20/70, 1 = avanzada ~20/200) y formato `F2` sin unidad; lo agrega a
+  `STANDARD_PARAMS` (mismo caso de uso: "mostrar el avance de la catarata al paciente" sin
+  edición completa). **Mismo gotcha que `cataract_yellow`: `STANDARD_PARAMS` NO alimenta el
+  carrusel de 5 íconos del modo Standard** — agregar `cataract_scatter` no agrega un ícono
+  nuevo al carrusel (ver arriba). Detalle óptico (etapa B, shader/binder) en
+  `docs/catalogo-lentes.md` y `docs/vision-optica.md`.
+- **Cambio de semántica de `desenfoque_max` (v0.8.0, etapa B)** → el hint de "Desenfoque máximo"
+  en `ParamMeta` ya refleja la reinterpretación del shader: pasó de un cap 0..1 del blur a un
+  **multiplicador del radio físico del círculo de desenfoque** (1 = óptica real; >1 exagera para
+  hacer visible un desenfoque sub-píxel; 0 = nunca borroso). Es solo un cambio de hint clínico —
+  el slider sigue siendo el mismo `ParamRowView`, sin cambios de rango ni de UI.
 - **Dos controles de astigmatismo, distinta vida (P4.4, deliberado — sin refactor esta tanda)** →
   la card "Astigmatismo" (switch + sliders px/°, `set_astigmatism`) es un ajuste LIVE que NO
   persiste y se pisa apenas cambia la lente o llega un `override_params`; los nuevos

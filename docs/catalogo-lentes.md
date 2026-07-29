@@ -78,7 +78,7 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
   override > streaming > default; `source` ∈ `"default"|"streaming"|"override"`, para que
   `DataManager` loguee sin duplicar el parseo). `DataManager` llama a estas mismas funciones — no
   hay una reimplementación paralela para los tests.
-- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.7.0-clinical`,
+- `Assets/StreamingAssets/lentes.json` — catálogo embebido en el build (v `0.8.0-clinical`,
   5 lentes: `monofocal`, `panoptix`, `vivity`, `paciente_joven`, `catarata`).
 - `Assets/Tests/EditMode/DataLogicTests.cs` — tests NUnit EditMode de `CatalogParser`/`LensEngine`
   + un test de integración sobre el JSON real.
@@ -113,7 +113,7 @@ GET {backendUrl}/api/lenses ─┘ sync en background (no bloquea) ◄───�
 > visor (comentario de arriba), reordenar desde la tablet cambia en qué secuencia el visor cicla
 > las lentes con los botones físicos — no solo el orden de la lista en la UI de la tablet.
 
-Params clínicos actuales (14 por lente en `Assets/StreamingAssets/lentes.json`):
+Params clínicos actuales (15 por lente en `Assets/StreamingAssets/lentes.json`):
 
 | Clave | Unidad / rango | Significado |
 |---|---|---|
@@ -131,6 +131,7 @@ Params clínicos actuales (14 por lente en `Assets/StreamingAssets/lentes.json`)
 | `astig_magnitude` | 0–1 (default 0) | magnitud normalizada del astigmatismo residual (misma escala del shader) |
 | `astig_axis_deg` | grados, 0–180 (default 0) | eje del astigmatismo (notación oftálmica; C# lo pasa a radianes) |
 | `cataract_yellow` | 0–1 (default 0, 0.6 en `catarata`) | tinte/amarilleo del cristalino cataratico NATIVO (no de la LIO); alimenta `_CataractL/R` (shader/binder de `Vision/`, ver `docs/vision-optica.md`) |
+| `cataract_scatter` | 0–1 (default 0, 0.6 en `catarata`) | dispersión intraocular (straylight) del cristalino cataratico NATIVO; mecanismo de degradación INDEPENDIENTE de la distancia y de fuentes de glare — piso de radio de desenfoque + pedestal de velo difuso. Alimenta `_CataractScatterL/R` (shader/binder de `Vision/`, etapa B de @vision-optics, ver `docs/vision-optica.md`) |
 
 > **Astigmatismo residual (P4.4, v0.5.0):** default **0 en las 3 lentes** — una LIO no genera
 > astigmatismo per se; el knob representa el astigmatismo residual del PACIENTE (córneal/quirúrgico)
@@ -234,6 +235,34 @@ Params clínicos actuales (14 por lente en `Assets/StreamingAssets/lentes.json`)
 > catálogo pasa de **4 a 5 lentes base** y de **13 a 14 params** por lente. Backend
 > (`backend/api/app/seed.py`, `defaults/lentes.json` y `_KNOWN_SEED_VERSIONS`) actualizado en la
 > misma tarea global por @backend-dev — no tocado desde este lado (`Simulador.Runtime`).
+
+> **Param nuevo `cataract_scatter` (v0.8.0) — fix de óptica clínica (dos bugs perceptuales):**
+> el único mecanismo de degradación que existía hasta ahora (`cataract_yellow` aparte) era el
+> defocus dióptrico, y eso deja lentes con `foco_lejos_m` cerca del objetivo (p.ej. `catarata`
+> mirando el cartel del pronóstico del tiempo a 4.86 m con `foco_lejos_m = 9.0`) sin degradación
+> real: el error dióptrico es demasiado chico para desenfocar nada. `cataract_scatter` (0–1)
+> modela la dispersión intraocular (straylight, van den Berg/C-Quant) del cristalino cataratico
+> NATIVO **por separado** de `cataract_yellow` (permite catarata brunescente vs nuclear
+> dispersora como controles clínicos independientes) — aporta un **piso de radio de desenfoque**
+> y un **pedestal de velo difuso**, ambos INDEPENDIENTES de la distancia de foco y de cualquier
+> fuente de glare en el campo (a diferencia de `straylight`, que solo actúa vía `_GlareVeilL/R`
+> con una `GlareBillboardInstance` real en escena). **Etapa A (@unity-dev):** el param
+> existe de punta a punta — los dos `lentes.json`, el binder (`VisionParamsBinder.Map` +
+> **gate**, ver Gotchas abajo), `ParamMeta` (label "Catarata (dispersión)", en `ORDER` justo
+> después de `cataract_yellow`, en `STANDARD_PARAMS`) y `DataLogicTests`. **Etapa B
+> (@vision-optics, ya implementada en el mismo working tree):** el shader YA consume
+> `cataract_scatter` (piso de radio de desenfoque + pedestal de velo difuso) y reinterpreta
+> `desenfoque_max` de cap 0..1 a **multiplicador del radio físico del círculo de desenfoque**
+> (hint de `ParamMeta` actualizado a esa semántica nueva). Detalle de fórmulas/constantes en
+> `docs/vision-optica.md`. `default = 0.0` en las 4 LIOs
+> existentes (`monofocal`/`panoptix`/`vivity`/`paciente_joven`) y **`0.6` en `catarata`**
+> (nuclear moderada, coherente con su `cataract_yellow = 0.6`); `min`/`max` 0–1, sin rango nuevo.
+> Agregado al FINAL de los `params` de cada lente (mismo criterio que `cataract_yellow`).
+> **Versión bumpeada `0.7.0-clinical` → `0.8.0-clinical`** en AMBOS archivos. El catálogo se
+> mantiene en **5 lentes base** y pasa de **14 a 15 params** por lente. Detalle de la óptica
+> (fórmulas, constantes, arquitectura del kernel de blur) en `docs/vision-optica.md` (etapa B).
+> Rollout a la DB de prod (etapa D, mismo procedimiento que `cataract_yellow`) en
+> `docs/backend.md` §Seed del catálogo, por @backend-dev.
 
 ### Orden de carga (`InitializeAsync`)
 
@@ -349,15 +378,47 @@ y `OnApplicationQuit` (en Quest/Android la app puede morir al perder foco).
   cada arranque (warning), pero el archivo queda hasta que un sync exitoso lo sobrescriba.
 - **`ApplyLens` con id inexistente solo loguea warning** y no toca el estado: el ciclado de
   `SimuladorInput` depende de que los ids del catálogo sean estables.
+- **Gate de CPU de `VisionParamsBinder` (`VisionActivity.ParamsL/R`) debe incluir TODO param
+  que pueda degradar la visión sin depender de otra señal per-pixel** (v0.8.0): hoy es
+  `max(desenfoque_max, contrast_loss, cataract_yellow, cataract_scatter)`. Si un param nuevo de
+  disfotopsia queda afuera del gate, una lente con los otros 3 en 0 apaga el post-proceso
+  entero (`VisionRendererFeature` saltea los blits) y el param nuevo, aunque > 0, nunca se ve —
+  exactamente el bug que `cataract_scatter` estaba corrigiendo para `cataract_yellow`. Ver
+  `Assets/Scripts/Runtime/Vision/VisionParamsBinder.cs:PushEye`.
+- **`PushEye` debe escribir SIEMPRE los params de EFECTO, incluso cuando la clave falta en
+  `state.Params`** (fix v0.8.0, reachable en producción): `MergeMissingParams` indexa los
+  defaults **por id de lente** (`CatalogParser.cs`), así que una lente que no existe en los
+  `lentes.json` embebidos — p. ej. `generic_a209ba91` ("monofocal plus", creada por un admin
+  desde la tablet, ver `docs/backend.md` §P7.2) — **nunca recibe el merge** y puede llegar sin
+  `cataract_scatter`/`cataract_yellow`/`desenfoque_max`/`contrast_loss`. Sin un piso explícito,
+  aplicar `catarata` (`cataract_scatter = 0.6`) y después esa lente deja el uniform
+  `_CataractScatterL/R` con el valor de la lente ANTERIOR: la monofocal se renderiza con el
+  piso de blur y el pedestal de velo de la catarata (agudeza percibida ≈20/80 en una lente que
+  debería verse nítida). `PushEye` ahora pisa con `0f` (su default real) cuando la clave falta,
+  para los 4 params de efecto (`desenfoque_max`, `contrast_loss`, `cataract_yellow`,
+  `cataract_scatter`) — **NO** para los 4 focos (`foco_lejos_m`/`foco_intermedio_m`/
+  `foco_cerca_m`/`profundidad_foco_m`), donde `0` significa "foco desactivado" en el shader y
+  forzarlo en los tres focos a la vez dispara el centinela `1e9` de `DefocusDiopters`
+  (satura la pantalla al radio máximo, ver `docs/vision-optica.md`).
+- **(fix de review, post-C1) La clasificación "piso 0 vs no pisar" ya NO vive en una lista aparte
+  a mantener sincronizada a mano**: hasta acá, `VisionParamsBinder` tenía un `HashSet
+  EffectKeysWithZeroDefault` que duplicaba a mano un subconjunto de las claves de `Map` — un param
+  de efecto nuevo agregado a `Map` y olvidado en el HashSet reintroducía C1 en silencio (la lente
+  sin esa clave heredaba el valor de la lente anterior, sin ningún error). Ahora `Map` es
+  `Dictionary<string, (string l, string r, float? zeroDefault)>`: el piso (`0f` para pisar, `null`
+  para "no pisar", los 4 focos) se declara en la MISMA tupla que el uniform. Agregar una entrada a
+  `Map` sin el tercer elemento **no compila** (`CS1950`/`CS1503` — probado agregando y quitando una
+  entrada de prueba con tupla de 2 elementos). El olvido pasó de silencioso a bloqueante en el
+  compile-gate. Ver `Assets/Scripts/Runtime/Vision/VisionParamsBinder.cs:30-53`.
 
 ## Cómo probar
 
 1. Editor: Window → General → Test Runner → EditMode → correr `Simulador.Tests.EditMode`:
    `DataLogicTests` (14 — parseo válido/inválido, merge sin pisar existentes, defaults + overrides
-   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.7.0-clinical`/14
+   con clamp, blend, limpieza de overrides e integración contra el JSON real `0.8.0-clinical`/15
    params por lente, 5 lentes: `monofocal`/`panoptix`/`vivity`/`paciente_joven`/`catarata`,
-   incluidos los spot-checks de `cataract_yellow`) + `DataManagerLogicTests` (**11**, P6.5 +
-   config-layers — armado de URL de
+   incluidos los spot-checks de `cataract_yellow` y `cataract_scatter`) + `DataManagerLogicTests`
+   (**11**, P6.5 + config-layers — armado de URL de
    sync con/sin trailing slash, round-trip de `lens_overrides.json` con JSON válido e inválido,
    `ExtractBackendUrl` con JSON inválido/sin la clave, y `ResolveBackendUrl` con los 4 casos de
    precedencia: solo streaming, streaming+override, override corrupto, ambos vacíos) = **25 tests
