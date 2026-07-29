@@ -218,7 +218,7 @@ namespace Simulador.Tests
             Assert.IsTrue(File.Exists(path), $"Falta {path}");
             var cat = CatalogParser.Parse(File.ReadAllText(path));
             Assert.IsNotNull(cat);
-            Assert.AreEqual("0.7.0-clinical", cat.Version);
+            Assert.AreEqual("0.8.0-clinical", cat.Version);
             Assert.AreEqual(5, cat.Catalogo.Count);
 
             var pan = cat.Catalogo.Find(l => l.Id == "panoptix");
@@ -265,11 +265,11 @@ namespace Simulador.Tests
             // el texto descriptivo de panoptix/vivity sigue mencionando 60cm/67cm.
             Assert.AreEqual(1.0f, pan.Params["foco_intermedio_m"].Default, 1e-4f);
             Assert.AreEqual(1.0f, cat.Catalogo.Find(l => l.Id == "vivity").Params["foco_intermedio_m"].Default, 1e-4f);
-            // Las 5 lentes deben tener los 14 params clinicos (P4.4 agrego astig_magnitude
+            // Las 5 lentes deben tener los 15 params clinicos (P4.4 agrego astig_magnitude
             // y astig_axis_deg a los 11 anteriores, incluyendo straylight; v0.7.0 sumo
-            // cataract_yellow).
+            // cataract_yellow; v0.8.0 sumo cataract_scatter).
             foreach (var l in cat.Catalogo)
-                Assert.AreEqual(14, l.Params.Count, $"{l.Id} deberia tener 14 params");
+                Assert.AreEqual(15, l.Params.Count, $"{l.Id} deberia tener 15 params");
 
             var mono = cat.Catalogo.Find(l => l.Id == "monofocal");
             var viv = cat.Catalogo.Find(l => l.Id == "vivity");
@@ -326,6 +326,18 @@ namespace Simulador.Tests
             Assert.AreEqual(0.30f, catarata.Params["contrast_loss"].Default, 1e-4f);
             Assert.AreEqual(0f, catarata.Params["foco_intermedio_m"].Default, 1e-4f);
             Assert.AreEqual(0f, catarata.Params["foco_cerca_m"].Default, 1e-4f);
+
+            // v0.8.0: cataract_scatter (dispersion intraocular del cristalino cataratoso,
+            // mecanismo de degradacion INDEPENDIENTE de la distancia -- ver docs/catalogo-lentes.md)
+            // presente en las 5 lentes, min/max 0-1 en todas; default 0 salvo en "catarata" (0.6).
+            foreach (var l in cat.Catalogo)
+            {
+                Assert.IsTrue(l.Params.ContainsKey("cataract_scatter"), $"{l.Id} deberia tener cataract_scatter");
+                Assert.AreEqual(0f, l.Params["cataract_scatter"].Min, 1e-4f, $"{l.Id}.cataract_scatter min");
+                Assert.AreEqual(1f, l.Params["cataract_scatter"].Max, 1e-4f, $"{l.Id}.cataract_scatter max");
+                float expectedScatterDefault = l.Id == "catarata" ? 0.6f : 0.0f;
+                Assert.AreEqual(expectedScatterDefault, l.Params["cataract_scatter"].Default, 1e-4f, $"{l.Id}.cataract_scatter default");
+            }
         }
     }
 }
