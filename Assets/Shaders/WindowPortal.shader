@@ -79,6 +79,14 @@ Shader "Simulador/WindowPortal"
 
             // === Calibracion angular (radianes), VERBATIM de GlareBillboard.shader ===
             // NO tocar: es el mismo patron clinico, solo trasladado de sitio (billboard -> portal).
+            // EXCEPCION DELIBERADA a la regla "todo cambio al patron clinico va en los DOS
+            // shaders": el tinte ambar de catarata (CATARACT_YELLOW / glare_cataract_l/r) que
+            // GlareBillboard.shader SI aplica a su color NO va aca. Este quad es OPACO
+            // (Queue = Geometry) => el pass de vision, inyectado en BeforeRenderingTransparents,
+            // ya lo filtra junto con el resto de la imagen; agregarle el triple lo
+            // DOBLE-amarillearia (transmitancia al cuadrado). El billboard lo necesita justamente
+            // porque es Queue = Transparent y se dibuja DESPUES del pass. Verificado por captura:
+            // ver docs/vision-optica.md, §Tinte amarillo de catarata.
             #define HALO_ANG_RADIUS  0.10
             #define PUPIL_GAIN       1.7
             #define STAR_ANG_RADIUS  0.22
@@ -233,6 +241,12 @@ Shader "Simulador/WindowPortal"
                     float rNorm = angRad / angMax;                          // == r del billboard (small-angle)
                     if (rNorm < 1.05)   // fuera del patron edge_fade ya es 0; recorta el 99% de los pixeles
                     {
+                        // OJO — aca el recorte es un IF, no un clip(). GlareBillboard.shader si usa
+                        // clip(0.98 - r) para descartar las esquinas de su quad (F1 del plan de FPS),
+                        // pero ese quad es transparente aditivo y aporta (0,0,0) afuera del circulo.
+                        // Este shader es OPACO (early-Z) y su "quad" es el portal/backdrop entero:
+                        // afuera del patron del sol todavia tiene que escribir el PAISAJE. Un clip
+                        // aca agujerearia la ventana y desactivaria el early-Z del draw. NO portar.
                         // Base de pantalla (camara), igual que el billboard (right/up de la inversa de la view)
                         float3 rightWS = normalize(float3(UNITY_MATRIX_I_V._m00, UNITY_MATRIX_I_V._m10, UNITY_MATRIX_I_V._m20));
                         float3 upWS    = normalize(float3(UNITY_MATRIX_I_V._m01, UNITY_MATRIX_I_V._m11, UNITY_MATRIX_I_V._m21));

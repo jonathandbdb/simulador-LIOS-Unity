@@ -38,6 +38,10 @@ Shader "Simulador/GlareBillboard"
             // Astigmatismo POR OJO (los setea GlareController.SetAstigmatism).
             float glare_astig_l, glare_astig_r;
             float glare_astig_angle_l, glare_astig_angle_r;
+            // Transmitancia ambar del cristalino cataratoso POR OJO (0..1). Los publica
+            // GlareController desde cataract_yellow del catalogo, por el mismo camino per-eye
+            // glare_*_l/r que el resto. Ver CATARACT_YELLOW abajo.
+            float glare_cataract_l, glare_cataract_r;
             // Override de ojo para el stream (camara mono). 0=normal, 1=izq, 2=der.
             float _StreamForceEye;
             // Umbrales de facing UNIFICADOS con el velo (los publica GlareController desde
@@ -60,6 +64,23 @@ Shader "Simulador/GlareBillboard"
             #define DIST_REF_M       8.0
             #define TOWARD_CAM_FRAC  0.10
 
+            // Transmitancia del cristalino amarillo/brunescente, normalizada a rojo=1 [Pokorny,
+            // Smith & Lutze 1987, "Aging of the human lens", Applied Optics 26(8):1437-1440].
+            // POR QUE ESTA ACA: este shader es Queue=Transparent con Blend One One y el pass de
+            // vision se inyecta en BeforeRenderingTransparents => los billboards se dibujan
+            // DESPUES de todo el post-proceso y NO los alcanza el filtro ambar de
+            // VisionPostProcess. Sin esto, un paciente con catarata brunescente veia la escena
+            // ambar y los halos de los faros BLANCOS — y la luz de un faro es luz DIRECTA
+            // cruzando el mismo cristalino absorbente que la imagen (el mismo argumento fisico
+            // que ya justifica tenir el pedestal de scatter, aca con mas fuerza todavia).
+            // GEMELO EN OTRO ARCHIVO (regla del patron duplicado de docs/vision-optica.md): el
+            // MISMO triple vive en Assets/Shaders/VisionPostProcess.shader (filtro de la imagen
+            // + pedestal de scatter). NO hay include compartido: si se recalibra el amarillo,
+            // TOCAR LOS DOS ARCHIVOS en la misma tanda.
+            // (WindowPortal.shader NO lo lleva a proposito: es opaco y ya pasa por el pass de
+            // vision; agregarselo lo doble-amarillearia. Ver el comentario en ese archivo.)
+            #define CATARACT_YELLOW  half3(1.0, 0.86, 0.55)
+
             float hash11(float p)
             {
                 p = frac(p * 0.1031);
@@ -80,7 +101,7 @@ Shader "Simulador/GlareBillboard"
                 float2 uv : TEXCOORD0;
                 float4 p0 : TEXCOORD1;   // v_halo_frac, v_star_frac, v_astig_frac, v_fade
                 float4 p1 : TEXCOORD2;   // v_halo, v_star, v_rays, v_pupil
-                float3 p2 : TEXCOORD3;   // v_astig, v_astig_angle, seed
+                float4 p2 : TEXCOORD3;   // v_astig, v_astig_angle, seed, v_cataract
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -99,6 +120,10 @@ Shader "Simulador/GlareBillboard"
                 float v_pupil = saturate(left ? glare_pupil_l : glare_pupil_r);
                 float v_astig = saturate(left ? glare_astig_l : glare_astig_r);
                 float v_astig_angle = left ? glare_astig_angle_l : glare_astig_angle_r;
+                // Ambar del cristalino POR OJO: no entra en angMax (no es un patron, es un
+                // filtro), asi que NO puede resucitar un billboard colapsado ni cambiar su
+                // geometria. Se resuelve en el vertex (uniforme por instancia) y viaja en p2.w.
+                float v_cataract = saturate(left ? glare_cataract_l : glare_cataract_r);
 
                 float3 origin = float3(unity_ObjectToWorld._m03, unity_ObjectToWorld._m13, unity_ObjectToWorld._m23);
                 float3 camPos = _WorldSpaceCameraPos;
@@ -136,7 +161,7 @@ Shader "Simulador/GlareBillboard"
                 o.uv = IN.uv;
                 o.p0 = float4(haloR / angMax, starR / angMax, astigR / angMax, v_fade);
                 o.p1 = float4(v_halo, v_star, v_rays, v_pupil);
-                o.p2 = float3(v_astig, v_astig_angle, seed);
+                o.p2 = float4(v_astig, v_astig_angle, seed, v_cataract);
                 return o;
             }
 
@@ -155,9 +180,29 @@ Shader "Simulador/GlareBillboard"
                 float v_astig       = IN.p2.x;
                 float v_astig_angle = IN.p2.y;
                 float sd            = IN.p2.z;
+                float v_cataract    = IN.p2.w;
 
                 float2 p = IN.uv * 2.0 - 1.0;
                 float r = length(p);
+
+                // CLIP TEMPRANO DE LAS ESQUINAS (perf pura, SIN cambio del patron clinico — F1 del
+                // plan de FPS). El quad es CUADRADO (positionOS -1..1, uv 0..1 => r llega a
+                // sqrt(2) = 1.414 en las esquinas) pero el patron es CIRCULAR: el edge_fade de
+                // abajo es 1 - smoothstep(0.80, 0.98, r), o sea EXACTAMENTE 0 para todo r >= 0.98,
+                // y el color emitido es col * (total * v_fade * edge_fade) => esos fragmentos
+                // devuelven (0,0,0) y con Blend One One suman NADA al framebuffer. Descartarlos es
+                // bit-identico en RGB y ahorra el resto del Frag (atan2 del starburst, cuatro exp
+                // del halo, dos hash11, el seno/coseno del astig). Fraccion del quad afectada:
+                // 1 - pi*0.98^2/4 = ~23 %. El ahorro es por WAVE (una wave con algun lane dentro
+                // del circulo sigue ejecutando), pero las esquinas son regiones contiguas grandes
+                // => la mayoria de esas waves esta enteramente afuera.
+                // El umbral 0.98 es el MISMO borde del smoothstep, no un valor nuevo: si alguien
+                // toca el edge_fade, tiene que tocar este clip en la misma linea de razonamiento.
+                // Alpha: el fragmento escribia alfa 1.0 aditivo tambien en las esquinas y eso deja
+                // de pasar. No lo consume nadie — el color HDR del visor es B10G11R11 (sin canal
+                // alfa) y el stream de la tablet se decodifica a RGB24 (ver StreamingCapture).
+                clip(0.98 - r);
+
                 float total = 0.0;
 
                 // --- Halo: glow gaussiano + ANILLOS difractivos concentricos ---
@@ -207,6 +252,13 @@ Shader "Simulador/GlareBillboard"
 
                 float edge_fade = 1.0 - smoothstep(0.80, 0.98, r);
                 float3 col = lerp(src_color.rgb, src_color.rgb * float3(0.85, 0.95, 1.15), v_pupil * 0.45);
+                // Filtro de ABSORCION del cristalino ambar sobre la luz de la fuente. Va sobre el
+                // color EMITIDO (antes del Blend One One), que es lo correcto: el framebuffer con
+                // el que se mezcla ya viene filtrado por el pass de vision, asi que este multiply
+                // pone el halo en la misma transmitancia que la imagen. Multiplicativo (el
+                // cristalino absorbe, no emite). Con cataract_yellow = 0 el lerp da 1.0 EXACTO
+                // => toda lente sin brunescencia queda bit a bit igual que antes del fix.
+                col *= lerp(half3(1.0, 1.0, 1.0), CATARACT_YELLOW, v_cataract);
                 return half4(col * (total * v_fade * edge_fade), 1.0);
             }
             ENDHLSL

@@ -80,6 +80,21 @@ namespace Simulador.Vision
                 }
             }
 
+            // Transmitancia ambar del cristalino (cataract_yellow) -> billboards de glare.
+            // Los billboards son cola Transparent y el pass de vision se inyecta en
+            // BeforeRenderingTransparents, asi que el filtro ambar del post-proceso NO los alcanza:
+            // sin esto, un paciente con catarata brunescente ve la escena ambar y los halos de los
+            // faros BLANCOS. La luz de un faro es luz DIRECTA cruzando el mismo cristalino
+            // absorbente (ver docs/vision-optica.md, §Tinte amarillo de catarata).
+            // NO se escala por haloScale ni se apaga con halosEnabled: es un FILTRO de absorcion
+            // del ojo, no un halo (mismo criterio que el astigmatismo de abajo).
+            // Sin la clave se publica 0 y no se deja el ambar de la lente ANTERIOR: mismo piso que
+            // VisionParamsBinder.Map (una lente creada por un admin desde la tablet puede no estar
+            // en los defaults embebidos y MergeMissingParams indexa por id, asi que puede llegar
+            // sin cataract_yellow).
+            float yellow = state.Params.TryGetValue("cataract_yellow", out float cy) ? Mathf.Clamp01(cy) : 0f;
+            Shader.SetGlobalFloat(left ? "glare_cataract_l" : "glare_cataract_r", yellow);
+
             // Astigmatismo residual del catalogo (P4.4): magnitud normalizada (misma escala
             // que el shader) + eje en GRADOS -> radianes. Se publica por el MISMO camino
             // per-eye que el override live (SetAstigmatism), que ademas actualiza

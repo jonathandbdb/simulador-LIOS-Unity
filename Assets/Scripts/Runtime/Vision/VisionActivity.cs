@@ -7,7 +7,8 @@ namespace Simulador.Vision
     /// decida BARATO si saltear el post-proceso (gate de CPU: evita 2 blits full-screen
     /// por ojo cuando todos los efectos estan en cero). Lo escriben los binders con el
     /// estado C# que YA conocen (no se lee el material):
-    ///   - VisionParamsBinder: ParamsL/R = max(desenfoque_max, contrast_loss) por ojo.
+    ///   - VisionParamsBinder: ParamsL/R = max(desenfoque_max, contrast_loss, cataract_yellow,
+    ///     cataract_scatter) por ojo.
     ///   - GlareController:     AstigL/R  = magnitud de astigmatismo por ojo.
     ///   - DisabilityGlareController: VeilL/R = velo SUAVIZADO actual (no el target).
     /// Criterio conservador: desenfoque_max &gt; 0 mantiene el pass aunque todo este en
@@ -18,7 +19,7 @@ namespace Simulador.Vision
         // Umbral comun (mismo epsilon que usan los shaders para "no-op").
         private const float Eps = 0.001f;
 
-        public static float ParamsL, ParamsR;   // max(desenfoque_max, contrast_loss)
+        public static float ParamsL, ParamsR;   // max(desenfoque_max, contrast_loss, cataract_yellow, cataract_scatter)
         public static float AstigL, AstigR;      // magnitud astigmatismo 0..1
         public static float VeilL, VeilR;        // velo suavizado 0..1
 
