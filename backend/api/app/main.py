@@ -1,5 +1,6 @@
 """FastAPI app entry point."""
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -24,6 +25,31 @@ from app.seed import seed
 
 logging.basicConfig(level=settings.log_level.upper())
 logger = logging.getLogger(__name__)
+
+
+class _RedactWifiPasswordFilter(logging.Filter):
+    """Saca `wifi_password` del access log de uvicorn.
+
+    `GET /admin/provisioning` recibe el password de WiFi por query string (a
+    proposito, ver `docs/backend.md` > Provisioning): nunca se persiste ni lo
+    loguea la app, pero el access log DEFAULT de uvicorn imprime la URL
+    completa (`AccessFormatter`, `record.args = (client_addr, method,
+    full_path, http_version, status_code)`), asi que sin este filtro el
+    password quedaria en texto plano en `docker compose logs api`.
+    """
+
+    _PATTERN = re.compile(r"(wifi_password=)[^&\s]*")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            full_path = args[2]
+            if "wifi_password=" in full_path:
+                record.args = (*args[:2], self._PATTERN.sub(r"\1REDACTED", full_path), *args[3:])
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactWifiPasswordFilter())
 
 
 @asynccontextmanager

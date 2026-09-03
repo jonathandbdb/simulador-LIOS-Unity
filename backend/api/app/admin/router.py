@@ -24,6 +24,12 @@ from app.admin.auth import (
     get_current_admin,
     set_session_cookie,
 )
+from app.admin.provisioning import (
+    build_provisioning_payload,
+    has_usable_checksum,
+    payload_to_json,
+    render_qr_svg,
+)
 from app.admin.storage import delete_object, upload_file_streaming
 from app.admin.templating import LANG_COOKIE, get_lang, render
 from app.config import settings
@@ -550,6 +556,94 @@ def versions_delete(admin: AdminDep, session: SessionDep, version_pk: int):
         session.delete(v)
         session.commit()
     return _flash_redirect("/admin/versions", "OK")
+
+
+# ---------------------------------------------------------------------------
+# Provisioning QR (Android Enterprise) para recuperacion remota de tablets
+# Device Owner tras un factory reset. Ver app/admin/provisioning.py y
+# docs/backend.md ("Auth y panel admin" > Provisioning).
+# ---------------------------------------------------------------------------
+def _provisioning_context(
+    session: Session,
+    *,
+    wifi_ssid: str = "",
+    wifi_password: str = "",
+    locale: str = "",
+    timezone: str = "",
+) -> dict:
+    """Arma el contexto Jinja para `provisioning.html`, compartido entre el
+    `GET` (pagina base, sin WiFi) y el `POST` (form completo, ver abajo)."""
+    version = session.exec(
+        select(Version).where(Version.is_active == True, Version.app == "tablet")  # noqa: E712
+    ).first()
+
+    ctx: dict = {"version": version, "signature_checksum": settings.provisioning_signature_checksum}
+    if version is None:
+        return ctx
+    if not has_usable_checksum(version):
+        # Ni checksum de firma (.env) ni un apk_sha256 utilizable en la
+        # version activa (dummy del seed con "" o un hex corrupto): nunca
+        # armar el payload/QR con un checksum vacio o tirar 500 por
+        # bytes.fromhex — se avisa y no se genera QR.
+        ctx["no_checksum"] = True
+        return ctx
+
+    payload = build_provisioning_payload(
+        version,
+        wifi_ssid=wifi_ssid.strip(),
+        wifi_password=wifi_password,
+        locale=locale.strip(),
+        timezone=timezone.strip(),
+    )
+    ctx["payload_json"] = payload_to_json(payload)
+    ctx["qr_svg"] = render_qr_svg(payload)
+    ctx["used_signature_checksum"] = bool(settings.provisioning_signature_checksum)
+    ctx["wifi_ssid"] = wifi_ssid
+    ctx["locale"] = locale
+    ctx["timezone"] = timezone
+    return ctx
+
+
+@router.get("/provisioning")
+def provisioning_page(request: Request, admin: AdminDep, session: SessionDep):
+    """Pagina base: SIN campos de WiFi/locale/timezone en la query string a
+    proposito. `wifi_password` es sensible y un GET lo dejaria en el
+    historial del navegador, el `Referer` de requests salientes y el access
+    log de Caddy (delante de la app, loguea la URI completa) — ver
+    `POST /admin/provisioning` mas abajo, que es donde vive el form real."""
+    ctx = _provisioning_context(session)
+    return render(request, "provisioning.html", admin_user=admin, **ctx)
+
+
+@router.post("/provisioning")
+def provisioning_generate(
+    request: Request, admin: AdminDep, session: SessionDep,
+    wifi_ssid: Annotated[str, Form()] = "",
+    wifi_password: Annotated[str, Form()] = "",
+    locale: Annotated[str, Form()] = "",
+    timezone: Annotated[str, Form()] = "",
+):
+    """Genera el QR con los campos opcionales del form.
+
+    Deliberadamente `POST` (body), no `GET` (query string): `wifi_password`
+    viaja en texto plano hasta convertirse en `PROVISIONING_WIFI_PASSWORD`
+    dentro del QR, y una query string sensible queda en el historial del
+    navegador, el `Referer` de requests salientes que dispare esta pagina, y
+    el access log de Caddy — que esta DELANTE de esta app (`reverse_proxy
+    api:8000` en `backend/Caddyfile`) y loguea la URI completa sin que
+    ningun filtro de la app pueda tocarlo. Con POST el valor va en el body:
+    ninguno de esos tres lugares lo ve. El `_RedactWifiPasswordFilter` sobre
+    `uvicorn.access` (`app/main.py`) se mantiene como defensa en
+    profundidad, por si alguien pega la URL con `?wifi_password=...` a mano
+    (soporta ambos casos, no asume que nunca va a pasar)."""
+    ctx = _provisioning_context(
+        session,
+        wifi_ssid=wifi_ssid,
+        wifi_password=wifi_password,
+        locale=locale,
+        timezone=timezone,
+    )
+    return render(request, "provisioning.html", admin_user=admin, **ctx)
 
 
 # ---------------------------------------------------------------------------

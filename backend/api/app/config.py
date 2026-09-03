@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # POST /api/log (ver app/routers.py — purge_old_logs/_maybe_purge_logs).
     log_retention_days: int = 30
 
+    # Checksum del CERTIFICADO de firma del proyecto (no del APK), usado por
+    # /admin/provisioning para el QR de Android Enterprise. Se prefiere sobre
+    # el checksum del paquete (derivado de Version.apk_sha256) porque es
+    # constante entre releases: un QR mandado por mail sigue siendo valido
+    # aunque se publique una version nueva de la tablet. Vacio = se usa el
+    # checksum del paquete como fallback (ver app/admin/provisioning.py).
+    provisioning_signature_checksum: str = ""
+
     @property
     def cors_origins_list(self) -> list[str]:
         if self.cors_origins.strip() == "*":

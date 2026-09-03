@@ -345,6 +345,9 @@ legend {
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .nowrap { white-space: nowrap; }
 .truncate { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Provisioning: el SVG del QR (segno) trae width/height fijos en px. */
+.qr-box svg { width: 100%; height: auto; display: block; background: #fff; padding: 8px; border-radius: 6px; }
 .hidden { display: none; }
 .inline { display: inline; }
 .empty-row { text-align: center; color: var(--text-3); padding: 24px 0; }

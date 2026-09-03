@@ -13,3 +13,4 @@ python-multipart==0.0.20
 boto3==1.35.84
 jinja2==3.1.4
 itsdangerous==2.2.0
+segno==1.6.6

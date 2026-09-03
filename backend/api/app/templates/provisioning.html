@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block subtitle %} — {{ t('prov.title') }}{% endblock %}
+{% block content %}
+<h1>{{ t('prov.title') }}</h1>
+<p class="hint mb-4">{{ t('prov.intro') }}</p>
+
+{% if not version %}
+<div class="banner-warn">
+  <div class="title">⚠ {{ t('prov.no_active') }}</div>
+</div>
+{% elif no_checksum %}
+<div class="banner-warn">
+  <div class="title">⚠ {{ t('prov.no_checksum') }}</div>
+</div>
+{% else %}
+
+<div class="card mb-6">
+  <h2>{{ t('prov.version_info') }}</h2>
+  <table>
+    <tbody>
+      <tr><td class="muted">{{ t('ver.app') }}</td><td>{{ t('ver.app_tablet') }}</td></tr>
+      <tr><td class="muted">{{ t('ver.apk_version') }}</td><td>{{ version.apk_version }}</td></tr>
+      <tr><td class="muted">{{ t('prov.apk_url') }}</td><td class="mono xs">{{ version.apk_url }}</td></tr>
+      <tr>
+        <td class="muted">{{ t('prov.checksum_used') }}</td>
+        <td>
+          {% if used_signature_checksum %}{{ t('prov.checksum_signature') }}
+          {% else %}{{ t('prov.checksum_package') }}{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="card mb-6">
+  <h2>{{ t('prov.form_title') }}</h2>
+  {# POST (no GET): wifi_password no debe viajar por query string — ver
+     docstring de POST /admin/provisioning en app/admin/router.py. #}
+  <form method="post" action="/admin/provisioning" class="grid cols-2" style="gap: 12px;">
+    <label class="field">
+      <span>{{ t('prov.wifi_ssid') }}</span>
+      <input class="input" name="wifi_ssid" value="{{ wifi_ssid or '' }}" autocomplete="off" />
+    </label>
+    <label class="field">
+      <span>{{ t('prov.wifi_password') }}</span>
+      <input class="input" name="wifi_password" type="password" autocomplete="off" />
+    </label>
+    <div class="hint span-full" style="margin-top: -8px;">{{ t('prov.wifi_hint') }}</div>
+    <label class="field">
+      <span>{{ t('prov.locale') }}</span>
+      <input class="input" name="locale" value="{{ locale or '' }}" placeholder="es_UY" />
+    </label>
+    <label class="field">
+      <span>{{ t('prov.timezone') }}</span>
+      <input class="input" name="timezone" value="{{ timezone or '' }}" placeholder="America/Montevideo" />
+    </label>
+    <div class="row">
+      <button class="btn btn-primary" type="submit">{{ t('prov.generate') }}</button>
+    </div>
+  </form>
+</div>
+
+<div class="card mb-6">
+  <h2>{{ t('prov.qr_title') }}</h2>
+  {# El SVG de segno trae width/height fijos en px (a veces >700 segun el
+     largo del payload); forzamos 100% aca para que respete el max-width
+     del contenedor (pensado para pantalla/impresion, minimo ~360px). #}
+  <div class="qr-box" style="max-width: 420px; min-width: 360px;">{{ qr_svg | safe }}</div>
+</div>
+
+<div class="card mb-6">
+  <h2>{{ t('prov.json_title') }}</h2>
+  <pre class="mono xs" style="overflow-x: auto;">{{ payload_json }}</pre>
+</div>
+
+<div class="card">
+  <h2>{{ t('prov.instructions_title') }}</h2>
+  <p class="hint">{{ t('prov.instructions') }}</p>
+</div>
+
+{% endif %}
+{% endblock %}
