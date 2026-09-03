@@ -113,13 +113,48 @@ class LogRequest(BaseModel):
 # GET /api/manifest.json
 # ---------------------------------------------------------------------------
 @router.get("/manifest.json", response_model=ManifestResponse)
-def get_manifest(session: SessionDep, app: Literal["visor", "tablet"] = "visor") -> ManifestResponse:
+def get_manifest(
+    session: SessionDep,
+    app: Literal["visor", "tablet"] = "visor",
+    device_id: str | None = None,
+) -> ManifestResponse:
     """Manifest de actualizacion, UNA version activa POR APP (`app` query param).
 
     Sin `?app=` devuelve el canal "visor" (compat con el unico consumidor
     previsto hoy). Un valor fuera de {"visor","tablet"} devuelve 422
     automatico (FastAPI valida el `Literal`).
+
+    `device_id` (opcional): gate por-dispositivo del OTA del backend. La
+    mayoria de los visores corren en kiosco de Meta Horizon Managed Services
+    (se actualizan por el Admin Center de Meta, no por aca) y NO deben recibir
+    el OTA del backend; el mecanismo de supresion es gratis, `UpdateManager`
+    (Unity) ya trata un 503 como "no hay update" en silencio (sin UI/error).
+
+    GOTCHA no obvio: si `device_id` viene AUSENTE o vacio, esto responde 200
+    normal (mismo comportamiento que antes de este parametro), NO 503. Es
+    deliberado y NO negociable: el APK ya instalado en campo (0.6.1) todavia
+    no manda `device_id` en esta URL (se agrega en el build siguiente); si
+    esta rama devolviera 503, esos visores nunca se enterarian del release
+    que agrega el `device_id` a la request y quedariamos con el OTA
+    bloqueado permanentemente para toda esa flota. Es la fila de
+    compatibilidad hacia atras del mecanismo.
+
+    La tablet SIEMPRE recibe 200 (nunca esta en la tabla `devices`, no tiene
+    gate de licencia) — el chequeo de `device_id` ni se evalua para `app ==
+    "tablet"`.
     """
+    if app != "tablet" and device_id:
+        device = session.exec(
+            select(Device).where(Device.device_id == device_id)
+        ).first()
+        if device is None or not device.ota_enabled:
+            # Mismo status code que el 503 de "no hay version activa" de mas
+            # abajo: el cliente no distingue el detail, solo el codigo.
+            raise HTTPException(
+                status_code=503,
+                detail="OTA del backend deshabilitado para este dispositivo.",
+            )
+
     version = session.exec(
         select(Version).where(Version.is_active == True, Version.app == app)  # noqa: E712
     ).first()

@@ -173,6 +173,16 @@ namespace Simulador.Update
         {
             string channel = UpdateLogic.AppChannelFromIdentifier(Application.identifier);
             string url = DataManagerLogic.BuildSyncUrl(DataManager.Instance.BackendUrl, ManifestEndpoint) + "?app=" + channel;
+            // Gate de OTA por-dispositivo (backend, ver docs/updates.md): solo el VISOR
+            // manda device_id -- la TABLET nunca lo manda, mismo criterio que
+            // DataManager.TrySyncWithBackend/LicenseManager (presencia de TabletController
+            // en escena => app tablet). El backend ignora device_id para app=tablet, pero
+            // mandarlo igual seria una fuga de identidad de hardware sin beneficio.
+            bool isTablet = FindFirstObjectByType<TabletController>() != null;
+            if (!isTablet)
+            {
+                url += "&device_id=" + Uri.EscapeDataString(SystemInfo.deviceUniqueIdentifier);
+            }
             Debug.Log($"Update: chequeando manifest -> {url}");
 
             using var req = UnityWebRequest.Get(url);
@@ -195,11 +205,13 @@ namespace Simulador.Update
                 Debug.Log($"Update: manifest inalcanzable ({req.result}).");
                 yield break;
             }
-            // 503 es la respuesta ESPERADA cuando el backend no tiene version activa
-            // publicada para este canal -- no es un error, es un "no hay update".
+            // 503 es la respuesta ESPERADA cuando no hay version activa publicada para
+            // este canal, O cuando el backend tiene el OTA deshabilitado para este
+            // device_id (mismo status code, ver docs/updates.md) -- en ningun caso es un
+            // error, es un "no hay update" y el flujo termina en silencio.
             if (req.responseCode == 503)
             {
-                Debug.Log("Update: sin version activa publicada para este canal (503).");
+                Debug.Log("Update: sin version activa o OTA deshabilitado para este dispositivo (503).");
                 yield break;
             }
             if (req.responseCode != 200)

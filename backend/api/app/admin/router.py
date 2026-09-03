@@ -189,6 +189,7 @@ def devices_create(
     status: Annotated[str, Form()] = "active",
     app_mode: Annotated[str, Form()] = "standard",
     is_admin: Annotated[str, Form()] = "",
+    ota_enabled: Annotated[str, Form()] = "",
     license_expiry: Annotated[str, Form()] = "",
     notes: Annotated[str, Form()] = "",
 ):
@@ -205,6 +206,7 @@ def devices_create(
         # is_admin solo tiene sentido en modo pro (P7); la UI ya lo oculta en
         # standard, pero esto es la regla de integridad real, no la UI.
         is_admin=bool(is_admin) and normalized_mode == "pro",  # checkbox: "on" si esta tildado, ausente si no
+        ota_enabled=bool(ota_enabled),  # checkbox: "on" si esta tildado, ausente si no
         license_expiry=_parse_date(license_expiry),
         notes=notes.strip() or None,
         created_at=now,
@@ -222,6 +224,7 @@ def devices_edit(
     status: Annotated[str, Form()],
     app_mode: Annotated[str, Form()] = "standard",
     is_admin: Annotated[str, Form()] = "",
+    ota_enabled: Annotated[str, Form()] = "",
     license_expiry: Annotated[str, Form()] = "",
 ):
     d = session.get(Device, device_pk)
@@ -233,6 +236,7 @@ def devices_edit(
     # is_admin solo tiene sentido en modo pro (P7); la UI ya lo oculta en
     # standard, pero esto es la regla de integridad real, no la UI.
     d.is_admin = bool(is_admin) and d.app_mode == "pro"
+    d.ota_enabled = bool(ota_enabled)  # checkbox: "on" si esta tildado, ausente si no
     d.license_expiry = _parse_date(license_expiry)
     d.updated_at = utcnow()
     session.add(d)

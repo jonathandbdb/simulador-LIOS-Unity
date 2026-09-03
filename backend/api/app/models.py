@@ -31,6 +31,14 @@ class Device(SQLModel, table=True):
         default=False,
         description="Puede crear/editar lentes GENERICAS (visibles para todos los devices)",
     )
+    # Gate por-dispositivo del OTA propio del backend (UpdateManager). Default
+    # False a proposito: la mayoria de la flota va en kiosco de Meta Horizon
+    # Managed Services (se actualiza por el Admin Center de Meta, no por acá);
+    # las excepciones (visores de desarrollo) se marcan a mano desde el panel.
+    ota_enabled: bool = Field(
+        default=False,
+        description="Habilita el OTA del backend (/api/manifest.json) para este device; devices en kiosco de Meta van en False",
+    )
     # NULL = licencia permanente (decision tomada en Sprint 0).
     license_expiry: Optional[date] = None
     notes: Optional[str] = None
