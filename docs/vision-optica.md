@@ -408,6 +408,16 @@ VisionRendererFeature, cadena de passes (etapa C):
   Mostrar/ocultar el HUD completo desde la tablet (comando `set_hud`, ver `docs/networking.md`) se
   resuelve desde `Net/NetworkController` con `gameObject.SetActive` sobre este componente —
   `HudController.cs` en sí no cambió, no sabe que existe ese comando.
+  **Textos vía `L10n` (es/en, Fase D3 — ver `docs/localizacion.md`)**: todo fragmento visible sale
+  de una clave `hud.*` (`hud.fps`, `hud.scenario`, `hud.eye_od`, `hud.eye_os`, `hud.halos`,
+  `hud.change_scenario`, `hud.tablet_connected`, `hud.pairing_pin`, `hud.halo_on`/`hud.halo_off`),
+  y el escenario se traduce **por id** con las MISMAS claves `scenario.<id>` que usa la tablet
+  (`L10n.Has(key) ? L10n.T(key) : id crudo` — un escenario nuevo sin traducción todavía degrada al
+  id, no muestra la clave). En inglés el ojo izquierdo es **`OS (A)`** (oculus sinister), nunca
+  "OI" — ver el glosario clínico de `docs/localizacion.md`. El FPS se formatea con
+  `InvariantCulture` ANTES de entrar al placeholder para que la clave sea un `{0}` pelado en ambos
+  idiomas (mismo criterio que `ParamMeta.FormatValue`). Los `Debug.Log` del sistema siguen en
+  español (son diagnóstico de desarrollo, no UI).
 - `Assets/Scripts/Runtime/Vision/GlareTestRig.cs` — rig de verificación: baja la luz y spawnea 3
   lámparas emisivas con billboards de glare al frente, a altura de ojos.
 

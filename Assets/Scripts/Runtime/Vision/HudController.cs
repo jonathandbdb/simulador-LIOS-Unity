@@ -1,4 +1,6 @@
+using System.Globalization;
 using Simulador.Data;
+using Simulador.Localization;
 using Simulador.Net;
 using UnityEngine;
 using UnityEngine.UI;
@@ -39,11 +41,17 @@ namespace Simulador.Vision
             var dm = DataManager.Instance;
             string l = dm != null ? LensLabel(dm, dm.Left.LensId) : "?";
             string r = dm != null ? LensLabel(dm, dm.Right.LensId) : "?";
-            string sc = scenarios != null ? Safe(scenarios.Current) : "?";
-            string ha = glare != null ? (glare.halosEnabled ? "ON" : "off") : "?";
+            string sc = scenarios != null ? ScenarioLabel(scenarios.Current) : "?";
+            string ha = glare != null ? L10n.T(glare.halosEnabled ? "hud.halo_on" : "hud.halo_off") : "?";
             // Convencion clinica: OD primero, OI despues (solo orden de presentacion;
             // el mapeo de botones no cambia: A cicla ojo izquierdo, B ojo derecho).
-            text.text = $"FPS {_fps:0}\nEscena: {sc}\nOD (B): {r}\nOI (A): {l}\nHalos (X): {ha}\nY: cambiar escena{PairingLine()}";
+            // D3: textos via L10n (claves hud.*, ver docs/localizacion.md). El FPS se
+            // formatea con InvariantCulture ANTES de entrar al placeholder para que la
+            // clave sea un simple "{0}" en ambos idiomas (mismo criterio que
+            // ParamMeta.FormatValue).
+            text.text = $"{L10n.T("hud.fps", _fps.ToString("0", CultureInfo.InvariantCulture))}\n" +
+                        $"{L10n.T("hud.scenario", sc)}\n{L10n.T("hud.eye_od", r)}\n{L10n.T("hud.eye_os", l)}\n" +
+                        $"{L10n.T("hud.halos", ha)}\n{L10n.T("hud.change_scenario")}{PairingLine()}";
         }
 
         /// <summary>
@@ -57,11 +65,24 @@ namespace Simulador.Vision
         {
             var net = NetworkController.Instance;
             if (net == null) return "";
-            if (net.AuthenticatedClientCount > 0) return "\nTablet conectada";
-            return string.IsNullOrEmpty(net.PairingPin) ? "" : $"\nPIN tablet: {net.PairingPin}";
+            if (net.AuthenticatedClientCount > 0) return "\n" + L10n.T("hud.tablet_connected");
+            return string.IsNullOrEmpty(net.PairingPin) ? "" : "\n" + L10n.T("hud.pairing_pin", net.PairingPin);
         }
 
         private static string Safe(string s) => string.IsNullOrEmpty(s) ? "-" : s;
+
+        /// <summary>
+        /// Nombre mostrable del escenario activo: si existe la clave "scenario.&lt;id&gt;"
+        /// (las MISMAS que usa la tablet, ver docs/localizacion.md) gana la traduccion;
+        /// si no (escenario nuevo sin entrada todavia en la tabla), cae al id crudo como
+        /// antes -- sin esto un id no contemplado mostraria la propia clave en pantalla.
+        /// Id vacio sigue mostrandose como "-" (via Safe).
+        /// </summary>
+        private static string ScenarioLabel(string id)
+        {
+            string key = "scenario." + id;
+            return L10n.Has(key) ? L10n.T(key) : Safe(id);
+        }
 
         /// <summary>
         /// Etiqueta legible de la lente para el HUD: el nombre que le puso el admin

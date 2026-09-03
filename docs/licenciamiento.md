@@ -132,6 +132,10 @@ libera — 1:1 con el ciclo de vida del canvas, mismo patrón que `UpdatePromptV
   que antes vivía solo en `UpdateManager.SendTelemetryAsync` (JSON vía `UploadHandlerRaw`,
   timeout corto, degradación sin excepción). `UpdateManager` y `LicenseManager` lo comparten —
   ver `docs/updates.md` (cross-ref).
+- **Localización (D1, ver `docs/localizacion.md`)** — el texto de `LicenseBlockScreenVR.cs` y
+  `LicenseManager.MessageFor`/los 2 mensajes genéricos salen de `Simulador.Localization.L10n`
+  (`Assets/Scripts/Runtime/Localization/`); el `message` que manda el servidor en el 403 sigue
+  ganando TAL CUAL (texto libre del admin, nunca se traduce).
 
 ## Contrato de `POST /api/verify` (backend, ya desplegado)
 

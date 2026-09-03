@@ -29,7 +29,8 @@ una sola vez.
 
 - Código (clases, métodos, variables, archivos): **inglés**.
 - Comentarios y docstrings/`<summary>`: **español**.
-- Textos de UI de la app (visor/tablet): **español**.
+- Textos de UI de la app (visor/tablet): **vía `L10n` (es/en)**, español como idioma fuente
+  (ver `docs/localizacion.md`).
 - Documentación (`docs/`, READMEs): **español**.
 
 ## 🧱 Estructura y asmdefs
@@ -123,6 +124,7 @@ Resumen (el detalle y el porqué viven en la skill `il2cpp-networking-gotchas`):
 | Builds y deploy | `Assets/Scripts/Editor/TabletBuild.cs`, adb, docker | `docs/builds-deploy.md` |
 | Backend | `backend/` | `docs/backend.md` |
 | Updates | `Assets/Scripts/Runtime/Update/` | `docs/updates.md` |
+| Localización (es/en) | `Assets/Scripts/Runtime/Localization/` | `docs/localizacion.md` |
 
 **Regla (loop anti-drift)**: la doc viva se **lee ANTES de grepear el código** (es el resumen
 curado) y se **actualiza EN SITIO en la misma tarea** si el cambio altera arquitectura,

@@ -12,6 +12,9 @@ primera fuente de contexto de los agentes del enjambre.
 | [networking.md](networking.md) | Comunicación visor↔tablet (UDP + WS) | `Assets/Scripts/Runtime/Net/` |
 | [tablet.md](tablet.md) | App de control (UI procedural) | `TabletController.cs`, `Assets/Scripts/Runtime/Tablet/` |
 | [catalogo-lentes.md](catalogo-lentes.md) | Catálogo y motor de lentes | `Assets/Scripts/Runtime/Data/`, `StreamingAssets/lentes.json` |
+| [licenciamiento.md](licenciamiento.md) | Licenciamiento por dispositivo | `Assets/Scripts/Runtime/License/` |
+| [updates.md](updates.md) | Updates semi-automáticos (visor/tablet) | `Assets/Scripts/Runtime/Update/` |
+| [localizacion.md](localizacion.md) | Localización es/en (visor + tablet) | `Assets/Scripts/Runtime/Localization/` |
 | [builds-deploy.md](builds-deploy.md) | Builds visor/tablet, adb, deploy | `Assets/Scripts/Editor/TabletBuild.cs` |
 | [backend.md](backend.md) | Backend FastAPI/Docker | `backend/`, `defaults/lentes.json` |
 

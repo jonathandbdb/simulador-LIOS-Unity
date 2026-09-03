@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 using Simulador.Data;
+using Simulador.Localization;
 using Simulador.Vision;
 
 namespace Simulador.Update
@@ -123,7 +124,7 @@ namespace Simulador.Update
         private void OnDownloadProgress(float progress)
         {
             if (_state != State.Downloading || _bodyText == null) return;
-            _bodyText.text = $"{Mathf.RoundToInt(progress * 100f)} %";
+            _bodyText.text = L10n.T("update.percent_only", Mathf.RoundToInt(progress * 100f));
         }
 
         private void OnReadyToInstall(string path) => SetState(State.Ready);
@@ -209,31 +210,31 @@ namespace Simulador.Update
             switch (s)
             {
                 case State.Available:
-                    _titleText.text = "Actualización disponible";
-                    _bodyText.text = $"v{Application.version} → v{_manifest.ApkVersion}" +
+                    _titleText.text = L10n.T("update.available_title");
+                    _bodyText.text = L10n.T("update.version_arrow", Application.version, _manifest.ApkVersion) +
                         (string.IsNullOrEmpty(_manifest.Changelog) ? "" : "\n" + _manifest.Changelog);
-                    _legendText.text = _forced ? "A: actualizar" : "A: actualizar     B: ahora no";
+                    _legendText.text = _forced ? L10n.T("update.legend_available_forced") : L10n.T("update.legend_available");
                     break;
                 case State.Downloading:
-                    _titleText.text = "Descargando actualización";
-                    _bodyText.text = "0 %";
+                    _titleText.text = L10n.T("update.downloading_title");
+                    _bodyText.text = L10n.T("update.percent_only", 0);
                     _legendText.text = "";
                     break;
                 case State.Ready:
-                    _titleText.text = "Descarga verificada";
-                    _bodyText.text = "Lista para instalar.";
-                    _legendText.text = "A: instalar";
+                    _titleText.text = L10n.T("update.verified");
+                    _bodyText.text = L10n.T("update.ready_body");
+                    _legendText.text = L10n.T("update.legend_ready");
                     break;
                 case State.Failed:
-                    _titleText.text = "Error al actualizar";
+                    _titleText.text = L10n.T("update.error_title");
                     _bodyText.text = FriendlyError(_lastError);
-                    _legendText.text = _forced ? "A: reintentar" : "A: reintentar     B: cerrar";
+                    _legendText.text = _forced ? L10n.T("update.legend_failed_forced") : L10n.T("update.legend_failed");
                     break;
             }
         }
 
         private static string FriendlyError(string raw) =>
-            raw == "sha_mismatch" ? "La descarga no pasó la verificación de integridad." : raw;
+            raw == "sha_mismatch" ? L10n.T("update.error_sha_mismatch") : raw;
 
         private void Close()
         {

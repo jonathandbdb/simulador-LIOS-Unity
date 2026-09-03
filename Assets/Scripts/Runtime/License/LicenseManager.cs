@@ -6,6 +6,7 @@ using Newtonsoft.Json;
 using UnityEngine;
 using UnityEngine.Networking;
 using Simulador.Data;
+using Simulador.Localization;
 using Simulador.Net;
 using Simulador.Tablet;
 using Simulador.Update;
@@ -115,7 +116,7 @@ namespace Simulador.License
                 // Bloquear YA con un mensaje generico -- el verify real (abajo) recien
                 // reemplaza este mensaje por el definitivo (Sin conexion / rechazado /
                 // etc.) cuando termine, sea cual sea el resultado.
-                Block(offlineResult, "Verificando licencia...");
+                Block(offlineResult, L10n.T("license.verifying"));
             }
 
             yield return Verify(offlineResultForTelemetry: offlineResult, cacheJsonForTelemetry: cacheJson);
@@ -196,7 +197,7 @@ namespace Simulador.License
                 // Transitorio (rate limit del backend, 10/min/IP): NO tocar cache ni
                 // estado, solo refrescar el mensaje si ya estaba bloqueado.
                 Debug.Log("License: verify rate-limited (429), sin tocar cache/estado.");
-                if (IsBlocked) Block(_currentBlockResult, "Demasiados intentos, esperá un momento.");
+                if (IsBlocked) Block(_currentBlockResult, L10n.T("license.rate_limited"));
                 yield break;
             }
 
@@ -335,25 +336,25 @@ namespace Simulador.License
         }
 
         // ---------------- Mensajes ----------------
-        /// <summary>Texto en español para cada resultado de bloqueo (LicenseBlockScreenVR lo muestra tal cual salvo que el server mande su propio "message").</summary>
+        /// <summary>Texto localizado (es/en) para cada resultado de bloqueo (LicenseBlockScreenVR lo muestra tal cual salvo que el server mande su propio "message", que NUNCA se traduce -- texto libre del admin).</summary>
         public static string MessageFor(LicenseLogic.LicenseGateResult result)
         {
             switch (result)
             {
                 case LicenseLogic.LicenseGateResult.BlockPending:
-                    return "Esperando aprobación del administrador.";
+                    return L10n.T("license.pending");
                 case LicenseLogic.LicenseGateResult.BlockRejected:
-                    return "Dispositivo rechazado. Contacte al administrador.";
+                    return L10n.T("license.rejected");
                 case LicenseLogic.LicenseGateResult.BlockSuspended:
-                    return "Dispositivo suspendido.";
+                    return L10n.T("license.suspended");
                 case LicenseLogic.LicenseGateResult.BlockExpired:
-                    return "Licencia vencida.";
+                    return L10n.T("license.expired");
                 case LicenseLogic.LicenseGateResult.BlockNotFound:
-                    return "Dispositivo no encontrado. Contacte al administrador.";
+                    return L10n.T("license.not_found");
                 case LicenseLogic.LicenseGateResult.BlockOffline:
-                    return "Sin conexión. Conecte el visor a internet y reintente.";
+                    return L10n.T("license.offline");
                 default:
-                    return "No se pudo verificar la licencia de este dispositivo.";
+                    return L10n.T("license.unknown");
             }
         }
 

@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 using Simulador.Data;
+using Simulador.Localization;
 using Simulador.Vision;
 
 namespace Simulador.License
@@ -145,9 +146,9 @@ namespace Simulador.License
         private void Refresh()
         {
             if (_titleText == null) return; // BuildCanvas fallo (sin Camera.main, ver Gotchas)
-            _titleText.text = "Licencia del dispositivo";
+            _titleText.text = L10n.T("license.title");
             _bodyText.text = _message;
-            if (_deviceIdText != null) _deviceIdText.text = $"ID del dispositivo: {SystemInfo.deviceUniqueIdentifier}";
+            if (_deviceIdText != null) _deviceIdText.text = L10n.T("license.device_id_prefix", SystemInfo.deviceUniqueIdentifier);
             UpdateLegend();
         }
 
@@ -157,8 +158,8 @@ namespace Simulador.License
             var lm = LicenseManager.Instance;
             float remaining = lm != null ? lm.RetryCooldownRemaining : 0f;
             _legendText.text = remaining > 0f
-                ? $"Reintentar en {Mathf.CeilToInt(remaining)}s..."
-                : "A: reintentar";
+                ? L10n.T("license.retry_in", Mathf.CeilToInt(remaining))
+                : L10n.T("license.retry_button_legend");
         }
 
         // ---------------- Construccion del canvas world-space ----------------
