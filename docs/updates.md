@@ -88,6 +88,13 @@ UpdateManager.LaunchInstall() → UpdateInstaller.LaunchInstall(apkPath, targetV
          → InstallLaunchResult.Started (el instalador de Android toma el control)
 ```
 
+**Re-chequeo periódico (esta tarea, kiosco 24/7)**: el diagrama de arriba corre una vez al
+arrancar, pero `UpdateManager` vuelve a entrar en el mismo `GET .../api/manifest.json` cada
+`RecheckIntervalHours` (6 h) vía `PeriodicRecheckCo`, y también al volver de background
+(`OnApplicationPause(false)`) si pasó más del intervalo desde el último chequeo — mismas
+guardas en los dos casos (`_downloadCo == null && !_readyToInstall`), detalle completo en la
+sección `UpdateManager.cs` de arriba y en Decisiones.
+
 En la rama silenciosa (F8), `com.simulador.kiosk.InstallResultReceiver` (BroadcastReceiver propio,
 `Assets/Plugins/Android/com/simulador/kiosk/`) recibe el resultado del `commit`:
 `STATUS_SUCCESS` solo se loguea (`SimuladorKiosk`, tag Java) — el proceso muere ahí mismo porque
@@ -163,7 +170,30 @@ el marcador.
   - `OnApplicationPause(bool pause)` (F4): si `LaunchInstall()` tuvo que abrir el ajuste de
     "fuentes desconocidas" (sin permiso), reintenta automáticamente una vez al volver a foco
     (`pause == false`) — el clínico puede haber concedido el permiso en Settings y vuelto a
-    la app.
+    la app. **(esta tarea)** el mismo `pause == false` también dispara un re-chequeo del
+    manifest si pasó más de `RecheckIntervalHours` desde `_lastCheckUtc` (ver
+    `PeriodicRecheckCo` abajo) — cubre una tablet/visor dejado en background más tiempo que el
+    intervalo.
+  - **Re-chequeo periódico del manifest (`PeriodicRecheckCo`, esta tarea — kiosco 24/7)**:
+    `InitializeAsync` arranca esta corrutina después del chequeo inicial; vive mientras viva el
+    singleton (`DontDestroyOnLoad`), no hace falta detenerla. Cada `RecheckIntervalHours` (const
+    `6f`) hace `yield return new WaitForSecondsRealtime(...)` (no `WaitForSeconds`:
+    `Time.timeScale` no debe afectarlo, y tiempo real cubre la app en background) y loguea
+    `Update: re-chequeo periodico del manifest (cada Nh).` en cada iteración; recién llama a
+    `CheckManifest()` si `CanRecheckManifest` (`_downloadCo == null && !_readyToInstall` — no
+    pisa una descarga en curso ni un APK ya verificado esperando instalación). Ambos
+    disparadores (periódico y al volver de foco) pasan por el mismo wrapper
+    `CheckManifestAndTrack()`, que registra `_lastCheckUtc` al terminar. **Por qué 6 h**:
+    compromiso entre "un release publicado de día llega a toda la flota antes del día
+    siguiente" y "no martillar el backend" (~4 GET/día por dispositivo a un endpoint que
+    responde en milisegundos). Sin esto, una tablet Device Owner que puede pasar semanas sin
+    reiniciarse solo se enteraba de una versión nueva al apagarse y encenderse — el motivador de
+    esta tarea. Aplica igual al visor (inocuo: el backend responde 503 si el OTA está
+    deshabilitado para ese `device_id`, ver tabla más abajo, y el flujo termina en silencio como
+    siempre). `CheckManifest()` en sí no cambió: ya era idempotente respecto del resultado
+    (`Decide` da `None` si la remota no es mayor); no hay un estado de "update ya anunciado
+    pendiente de decisión" que bloquee un segundo `UpdateAvailable` con la MISMA versión mientras
+    el cartel sigue esperando que el usuario decida — deliberado, no una laguna (ver Gotchas).
   - Al arrancar (`Awake`, antes de `CleanupResidualUpdates`) lee `update_pending.json` si
     existe (dejado por `UpdateInstaller` antes del intent anterior), compara
     `Application.version` contra el `target_version` del marcador, loguea el resultado, lo
@@ -344,7 +374,7 @@ descarta, igual que el resto de las llamadas de red de esta clase.
 
 | Evento | Cuándo se emite | Detail |
 |--------|------------------|--------|
-| `update_check` | Una vez por arranque, al terminar de resolver la decisión en `CheckManifest` — **solo si el manifest se obtuvo y parseó** (503/inalcanzable/JSON inválido NO mandan nada: el device puede estar offline, no hay nada que reportar). Se manda incluso con `decision=None`. | `app=<canal> installed=<v> remote=<v> decision=<None\|Optional\|Forced>` |
+| `update_check` | Al terminar de resolver la decisión en `CheckManifest` — **solo si el manifest se obtuvo y parseó** (503/inalcanzable/JSON inválido NO mandan nada: el device puede estar offline, no hay nada que reportar). Se manda incluso con `decision=None`. **(esta tarea)** ya NO es "una vez por arranque": `CheckManifest` también corre desde `PeriodicRecheckCo` (cada 6 h) y desde `OnApplicationPause(false)` si pasó el intervalo — el evento aparece varias veces por día por dispositivo. Aceptable (ver Gotchas): es la señal de vida esperada del re-chequeo periódico. | `app=<canal> installed=<v> remote=<v> decision=<None\|Optional\|Forced>` |
 | `update_prompt_shown` | Junto con `update_check` en el MISMO batch, solo cuando `decision != None` (justo después de `UpdateAvailable?.Invoke(...)`/`MaybeShowVrPrompt`). | `app=<canal> remote=<v> forced=<bool>` |
 | `update_accepted` | Al entrar a `UpdateManager.AcceptUpdate()` (botón "Actualizar"/UI), antes de arrancar la descarga. | `app=<canal> version=<manifest.ApkVersion>` |
 | `update_postponed` | Al entrar a `UpdateManager.PostponeUpdate()` (botón "Ahora no"/"Cancelar" en la tablet). | `app=<canal> version=<manifest.ApkVersion>` |
@@ -657,6 +687,26 @@ que se supone habilita esta feature.
 
 ## Gotchas
 
+- **`update_check` en telemetría ahora sale cada 6 h por dispositivo, no solo al arrancar
+  (esta tarea)** — desde que existe `PeriodicRecheckCo`, cualquier vista/consulta sobre
+  `update_logs` que asumiera "un `update_check` = un arranque de la app" (p. ej. para contar
+  dispositivos activos) subcuenta hacia arriba: una tablet prendida una semana sin reiniciar
+  genera ~28 eventos `update_check`, no 1. Es el comportamiento esperado (es la señal de vida
+  del re-chequeo periódico), pero cualquier reporte del panel que derive "arranques" o
+  "dispositivos únicos" de este evento debería agrupar por `device_id` + ventana de tiempo, no
+  contar filas.
+- **Sin un guard de "update ya anunciado pendiente de decisión del usuario" (deliberado, esta
+  tarea)** — si el clínico deja el cartel de update abierto sin aceptar/posponer y pasan 6 h
+  (o vuelve de background pasado ese lapso), `PeriodicRecheckCo`/`OnApplicationPause` vuelven a
+  llamar `CheckManifest()`, que puede volver a disparar `UpdateAvailable` con el MISMO manifest
+  — el cartel se re-renderiza con los mismos datos (`UpdatePromptVR.SubscribeToManager()` ya es
+  idempotente para las suscripciones, ver más abajo) y se manda un `update_prompt_shown`
+  duplicado. Las dos guardas que sí existen (`_downloadCo == null && !_readyToInstall`) alcanzan
+  para el caso real (kiosco: el `UpdateAvailable` del cartel de la tablet auto-acepta y arranca
+  la descarga en el mismo callback, así que el guard de `_downloadCo` corta el re-chequeo casi
+  siempre); agregar un tercer estado solo para el caso no-kiosco (clínico mirando el cartel
+  exactos 6 h) se evaluó y se descartó por `minimal-footprint` — el efecto observable es un
+  cartel que "parpadea" con la misma info, no un bug funcional.
 - **`PendingIntent` del commit de `PackageInstaller` DEBE ser `FLAG_MUTABLE` desde Android 12
   (API 31), F8** — `SilentInstaller.java` arma el `PendingIntent` que Android dispara con el
   resultado de la instalación silenciosa. Con `PendingIntent.FLAG_IMMUTABLE` (el default

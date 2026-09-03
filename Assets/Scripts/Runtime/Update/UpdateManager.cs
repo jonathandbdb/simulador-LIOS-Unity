@@ -31,6 +31,13 @@ namespace Simulador.Update
         private const string UpdatesFolderName = "updates";
         private const string ApkFileName = "simulador-update.apk";
         private const int Sha256ChunkBytes = 1024 * 1024; // 1 MB por yield, evita freeze con un archivo grande
+        // Intervalo de re-chequeo periodico del manifest (kiosco 24/7, ver docs/updates.md:
+        // la tablet/el visor pueden pasar semanas sin reiniciarse). 6h es el compromiso entre
+        // "un release publicado durante el dia llega a todas las tablets antes del dia
+        // siguiente" y "no martillar el backend" -- son ~4 GET/dia por dispositivo a un
+        // endpoint que responde en milisegundos, insignificante incluso multiplicado por
+        // toda la flota.
+        private const float RecheckIntervalHours = 6f;
 
         public static UpdateManager Instance { get; private set; }
 
@@ -59,6 +66,12 @@ namespace Simulador.Update
         // vez de instalar -- se reintenta solo, una vez, al volver del ajuste (ver
         // OnApplicationPause). Resultado accesible para telemetria (F6).
         private bool _permissionPendingRetry;
+
+        // Momento (UTC) en que termino el ultimo CheckManifest() (cualquier resultado,
+        // incluido "inalcanzable"/503) -- lo usa OnApplicationPause para decidir si
+        // conviene re-chequear al volver de un background mas largo que
+        // RecheckIntervalHours, ademas del re-chequeo periodico de PeriodicRecheckCo.
+        private DateTime? _lastCheckUtc;
 
         /// <summary>
         /// Resultado del ultimo update aplicado, calculado al arrancar comparando
@@ -174,7 +187,40 @@ namespace Simulador.Update
                 SendTelemetry(_pendingOutcomeEvent.Value);
                 _pendingOutcomeEvent = null;
             }
+            yield return CheckManifestAndTrack();
+            // Kiosco 24/7 (ver docs/updates.md): sin esto, una tablet/visor que no se
+            // reinicia nunca solo se enteraria de un release al apagarse y encenderse.
+            // Vive mientras viva el singleton (DontDestroyOnLoad) -- no hace falta
+            // detenerla en OnDestroy, no hay handle propio que limpiar.
+            StartCoroutine(PeriodicRecheckCo());
+        }
+
+        // Envuelve CheckManifest() para registrar cuando termino -- lo comparten el check
+        // inicial, el re-chequeo periodico (PeriodicRecheckCo) y el re-chequeo al volver
+        // de background (OnApplicationPause), todos con el mismo timestamp de guarda.
+        private IEnumerator CheckManifestAndTrack()
+        {
             yield return CheckManifest();
+            _lastCheckUtc = DateTime.UtcNow;
+        }
+
+        // Seguro re-chequear solo si no hay una descarga en curso (CheckManifest puede
+        // auto-aceptarse en kiosco, ver TabletController.OnUpdateAvailable, y arrancaria
+        // una segunda descarga sobre el mismo ApkPath) ni un APK ya verificado esperando
+        // que el usuario/kiosco lo instale.
+        private bool CanRecheckManifest => _downloadCo == null && !_readyToInstall;
+
+        private IEnumerator PeriodicRecheckCo()
+        {
+            // WaitForSecondsRealtime (no WaitForSeconds): Time.timeScale no debe afectar
+            // este intervalo, y tiempo real cubre el caso de la app en background.
+            var wait = new WaitForSecondsRealtime(RecheckIntervalHours * 3600f);
+            while (true)
+            {
+                yield return wait;
+                Debug.Log($"Update: re-chequeo periodico del manifest (cada {RecheckIntervalHours:0}h).");
+                if (CanRecheckManifest) yield return CheckManifestAndTrack();
+            }
         }
 
         // ---------------- Check de manifest ----------------
@@ -356,9 +402,23 @@ namespace Simulador.Update
         // evento que usa DataManager.OnApplicationPause para persistir, ver docs/catalogo-lentes.md).
         private void OnApplicationPause(bool pause)
         {
-            if (pause || !_permissionPendingRetry) return;
-            _permissionPendingRetry = false;
-            LaunchInstall();
+            if (pause) return;
+            if (_permissionPendingRetry)
+            {
+                _permissionPendingRetry = false;
+                LaunchInstall();
+            }
+            // Kiosco 24/7 (ver docs/updates.md): la app puede quedar en background mas
+            // tiempo que RecheckIntervalHours (tablet dejada en reposo, visor guardado) --
+            // si paso el intervalo, re-chequear ahora en vez de esperar a que
+            // PeriodicRecheckCo despierte por su cuenta.
+            if (_lastCheckUtc.HasValue
+                && (DateTime.UtcNow - _lastCheckUtc.Value).TotalHours >= RecheckIntervalHours
+                && CanRecheckManifest)
+            {
+                Debug.Log("Update: re-chequeo del manifest al volver de background (paso el intervalo).");
+                StartCoroutine(CheckManifestAndTrack());
+            }
         }
 
         private void StartDownload()
