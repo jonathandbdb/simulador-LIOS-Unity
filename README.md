@@ -152,6 +152,12 @@ Unity -batchmode -quit -projectPath "." \
 # salida: Builds/Android/Simulador.apk
 ```
 
+> **Dejar una tablet lista para entregar a un cliente (modo kiosco):** `scripts/provision-tablet.sh`
+> deja una tablet Android nueva como Device Owner con una sola orden — no hace falta Unity ni un
+> build local, descarga el APK del backend solo. Guía completa (qué tablet comprar, requisitos,
+> paso a paso y problemas → solución) en [`docs/builds-deploy.md`](docs/builds-deploy.md)
+> § "Provisión de tablets (Device Owner)".
+
 #### Puesta en marcha conjunta
 
 1. Visor y tablet deben estar en la **misma red Wi-Fi local**.

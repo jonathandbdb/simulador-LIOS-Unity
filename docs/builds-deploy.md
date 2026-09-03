@@ -16,7 +16,7 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 | `Assets/XR/Settings/OpenXR Package Settings.asset` | Configuración del paquete OpenXR (features, interaction profiles). |
 | `ProjectSettings/EditorBuildSettings.asset` | Lista de escenas del build normal: solo `Assets/Scenes/Main.unity` (visor). También registra el config object XR bajo la key `com.unity.xr.management.loader_settings`, la misma que lee `TabletBuild.GetAndroidXrManager()`. |
 | `ProjectSettings/ProjectSettings.asset` | `companyName: Simulador`, `productName: Simulador`, `applicationIdentifier` Android: `com.simulador.vr` (visor). La tablet usa `com.simulador.tablet`/"Simulador Tablet", seteados SOLO durante `TabletBuild` y restaurados al terminar (P6.7, ver abajo) — este archivo nunca queda con los valores de la tablet. También guarda el icono default del proyecto (`PlayerSettings.SetIcons(NamedBuildTarget.Unknown, ...)`, serializado en `m_BuildTargetIcons` con `m_BuildTarget` vacío): es el icono del **visor** (`Assets/Textures/Icons/icon_visor.png`) — Android lo hereda como fallback salvo que tenga icono propio seteado (ver fila siguiente y `TabletBuild`). |
-| `Assets/Textures/Icons/icon_visor.png`, `Assets/Textures/Icons/icon_tablet.png` | Iconos 1024×1024 full-bleed (sin alpha) de cada app: una LIO estilizada (óptica central + dos hápticos en C) — visor en cian sobre azul marino, tablet en blanco sobre teal con 4 marcas de escala como acento. El default del proyecto (todas las plataformas que no tengan override) es el del visor; `TabletBuild` pisa el de Android con el de tablet SOLO durante su build (ver abajo). |
+| `Assets/Textures/Icons/icon_visor.png`, `Assets/Textures/Icons/icon_tablet.png` | Iconos 1024×1024 full-bleed (sin alpha), regenerados 2026-09-03 con el logo real (ver Decisiones "Logo real (2026-09-03)" en `docs/tablet.md`): el símbolo de marca (esfera azul con gradiente radial + dos anillos elípticos diagonales, gris azulado) centrado al ~62 % del lado — visor sobre fondo azul marino `#0B2A4A`, tablet sobre fondo blanco `#FFFFFF` (se distinguen si conviven instalados en un dispositivo de desarrollo). Sin texto (ilegible a 48 px, el tamaño real de un ícono de app). Fuente vectorial en `Assets/Textures/Icons/src/iolsimulator-mark.svg`. El default del proyecto (todas las plataformas que no tengan override) es el del visor; `TabletBuild` pisa el de Android con el de tablet SOLO durante su build (ver abajo). |
 | `backend/docker-compose.yml` + `backend/Caddyfile` | Deploy del backend (detalle en `docs/backend.md`). |
 | `README.md` (raíz, sección 3) | Instrucciones de instalación para humanos; este doc es la referencia operativa. |
 
@@ -31,7 +31,7 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 | Método de build | Build normal de Unity para Android (*File → Build Profiles / Build Settings*) | **SOLO** menú `Simulador → Build Tablet (Android)` o `-executeMethod Simulador.EditorTools.TabletBuild.BuildTablet` (batchmode) |
 | Ruta de salida | La que elija el usuario (localmente existen `builds/Simulador_VR.apk` y `build/Simulador.apk`, ambas carpetas gitignoradas) | `Builds/Android/Simulador.apk` (constante `OutputPath` en `TabletBuild.cs`) |
 | Package | `com.simulador.vr` | `com.simulador.tablet` (P6.7, CERRADO — antes compartía `com.simulador.vr` con el visor; ver Decisiones/Gotchas) |
-| Product name | `Simulador` (Project Settings) | `Simulador Tablet` (seteado/restaurado solo durante el build, igual que el package) |
+| Product name | `IOLSIMULATOR` (Project Settings, marca visible desde 2026-09-03 — ver Decisiones `docs/tablet.md`) | `IOLSIMULATOR Tablet` (seteado/restaurado solo durante el build, igual que el package) |
 | Icono | `icon_visor.png` (es el default del proyecto, target `Unknown`; Android lo hereda si no tiene override) | `icon_tablet.png` (seteado en los slots de Android SOLO durante `TabletBuild`, restaurado al terminar — mismo patrón try/finally que package/nombre) |
 | Scripting backend | IL2CPP / arm64-v8a, min SDK 29 (según `README.md`) | Idéntico (mismo target compartido) |
 | Manifest: kiosco (HOME + DeviceAdminReceiver) | Ausente (el `.java`/`.xml` compilan igual pero el manifest del visor no los declara — inertes) | Inyectado post-Gradle por `TabletManifestPatcher.cs`, gateado por `IsTabletBuildInProgress` (Fase A, ver `docs/tablet.md`) |
@@ -93,48 +93,125 @@ dispositivo si hiciera falta probarlos juntos (antes, instalar uno reemplazaba a
 
 ### Provisión de tablets (Device Owner)
 
-Procedimiento de taller para dejar una tablet lista para salir a una clínica sin volver a
-tocarla: modo kiosco vía **Android Device Owner** (Fase A del pedido de "vender bundles Quest +
-tablet sin volver a tocar los dispositivos"; el porqué de elegir Device Owner en vez de otro
-mecanismo vive en `docs/tablet.md` Decisiones "Kiosco vía Android Device Owner"). Fase B (WiFi
-desde la propia app) y Fase C (updates silenciosos, QR provisioning) son requisitos posteriores
-que ya dejan el terreno preparado (`SimuladorDeviceAdminReceiver.onProfileProvisioningComplete`,
-ver `docs/tablet.md`) pero NO son parte de este procedimiento.
+Procedimiento para dejar una tablet lista para salir a una clínica sin volver a tocarla: modo
+kiosco vía **Android Device Owner** (Fase A del pedido de "vender bundles Quest + tablet sin
+volver a tocar los dispositivos"; el porqué de elegir Device Owner en vez de otro mecanismo vive
+en `docs/tablet.md` Decisiones "Kiosco vía Android Device Owner"). Fase B (WiFi desde la propia
+app) y Fase C (updates silenciosos, QR provisioning) son requisitos posteriores que ya dejan el
+terreno preparado (`SimuladorDeviceAdminReceiver.onProfileProvisioningComplete`, ver
+`docs/tablet.md`) pero NO son parte de este procedimiento.
 
-**Requisitos:**
-- Tablet recién salida de fábrica (o factory-reseteada), con **CERO cuentas** agregadas —
-  `dpm set-device-owner` falla si hay alguna.
-- Opciones de desarrollador + Depuración USB activadas, y esta PC autorizada (`adb devices` debe
-  listarla como `device`, no `unauthorized`).
-- APK de la tablet ya buildeado (`Simulador → Build Tablet (Android)`, ver arriba) — el manifest
-  del kiosco (intent-filter HOME + `<receiver>` de `SimuladorDeviceAdminReceiver`) tiene que estar
-  inyectado, cosa que hace `TabletManifestPatcher.cs` automáticamente en CUALQUIER build de
-  tablet (no es un flag opcional).
+Pensado para que **cualquier dev con una PC** (no hace falta Unity ni un build local) pueda
+provisionar una tablet nueva con `scripts/provision-tablet.sh`: por defecto descarga el APK
+publicado en el backend (mismo manifest que usa el OTA, `docs/updates.md`), lo verifica por
+SHA256 y recién ahí instala.
 
-**Procedimiento (`scripts/provision-tablet.sh`):**
+#### Qué tablet comprar
+
+- **Android 10 o superior** (preferible **13+** — es lo validado hoy).
+- **Nueva de fábrica, o factory-reseteada sin ninguna cuenta agregada** — `dpm set-device-owner`
+  exige cero cuentas.
+- Con **Opciones de desarrollador / Depuración USB** habilitables (todas las Android estándar la
+  tienen; algunas MDM corporativas la bloquean — evitarlas).
+- **WiFi de 5 GHz recomendado** — el streaming por ojo entre visor y tablet pesa, y 2.4 GHz en un
+  entorno con muchas redes (clínica, congreso) degrada la latencia visible.
+- **10" o más, USB-C** (para carga/depuración con un solo tipo de cable).
+- **Evitar Fire OS de Amazon** (no es Android Enterprise, `dpm set-device-owner` no aplica igual)
+  **y ROMs con "espacio dual"/"app twin"** de algunos fabricantes chinos (duplican el package
+  manager y confunden a `dpm`).
+- **Validado en campo:** PHILCO TP10A464 (Android 13) — primera provisión real, 2026-09-03 (ver
+  gotchas más abajo).
+- **Recomendadas si hay que comprar sin poder probar antes:** Samsung Galaxy Tab A9+ o Lenovo Tab
+  M11 — ambas son **Android Enterprise Recommended** (Google certifica que `dpm
+  set-device-owner`/lock task funcionan sin sorpresas de fabricante).
+
+#### Requisitos de la PC del operador
+
+- Un shell con bash: **Git Bash** en Windows 11, o Linux/macOS.
+- `adb` (Android platform-tools) y `curl` disponibles. Si `adb` no está en el PATH, el script
+  busca `adb.exe` en `$LOCALAPPDATA/Android/Sdk/platform-tools/`, `/c/Android/platform-tools/` y
+  `$HOME/Android/Sdk/platform-tools/`; si no aparece ahí tampoco, hay que instalar
+  [Android SDK Platform-Tools](https://developer.android.com/tools/releases/platform-tools).
+- **Internet en la PC** (para bajar el APK del backend) — salvo que se use `--apk <ruta>` con un
+  build local. **La tablet NO necesita WiFi para provisionarse.**
+- Un cable USB de **datos** (no solo carga) para conectar la tablet.
+
+#### Preparación de la tablet
+
+1. Si la tablet no está de fábrica: hacerle un **reseteo de fábrica**.
+2. Al pasar el asistente inicial de Android: **saltear el inicio de sesión, sin agregar ninguna
+   cuenta** (Google ni de fabricante) — `dpm set-device-owner` exige cero cuentas.
+3. **Ajustes → Acerca de la tablet →** tocar 7 veces **"Número de compilación"** (activa
+   Opciones de desarrollador).
+4. **Ajustes → Sistema → Opciones de desarrollador →** activar **"Depuración USB"**.
+5. Conectar el cable USB a la PC. En el diálogo que aparece **en la tablet**, tocar **"Permitir
+   siempre desde esta computadora"** y aceptar.
+
+(El propio script imprime esta misma checklist en pantalla si no detecta ninguna tablet en los
+primeros 15 segundos, y sigue esperando hasta 5 minutos antes de abortar.)
+
+#### La orden
 
 ```bash
-scripts/provision-tablet.sh                      # usa Builds/Android/Simulador.apk
-scripts/provision-tablet.sh --apk otra/ruta.apk --serial <serial>   # con más de un dispositivo
+scripts/provision-tablet.sh                        # todo por defecto: descarga del backend,
+                                                     # provisiona, reinicia y verifica
+scripts/provision-tablet.sh --serial <serial>       # si hay más de un dispositivo conectado
 ```
 
-El script (por defecto): `adb wait-for-device` → verifica que la tablet no tenga cuentas
-(`dumpsys account`, aborta con instrucciones si encuentra alguna) → `adb install -r <apk>` →
-`adb shell dpm set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver`
-→ `adb shell appops set com.simulador.tablet REQUEST_INSTALL_PACKAGES allow` (red de seguridad,
-ver nota abajo) → lanza la app (`monkey`) → verifica
-`dumpsys device_policy` (debe listar `com.simulador.tablet` como Device Owner) y
-`dumpsys package com.simulador.tablet | grep versionName`. Cada paso corta con `exit 1` y un
-mensaje claro ante el primer fallo.
+El flujo por defecto: descarga y verifica el APK (manifest `GET
+https://vr.conecta.sh/api/manifest.json?app=tablet` → `apk_url` + `apk_sha256`) → busca la
+tablet por adb (checklist si tarda) → verifica que no tenga cuentas → `adb install -r` → `dpm
+set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver` →
+`appops` + `immersive_mode_confirmations` (ver gotchas abajo) → lanza la app con un intent HOME
+explícito → verifica HOME persistente y `type=home` → **reinicia la tablet** y confirma en vivo
+que arranca directo en la app, en foco (`mCurrentFocus`) y con el kiosco activo
+(`mLockTaskModeState=LOCKED`) — exactamente lo que le va a pasar al paciente/clínico al prender
+la tablet en la clínica. Cualquier paso que falle corta con `exit 1` y un mensaje explicando qué
+pasó y qué hacer.
+
+Variantes (detalle completo en `scripts/provision-tablet.sh --help`):
+
+| Flag | Para qué |
+|------|----------|
+| `--backend <url>` | Backend alternativo (default `https://vr.conecta.sh`). |
+| `--apk <path>` | Modo desarrollador: usa un APK local en vez de descargar (ej. un build recién generado con `Simulador → Build Tablet (Android)`). |
+| `--download-only` | Solo descarga + verifica el APK e imprime su ruta — no toca ningún dispositivo (sirve para probar la conexión al backend sin tener la tablet a mano). |
+| `--no-reboot` | Salta el reboot final de verificación (para seguir trabajando sobre la tablet a mano). |
+| `--fix-setup` | Gotcha "already provisioned" — ver tabla de abajo. |
+| `--unprovision` | SOLO desinstala la app — NO quita el Device Owner (ver "Cómo se sale" más abajo). |
+
+#### Qué imprime al final
+
+```
+==> TABLET LISTA PARA ENTREGAR
+    modelo: PHILCO TP10A464 (Android 13)   serial: TP10A46414379100691
+    app: IOLSIMULATOR Tablet 0.7.0 (700)   owner: OK   kiosco: LOCKED   arranque directo: OK
+```
+
+Si ves esto, la tablet está lista para entregar tal cual — no hace falta tocar nada más.
+
+#### Problemas → solución
+
+| Síntoma | Solución |
+|---------|----------|
+| `adb devices` muestra `unauthorized` | Desbloqueá la pantalla de la tablet y aceptá el diálogo "Permitir depuración USB" / "Permitir siempre desde esta computadora"; si no aparece, desconectá y reconectá el cable. |
+| `dpm set-device-owner` falla con **"already provisioned"** | `scripts/provision-tablet.sh --fix-setup --serial <serial>` y reintentar sin esa flag (ver gotcha abajo). |
+| Sin internet en la PC, o el manifest responde **503** | Backend sin versión activa de tablet, o PC sin conexión — usar `--apk <ruta>` con un APK local, o revisar `/admin/versions` en el backend. |
+| El SHA256 del APK descargado no coincide | Descarga corrupta o manifest inconsistente — el script no instala nada; reintentar, y si persiste avisar a quien administra el backend. |
+| La tablet ya tenía un Device Owner de **otra** app/proyecto | No se puede reasignar sin borrar el anterior — factory reset completo y empezar de cero. |
+| No se detecta ningún dispositivo tras 5 minutos | Revisar la checklist que imprime el script; en Windows puede hacer falta instalar el driver USB del fabricante de la tablet. |
+| Falla la verificación final (foco / `LOCKED`) tras el reboot | Puede ser una tablet que quedó a mitad de camino de una provisión anterior — repetir el comando; si persiste, factory reset. |
+
+#### Detalle técnico y gotchas
 
 **Con el Device Owner puesto, el OTA es silencioso (Fase C, lado Unity — `docs/updates.md`
 §"Instalación silenciosa en kiosco (F8)"):** `UpdateInstaller` instala el APK descargado vía
 `PackageInstaller` (`SilentInstaller.java`) sin ningún diálogo ni intervención humana — el
-`appops set ... REQUEST_INSTALL_PACKAGES allow` de arriba queda como **red de seguridad**, no
-como el mecanismo real de instalación: cubre el caso borde de que `KioskManager.IsDeviceOwner`
-de `false` por algún motivo (p. ej. el registro de Device Owner se perdió) y el flujo caiga de
-vuelta al intent `ACTION_VIEW` visible de `UpdateInstaller`, que sí necesita ese permiso
-concedido para no pedir confirmación manual.
+`appops set ... REQUEST_INSTALL_PACKAGES allow` que aplica el script queda como **red de
+seguridad**, no como el mecanismo real de instalación: cubre el caso borde de que
+`KioskManager.IsDeviceOwner` de `false` por algún motivo (p. ej. el registro de Device Owner se
+perdió) y el flujo caiga de vuelta al intent `ACTION_VIEW` visible de `UpdateInstaller`, que sí
+necesita ese permiso concedido para no pedir confirmación manual.
 
 **Gotcha "already provisioned":** `dpm set-device-owner` falla con *"Trying to set the device
 owner, but device is already provisioned"* en cualquier tablet que ya pasó por el asistente de
@@ -142,35 +219,93 @@ configuración inicial de Android — lo hacen la mayoría de fábrica al primer
 haya agregado ninguna cuenta. `scripts/provision-tablet.sh --fix-setup` aplica el truco **sin
 root** (`adb shell settings put global device_provisioned 0` + insertar
 `user_setup_complete=0` en `Settings.Secure` vía `content insert`) para volver la tablet a un
-estado "no provisionado" y reintentar `set-device-owner` sin un factory reset.
+estado "no provisionado" y reintentar `set-device-owner` sin un factory reset. **Primera
+provisión real (2026-09-03, PHILCO TP10A464, Android 13):** esta tablet aceptó
+`set-device-owner` al primer intento CON el asistente de configuración completado (asistente
+corrido normalmente, sin cuentas agregadas) y SIN necesitar `--fix-setup` — el gotcha de arriba
+no es universal, depende del fabricante/ROM (algunas OEM no marcan `device_provisioned` tras el
+asistente si no se agregó ninguna cuenta).
 
-**Verificación post-provisión:**
-1. Reiniciar la tablet (o `adb reboot`) y confirmar que arranca DIRECTO en la app (sin launcher
-   de Android visible) — la HOME persistente (`KioskManager.ApplyPolicies`,
-   `addPersistentPreferredActivity`) hace que la app sea la única pantalla de inicio.
-2. Confirmar que no se puede salir con los gestos normales (recientes/atrás/home del sistema no
-   están disponibles bajo `startLockTask`, `KioskManager.EnterLockTask()` en `Start()`).
-3. Confirmar que el botón físico de power SÍ abre el menú de apagado
-   (`LOCK_TASK_FEATURE_GLOBAL_ACTIONS`, ver `docs/tablet.md` Decisiones — si no aparece, revisar
-   que `setLockTaskFeatures` se haya aplicado).
-4. Confirmar que el botón "Red Wi-Fi" de la `ConnectScreen` abre el panel de WiFi de Android
-   (bajo lock task, gracias a `com.android.settings` en el allowlist — ver `docs/tablet.md`).
+**Gotcha "carrera tarea-standard + Home = doble instancia de Activity = crash de Unity,
+auto-recuperable" — INCIDENTE REAL, corregido (2026-09-03, PHILCO TP10A464).** Al provisionar
+por primera vez, lanzar la app con `monkey -p` (intent LAUNCHER, que es lo que hacía este script
+antes de esta tarea) crea una tarea `type=standard` aunque la Activity sea `singleTask`
+(`android:launchMode="singleTask"`, confirmado presente en el manifest). Si justo después de ese
+lanzamiento se pulsa Home (físico o `KEYCODE_HOME`), Android busca la app de inicio en una tarea
+`type=home` — no reusa la tarea `standard` existente aunque sea la MISMA Activity singleTask — y
+crea una **segunda instancia de la Activity en el mismo proceso**. Unity no lo tolera:
+`UnityFoldingFeaturesWrapper` es estático por proceso, y el segundo `onCreate()` tira
+`RuntimeException: UnityFoldingFeaturesWrapper.init() should be called only once. Use
+getInstance() instead.`, tumbando el proceso entero. Reproducido en vivo 1 de 5 veces (no
+determinístico: depende de si `KioskManager.ApplyPolicies()`/`EnterLockTask()` ya corrieron para
+cuando se pulsa Home). **Auto-recuperable**: el crash mata el proceso, pero la HOME persistente
+(`addPersistentPreferredActivity`, ya registrada por `ApplyPolicies()` para cuando esto pasa)
+relanza la app sola en una tarea `type=home` — el problema no vuelve a aparecer en esa sesión.
+Tras un reboot real la app SIEMPRE nace `type=home` (la relanza el propio Android vía el
+mecanismo de HOME persistente, nunca vía LAUNCHER), así que el bug es exclusivo de la ventana de
+la primera provisión.
+
+**Por qué el fix NO es "lanzar por LAUNCHER y corregir después con `force-stop` + relanzar por
+HOME"** (variante intentada y descartada durante esta tarea, confirmada en vivo que NO
+funciona): una vez que `ApplyPolicies()`+`EnterLockTask()` corrieron (pasa solo, apenas la app
+arranca, sin intervención externa), Android **bloquea el `force-stop`** de la app en lock task —
+confirmado con logcat del sistema: `ActivityManager: Ignoring request to force stop protected
+package com.simulador.tablet u0` (exit code 0, sin error visible en la salida de `adb`, pero el
+proceso NUNCA se reinicia — el PID queda idéntico). Sin poder matar el proceso, reintentar
+`am start ... HOME` sobre esa tarea `standard` ya bloqueada dispara la MISMA carrera de arriba,
+ahora **garantizada en cada provisión** en vez de ocasional. **Fix real, aplicado en
+`scripts/provision-tablet.sh`:** lanzar la app la PRIMERA vez con un intent HOME explícito
+(`am start -a android.intent.action.MAIN -c android.intent.category.HOME -n
+com.simulador.tablet/com.unity3d.player.UnityPlayerGameActivity`) en vez de LAUNCHER
+(`monkey -p`) — la tarea nace `type=home` desde el vamos (mismo mecanismo con el que Android la
+relanza sola tras un reboot), así que nunca hay una tarea `standard` que bloquear ni una carrera
+que ganar. El script después espera hasta 30 s a que `cmd package resolve-activity` confirme que
+`ApplyPolicies()` corrió y verifica `type=home` en la tarea ya corriendo, sin volver a tocarla.
+**Verificado post-fix en la PHILCO:** rebuild + reinstalación (mismo `applicationId`/firma, el
+Device Owner sobrevive), 10× `KEYCODE_HOME` con 3 s de por medio sin ningún `FATAL` en logcat y
+con el mismo PID antes/después, y reboot final con la app sola en foco, `type=home` y
+`mLockTaskModeState=LOCKED`. Repetir la receta vieja (`monkey -p` + `force-stop` + Home) en la
+tablet YA locked sigue sin poder forzar el kill (mismo "Ignoring request to force stop protected
+package") — es un camino que ya no ejecuta el script, documentado acá solo como referencia de
+por qué no es viable arreglarlo por ese lado.
+
+**Gotcha "diálogo de modo inmersivo la primera vez que se oculta la barra de estado":** la
+PRIMERA vez que `KioskManager.ApplyPolicies()` llama `setStatusBarDisabled(true)`, Android
+muestra un diálogo nativo ("Visualización en pantalla completa" / "Entendido") que alguien tiene
+que tocar a mano — inaceptable en una tablet que sale a una clínica sin volver a tocarla.
+`DevicePolicyManager.setSecureSetting()` del Device Owner NO cubre la clave
+`immersive_mode_confirmations` (no está en su allowlist), así que no se puede resolver desde
+`KioskManager` (C#/JNI) — el único camino soportado es `adb shell settings put secure
+immersive_mode_confirmations confirmed` (requiere `WRITE_SECURE_SETTINGS`, que el shell de `adb`
+sí tiene). `scripts/provision-tablet.sh` lo aplica ANTES del primer lanzamiento de la app,
+idempotente.
+
+**Qué verifica el reboot final del script** (ya automatizado, no hace falta repetirlo a mano):
+1. La tablet arranca DIRECTO en la app (sin launcher de Android visible) — la HOME persistente
+   (`KioskManager.ApplyPolicies`, `addPersistentPreferredActivity`) hace que la app sea la única
+   pantalla de inicio.
+2. `mCurrentFocus` (`dumpsys window`) contiene `com.simulador.tablet`.
+3. `mLockTaskModeState` (`dumpsys activity activities`) es `LOCKED` — no se puede salir con los
+   gestos normales (recientes/atrás/home del sistema no están disponibles bajo `startLockTask`).
+
+Manual, si hace falta confirmarlo a ojo: el botón físico de power SÍ debe abrir el menú de
+apagado (`LOCK_TASK_FEATURE_GLOBAL_ACTIONS`, ver `docs/tablet.md` Decisiones — si no aparece,
+revisar que `setLockTaskFeatures` se haya aplicado), y el botón "Red Wi-Fi" de la `ConnectScreen`
+debe abrir el panel de WiFi de Android (bajo lock task, gracias a `com.android.settings` en el
+allowlist — ver `docs/tablet.md`).
 
 **Cómo se sale (soporte real):** `dpm remove-active-admin` **NO sirve** para un Device Owner
 (solo aplica a "device admins" comunes, no al owner) — Android exige `clearDeviceOwnerApp()`
 llamado DESDE la propia app, o un factory reset completo. El camino normal de soporte es el gesto
-de la app: 7 taps en el título del `ConnectScreen` (`app.title` — "Simulador IOL" en es, **"IOL
-Simulator" en en**, ver `docs/localizacion.md`) dentro de 3 segundos + PIN de servicio (ver
-`docs/tablet.md` "Pantallas" y Decisiones). **Correcciones (MAYOR #12)**: el PIN correcto YA NO
-cierra la app — antes hacía `ExitLockTask()` + `Application.Quit()`, una carrera que además no
-servía de nada (la HOME persistente relanzaba la app, que volvía a entrar a lock task en su
-`Start()`). Ahora entra a un **modo servicio** real (`KioskManager.EnterServiceMode()`): sale del
-lock task de verdad, libera la HOME persistente y deja la app ABIERTA con un banner y un botón
-"Volver al kiosco" — el operador tiene una ventana real (sin carrera, sin relanzamiento) para ir a
-Home/Ajustes y conectar adb, y decide cuándo volver al kiosco (o reinstalar) en vez de una ventana
-de segundos. `scripts/provision-tablet.sh --unprovision` es más limitado: SOLO desinstala la app
-(el registro de Device Owner queda a nivel de sistema); para limpiarlo del todo hace falta
-`clearDeviceOwnerApp()` desde la app o un factory reset.
+de la app: 7 taps en el título del `ConnectScreen` (`app.title` — **`IOLSIMULATOR`, idéntico en
+es/en, ver `docs/localizacion.md`**) dentro de 3 segundos + PIN de servicio (ver
+`docs/tablet.md` "Pantallas" y Decisiones). El PIN correcto entra a un **modo servicio** real
+(`KioskManager.EnterServiceMode()`): sale del lock task de verdad, libera la HOME persistente y
+deja la app ABIERTA con un banner y un botón "Volver al kiosco" — el operador tiene una ventana
+real (sin carrera, sin relanzamiento) para ir a Home/Ajustes y conectar adb, y decide cuándo
+volver al kiosco (o reinstalar). `scripts/provision-tablet.sh --unprovision` es más limitado:
+SOLO desinstala la app (el registro de Device Owner queda a nivel de sistema); para limpiarlo
+del todo hace falta `clearDeviceOwnerApp()` desde la app o un factory reset.
 
 #### Recuperación remota por QR
 

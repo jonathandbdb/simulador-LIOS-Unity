@@ -243,7 +243,24 @@ namespace Simulador.Tablet
             }
         }
 
-        /// <summary>Vuelve del modo servicio: borra el flag y reaplica el kiosco completo.</summary>
+        /// <summary>
+        /// Vuelve del modo servicio: borra el flag, reaplica las policies (HOME
+        /// persistente incluida) y reinicia el proceso para que la app renazca en
+        /// una tarea "home" -- NO llama <see cref="EnterLockTask()"/> directo
+        /// sobre la tarea actual. Motivo (misma carrera que la de
+        /// docs/builds-deploy.md "Provision de tablets"): mientras estaba en modo
+        /// servicio el operador pudo haber relanzado la app desde el launcher del
+        /// sistema (tarea type=standard, persistent-preferred estaba limpio); si
+        /// esta tarea standard se bloquea con <c>startLockTask</c> y despues se
+        /// pulsa Home, Android crea una SEGUNDA instancia de la Activity en el
+        /// MISMO proceso (UnityFoldingFeaturesWrapper es estatico por proceso) y
+        /// crashea. En vez de arriesgarse, <c>ApplyPolicies()</c> deja el HOME
+        /// persistente puesto de nuevo y el proceso se reinicia solo -- la HOME
+        /// persistente relanza la Activity via un intent HOME real (misma forma
+        /// en que nace la app tras un reboot, nunca type=standard), y su propio
+        /// <c>Start()</c> vuelve a llamar <see cref="ApplyPolicies()"/> +
+        /// <see cref="EnterLockTask()"/> ya sobre la tarea "home" correcta.
+        /// </summary>
         public static void LeaveServiceMode()
         {
             try
@@ -255,7 +272,51 @@ namespace Simulador.Tablet
                 Debug.LogWarning("[Kiosk] LeaveServiceMode: no se pudo borrar el flag (" + e.GetType().Name + "): " + e.Message);
             }
             ApplyPolicies();
-            EnterLockTask();
+            RestartProcess();
+        }
+
+        // SIM: atajo deliberado -- reinicio de proceso para nacer en tarea HOME;
+        // Unity no tolera dos instancias de la Activity por proceso (ver el
+        // <summary> de LeaveServiceMode). finishAndRemoveTask() + killProcess()
+        // corren en el hilo de UI de Android, uno despues del otro: quitar la
+        // tarea actual de Recents primero y despues matar el proceso deja a
+        // Android sin "top activity" que reintentar -- resuelve HOME de nuevo
+        // contra el persistent-preferred que ApplyPolicies() acaba de reponer,
+        // igual que arranca la app despues de un reboot real.
+        //
+        // Publico (hallazgo 2026-09-03, PHILCO TP10A46414379100691): bajo lock
+        // task, Android bloquea finish()/Application.Quit() de la Activity raiz
+        // de la tarea bloqueada ("Not finishing task in lock task mode" en
+        // logcat -- el PID no cambia, la UI sigue como estaba). Matar el proceso
+        // es la UNICA forma de reiniciar la app en kiosco; la HOME persistente
+        // (ApplyPolicies) la relanza sola. Lo usa tambien TabletController tras
+        // confirmar el cambio de idioma (ver OnLangConfirmPressed), no solo
+        // LeaveServiceMode.
+        public static void RestartProcess()
+        {
+            RunOnUiThread(() =>
+            {
+                try
+                {
+                    using var activity = GetCurrentActivity();
+                    activity.Call("finishAndRemoveTask");
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[Kiosk] finishAndRemoveTask() fallo (" + e.GetType().Name + "): " + e.Message);
+                }
+
+                try
+                {
+                    using var processClass = new AndroidJavaClass("android.os.Process");
+                    int pid = processClass.CallStatic<int>("myPid");
+                    processClass.CallStatic("killProcess", pid);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning("[Kiosk] killProcess() fallo (" + e.GetType().Name + "): " + e.Message);
+                }
+            });
         }
 
         public static bool IsLockTaskActive
@@ -353,6 +414,7 @@ namespace Simulador.Tablet
         public static void EnterLockTask() { }
         public static void EnterServiceMode() { }
         public static void LeaveServiceMode() { }
+        public static void RestartProcess() { }
         public static bool IsLockTaskActive => false;
         public static void OpenWifiSettings() => Debug.Log("[Kiosk] OpenWifiSettings no-op fuera de Android (Editor).");
 #endif

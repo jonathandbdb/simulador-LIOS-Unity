@@ -51,6 +51,10 @@ namespace Simulador.Tablet
         // --- Tema / kit ---
         private TabletUiKit _kit;
         private bool _isDark = true;
+        // Sprite del simbolo de marca (rebranding IOLSIMULATOR, 2026-09-03), cargado una vez en
+        // Start() igual que las fuentes de TabletFonts/ (Resources.Load nuevo justificado: la UI
+        // es 100% por codigo sin prefabs, ver docs/tablet.md).
+        private Sprite _brandMark;
         private string PrefsPath => Application.persistentDataPath + "/ui_prefs.cfg";
 
         // --- Pantallas ---
@@ -234,6 +238,7 @@ namespace Simulador.Tablet
 
             var regular = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-Regular SDF");
             var semibold = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-SemiBold SDF");
+            _brandMark = Resources.Load<Sprite>("TabletBrand/logo_mark");
             _isDark = LoadThemePref();
             _kit = new TabletUiKit(TabletPalette.For(_isDark), regular, semibold);
             // D2: fija el idioma ANTES de construir la UI (BuildUI ya toca
@@ -744,12 +749,20 @@ namespace Simulador.Tablet
             CloseLangConfirm();
             SaveLangPref(_pendingLangCode);
             // Reinicia la app para aplicar el idioma nuevo (la UI se construye UNA
-            // vez en Start(), ver docs/tablet.md "Idioma fijo al arrancar"): en
-            // kiosco (Device Owner) la HOME persistente relanza la app al
-            // instante, ya en el idioma nuevo; en una tablet de desarrollo la app
-            // simplemente se cierra y hay que reabrirla a mano; en el Editor
-            // Application.Quit() es un no-op (no sale de Play Mode).
-            Application.Quit();
+            // vez en Start(), ver docs/tablet.md "Idioma fijo al arrancar"). Bajo
+            // lock task, Application.Quit() es un no-op real -- Android bloquea el
+            // finish() de la Activity raiz de la tarea bloqueada ("Not finishing
+            // task in lock task mode", hallazgo 2026-09-03 en la PHILCO, ver
+            // docs/tablet.md) -- asi que en kiosco (Device Owner) hay que matar el
+            // proceso (KioskManager.RestartProcess()) para que la HOME persistente
+            // relance la app ya en el idioma nuevo; en una tablet de desarrollo
+            // (sin Device Owner) Application.Quit() cierra la app normalmente y hay
+            // que reabrirla a mano; en el Editor sigue siendo un no-op documentado
+            // de Unity (no sale de Play Mode).
+            if (KioskManager.IsDeviceOwner)
+                KioskManager.RestartProcess();
+            else
+                Application.Quit();
         }
 
         private void CloseLangConfirm() => _langConfirm?.SetActive(false);
@@ -1288,6 +1301,12 @@ namespace Simulador.Tablet
 
             var exitBtn = _kit.Button(wrap.transform, L10n.T("common.exit"), BtnStyle.Ghost, false, 48, 16);
             exitBtn.OnClick = () => Application.Quit();
+            // En kiosco (Device Owner) no hay adonde "salir" -- Application.Quit()
+            // es un no-op bajo lock task (ver OnLangConfirmPressed) y mostrar un
+            // boton que no hace nada confunde al clinico. En una tablet de
+            // desarrollo (sin Device Owner) el boton sigue igual.
+            if (KioskManager.IsDeviceOwner)
+                exitBtn.gameObject.SetActive(false);
         }
 
         // ------------------------------------------------------------
@@ -2925,30 +2944,20 @@ namespace Simulador.Tablet
             return img;
         }
 
-        // Glifo "ojo" estilizado (sin assets): circulo de acento + iris + pupila.
+        // Glifo de marca: sprite del simbolo IOLSIMULATOR (rebranding 2026-09-03,
+        // Assets/Resources/TabletBrand/logo_mark.png), reemplaza el glifo "ojo" dibujado por
+        // codigo (3 circulos concentricos) que había antes de tener arte propio. Sin Tint: el
+        // sprite ya trae su propio gradiente/color, el repaint de tema no debe entintarlo.
         private void EyeGlyph(Transform parent, float size)
         {
-            var root = new GameObject("EyeGlyph", typeof(RectTransform));
+            var root = new GameObject("BrandGlyph", typeof(RectTransform));
             root.transform.SetParent(parent, false);
             _kit.Size(root.GetComponent<RectTransform>(), minW: size, minH: size, prefW: size, prefH: size, flexW: 0);
-            Circle(root.transform, size, p => p.Accent);
-            Circle(root.transform, size * 0.62f, p => p.Bg);
-            Circle(root.transform, size * 0.28f, p => p.Accent);
-        }
-
-        private void Circle(Transform parent, float diameter, System.Func<TabletPalette, Color> sel)
-        {
-            var go = new GameObject("Circle", typeof(RectTransform));
-            go.transform.SetParent(parent, false);
-            var rt = go.GetComponent<RectTransform>();
-            rt.anchorMin = rt.anchorMax = new Vector2(0.5f, 0.5f);
-            rt.pivot = new Vector2(0.5f, 0.5f);
-            rt.sizeDelta = new Vector2(diameter, diameter);
-            var img = go.AddComponent<Image>();
-            img.sprite = TabletUiKit.Rounded(Mathf.RoundToInt(diameter / 2f));
-            img.type = Image.Type.Simple;
+            var img = root.AddComponent<Image>();
+            img.sprite = _brandMark;
+            img.preserveAspect = true;
+            img.color = Color.white;
             img.raycastTarget = false;
-            _kit.Tint(img, sel);
         }
 
         private static void Stretch(RectTransform rt)

@@ -29,11 +29,12 @@ se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica. Lo
 | `Assets/Scripts/Runtime/Tablet/ScrollFriendlySlider.cs` (nuevo, usabilidad táctil) | Subclase de `Slider` que le cede el drag vertical al `ScrollRect` padre en vez de consumirlo (ver Decisiones "Usabilidad táctil"). Usada por `TabletUiKit.Slider()` en vez del `Slider` estándar. |
 | `Assets/Scripts/Runtime/Tablet/KeyboardAvoider.cs` (nuevo, usabilidad táctil) | Componente hermano de todo `TMP_InputField` (`TabletUiKit.LineEdit()` lo agrega solo): evita que el teclado nativo de Android tape el campo dentro de una columna scrolleable, agrandando el `Content` del `ScrollRect` con un espaciador y scrolleando al enfocar (ver Decisiones "Teclado nativo tapa los campos fuera del PIN"). Inerte si no hay `ScrollRect` ancestro. |
 | `Assets/Scripts/Runtime/Tablet/ParamMeta.cs` | Metadata clínica estática de los parámetros del catálogo (ver abajo). |
-| `Assets/Scripts/Runtime/Tablet/KioskManager.cs` (nuevo, Fase A kiosco) | Plain C# estático (no MonoBehaviour): envuelve el JNI de `DevicePolicyManager` para una tablet provisionada como Android Device Owner. `IsDeviceOwner` (cacheado), `ApplyPolicies()` (lock task packages/features, HOME persistente, keyguard/status bar off, restricciones de usuario, permiso de ubicación otorgado — no-op si no es Device Owner), `EnterLockTask()`/`IsLockTaskActive`, `OpenWifiSettings()` (Fase B, NO gateado por Device Owner), y (correcciones, MAYOR #12) `EnterServiceMode()`/`LeaveServiceMode()`/`IsInServiceMode` (modo servicio real — ver Decisiones "Modo servicio reemplaza ExitLockTask+Quit" y "Salida de servicio del kiosco" en Pantallas). Todo `#if UNITY_ANDROID && !UNITY_EDITOR` con gemelos no-op, mismo patrón JNI que `TabletController.TryGetWifiSsid`/`UpdateInstaller`. Todas las llamadas JNI que resuelven un método Java no-`void` usan `Call<T>`/`Call<AndroidJavaObject>` (correcciones: `setKeyguardDisabled`/`setStatusBarDisabled` devuelven `boolean`, `Intent.setFlags` devuelve `Intent` — sin el genérico, `Call(...)` solo resuelve métodos `void` y el `try/catch` de cada policy tragaba el `NoSuchMethodError` en silencio). Lo llama `TabletController` (`Start`, `OnApplicationPause`, botón "Red Wi-Fi", gesto de salida de servicio). Detalle completo del modo kiosco (provisión, manifest, Java) en `docs/builds-deploy.md` §"Provisión de tablets (Device Owner)". |
+| `Assets/Scripts/Runtime/Tablet/KioskManager.cs` (nuevo, Fase A kiosco) | Plain C# estático (no MonoBehaviour): envuelve el JNI de `DevicePolicyManager` para una tablet provisionada como Android Device Owner. `IsDeviceOwner` (cacheado), `ApplyPolicies()` (lock task packages/features, HOME persistente, keyguard/status bar off, restricciones de usuario, permiso de ubicación otorgado — no-op si no es Device Owner), `EnterLockTask()`/`IsLockTaskActive`, `OpenWifiSettings()` (Fase B, NO gateado por Device Owner), y (correcciones, MAYOR #12) `EnterServiceMode()`/`LeaveServiceMode()`/`IsInServiceMode` (modo servicio real — ver Decisiones "Modo servicio reemplaza ExitLockTask+Quit" y "Salida de servicio del kiosco" en Pantallas). `LeaveServiceMode()` (fix 2026-09-03) reaplica `ApplyPolicies()` y reinicia el proceso vía `RestartProcess()` (`finishAndRemoveTask()` + `Process.killProcess(myPid())` en el hilo de UI) en vez de llamar `EnterLockTask()` directo, para que la app renazca en tarea HOME — ver Decisiones "`LeaveServiceMode()` reinicia el proceso...". `RestartProcess()` (público desde el hallazgo 2026-09-03, ver Decisiones "`Application.Quit()` es no-op bajo lock task") lo llama también `TabletController.OnLangConfirmPressed()` cuando `IsDeviceOwner` — es el único camino real de reiniciar la app en kiosco, `Application.Quit()` no sirve bajo lock task. Todo `#if UNITY_ANDROID && !UNITY_EDITOR` con gemelos no-op, mismo patrón JNI que `TabletController.TryGetWifiSsid`/`UpdateInstaller`. Todas las llamadas JNI que resuelven un método Java no-`void` usan `Call<T>`/`Call<AndroidJavaObject>` (correcciones: `setKeyguardDisabled`/`setStatusBarDisabled` devuelven `boolean`, `Intent.setFlags` devuelve `Intent` — sin el genérico, `Call(...)` solo resuelve métodos `void` y el `try/catch` de cada policy tragaba el `NoSuchMethodError` en silencio). Lo llama `TabletController` (`Start`, `OnApplicationPause`, botón "Red Wi-Fi", gesto de salida de servicio, confirmación de cambio de idioma). Detalle completo del modo kiosco (provisión, manifest, Java) en `docs/builds-deploy.md` §"Provisión de tablets (Device Owner)". |
 | `Assets/Plugins/Android/com/simulador/kiosk/SimuladorDeviceAdminReceiver.java` (nuevo, Fase A) | Subclase de `DeviceAdminReceiver`, componente admin activo del Device Owner (`adb shell dpm set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver`, ver `scripts/provision-tablet.sh`). `onProfileProvisioningComplete` lanza la Activity principal del propio paquete — deja listo el camino de QR/NFC provisioning de la Fase C sin volver a tocar Java. Se compila también en el visor (Unity compila todo `.java` suelto bajo `Plugins/Android/` en ambos targets) pero queda INERTE ahí: su manifest nunca declara el `<receiver>` (lo inyecta `TabletManifestPatcher.cs` solo durante el build de tablet, ver `docs/builds-deploy.md`). |
 | `Assets/Plugins/Android/SimuladorUpdate.androidlib/res/xml/device_admin.xml` (nuevo, Fase A) | `<device-admin>` sin policies legacy (Device Owner las administra directo vía `DevicePolicyManager`, no vía este XML) — metadata que referencia el `<receiver>` inyectado por `TabletManifestPatcher.cs`. Mismo androidlib que `file_paths.xml` (F4 updates), evita crear un módulo nuevo solo para un recurso más; sin `.meta` propio, igual que sus hermanos (Unity trata el contenido de un `.androidlib` como opaco). |
 | `Assets/Scenes/Tablet.unity` | Escena mínima: raíces `TabletApp` (con `TabletController`), `Directional Light` y `Main Camera`. Nada de UI serializada. |
 | `Assets/Resources/TabletFonts/` | `Inter-Regular SDF` e `Inter-SemiBold SDF` (TMP_FontAsset), cargados con `Resources.Load` en `Start()`. |
+| `Assets/Resources/TabletBrand/` (nuevo, 2026-09-03) | `logo_mark.png` (Sprite, 512×512 con alpha): el símbolo de marca IOLSIMULATOR (esfera + anillos), cargado con `Resources.Load<Sprite>` en `Start()` — mismo patrón que `TabletFonts/`, mismo `Resources.Load` nuevo justificado (UI 100 % por código, sin prefabs donde referenciar el sprite de otra forma). Lo consume `TabletController.EyeGlyph()` (glifo compartido por ConnectScreen/PinScreen/ReconnectScreen/Header). Ver Decisiones "Logo real (2026-09-03)". |
 | `Assets/Scripts/Editor/TabletBuild.cs` | Menú **Simulador → Build Tablet (Android)**: buildea solo `Tablet.unity` con el loader de OpenXR apagado y lo restaura al terminar. Detalle en `docs/builds-deploy.md`. |
 | `Assets/Scripts/Runtime/Localization/L10n.cs` / `L10nTable.cs` (D1, D2) | Localización es/en de toda la UI de la app (ver `docs/localizacion.md`, doc viva del sistema). **D2 completa**: todos los literales visibles de `TabletController` cableados con `L10n.T(...)`, `L10n.Initialize(LoadLangPref())` en `Start()` ANTES de `BuildUI()`, y el toggle de idioma del header (ver "MainScreen / Header" y Decisiones "Idioma fijo al arrancar, cambio por reinicio" más abajo). |
 
@@ -74,7 +75,7 @@ TabletController.Start()
 ```
 
 ## Pantallas y secciones (todas en `TabletController`, capa de UI)
-- **ConnectScreen:** glifo de ojo + título, lista de visores descubiertos (botones con un nombre
+- **ConnectScreen:** glifo de marca (sprite `logo_mark`, ver Decisiones "Logo real (2026-09-03)") + título, lista de visores descubiertos (botones con un nombre
   amigable — `Visor Quest` o el `device_label` del beacon sin el nonce, desambiguado con `(2)`,
   `(3)`... si hay más de uno; **la IP nunca aparece en la UI**, ver Decisiones "Lista de visores
   sin IP"), único camino de conexión — **sin conexión manual**, ver Decisiones "Solo
@@ -86,9 +87,13 @@ TabletController.Start()
   con o sin Device Owner), **toggle de idioma** (correcciones, mismo botón/handler que el del
   header de MainScreen — `OnLangTogglePressed`, ver "MainScreen / Header" más abajo — agregado
   ACÁ porque el header es inalcanzable hasta emparejar con un visor; una clínica nueva necesita
-  poder fijar el idioma ANTES de conectar) y **Salir** (`Application.Quit()`). **Salida de
+  poder fijar el idioma ANTES de conectar) y **Salir** (`Application.Quit()`) — **oculto en kiosco**
+  (`KioskManager.IsDeviceOwner`, fix 2026-09-03): bajo lock task no hay adónde "salir"
+  (`Application.Quit()` es un no-op ahí, ver Decisiones "`Application.Quit()` es no-op bajo lock
+  task"), así que mostrar el botón solo confundía al clínico; sigue visible en una tablet de
+  desarrollo. **Salida de
   servicio del kiosco** (invisible en tablets de desarrollo, solo activa si
-  `KioskManager.IsDeviceOwner`): 7 taps en el título "Simulador IOL" dentro de 3 segundos abren
+  `KioskManager.IsDeviceOwner`): 7 taps en el título "IOLSIMULATOR" dentro de 3 segundos abren
   un popup modal (`ServiceExitConfirm`, mismo patrón scrim + card centrada que `UnpairConfirm`)
   con un campo numérico de PIN y botones Cancelar/"Salir del kiosco"; PIN correcto →
   `KioskManager.EnterServiceMode()` (correcciones — ver Decisiones "Modo servicio reemplaza
@@ -96,8 +101,10 @@ TabletController.Start()
   (`clearPackagePersistentPreferredActivities`) y reactiva keyguard/barra de estado, sin cerrar
   la app — queda un **banner discreto** (`kiosk.service_mode_banner`, arriba de TODA la UI, por
   encima incluso del `UpdateScreen`) con un botón "Volver al kiosco"
-  (`kiosk.service_mode_exit` → `KioskManager.LeaveServiceMode()`, que reaplica `ApplyPolicies()` +
-  `EnterLockTask()`) para que el operador vuelva al kiosco cuando termine. Un flag persistido
+  (`kiosk.service_mode_exit` → `KioskManager.LeaveServiceMode()`, que reaplica `ApplyPolicies()` y
+  reinicia el proceso para que la app renazca en tarea HOME -- ver Decisiones
+  "`LeaveServiceMode()` reinicia el proceso..." más abajo, fix 2026-09-03) para que el operador
+  vuelva al kiosco cuando termine. Un flag persistido
   (`persistentDataPath/kiosk_service_mode`, archivo vacío) sobrevive a que Android relance la
   app mientras el operador está en Ajustes/Home: `TabletController.Start()` lo consulta
   (`KioskManager.IsInServiceMode`) y, si está puesto, NO reaplica el kiosco — solo muestra el
@@ -131,8 +138,10 @@ TabletController.Start()
   de tema, justo al lado — texto = código ISO del idioma AL QUE CAMBIARÍA, `"EN"` si
   `L10n.Lang == "es"` o `"ES"` si no; toca abrir un popup de confirmación `LangConfirm`, mismo
   patrón scrim + card que `UnpairConfirm`, con título/cuerpo `lang.change_title`/`lang.change_body`
-  y botones Cancelar/Cambiar — confirmar persiste `lang=` en `ui_prefs.cfg` y llama
-  `Application.Quit()`, ver Decisiones "Idioma fijo al arrancar, cambio por reinicio"; correcciones:
+  y botones Cancelar/Cambiar — confirmar persiste `lang=` en `ui_prefs.cfg` y reinicia la app
+  (`KioskManager.RestartProcess()` si `IsDeviceOwner`, si no `Application.Quit()`, fix
+  2026-09-03 — ver Decisiones "Idioma fijo al arrancar, cambio por reinicio" y "`Application.Quit()`
+  es no-op bajo lock task"); correcciones:
   el MISMO botón/popup (`OnLangTogglePressed`/`LangConfirm`) se agregó también a la ConnectScreen,
   ver Pantallas arriba, porque el header es inalcanzable hasta emparejar), botón
   "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), botón **"Ocultar HUD"/"Mostrar HUD"**
@@ -188,6 +197,48 @@ TabletController.Start()
   mostrado se divide entre 2 (ver Decisiones): representa la tasa REAL por pane, no la suma L+R.
 
 ## Decisiones y porqués
+- **Marca visible `IOLSIMULATOR` (2026-09-03)** → renombre comercial para el material del
+  congreso: `app.title` (`L10nTable.cs`, es/en) y `TabletBuild.TabletProductName` pasan de
+  "Simulador IOL"/"IOL Simulator"/"Simulador Tablet" a `IOLSIMULATOR`/`IOLSIMULATOR Tablet`. Los
+  identificadores técnicos **no cambian**: `applicationIdentifier` (`com.simulador.vr`/
+  `com.simulador.tablet`), namespaces `Simulador.*`, `companyName` y el keystore siguen con
+  `simulador` — cambiarlos sería otra app para Android y rompería el Device Owner y el OTA. El
+  logo/glifo (icons, `ConnectScreen`) quedó en una tarea aparte hasta tener arte propio —
+  **resuelta, ver "Logo real (2026-09-03)" a continuación.**
+- **Logo real (2026-09-03)** → no existía un archivo de arte del logo, solo una foto de un
+  folleto (`WhatsApp Image 2026-09-03 at 12.03.03.jpeg`, el logo ocupaba ~60 px dentro de una
+  imagen de 233×448) — se reconstruyó en vectorial a mano a partir de esa referencia en vez de
+  vectorizar/escalar el bitmap borroso. El motivo original (unas gafas VR estilizadas con dos
+  anillos diagonales alrededor de una esfera brillante, con vástagos/nariz de armazón) se
+  **simplificó** a dos anillos elípticos finos que cruzan en diagonal delante/detrás de una
+  esfera con gradiente radial — se pidió explícitamente "sacarlo de la foto y mejorarlo", y el
+  detalle de armazón completo no se leía a 48 px de todos modos. Fuente reproducible: SVGs a
+  mano en `Assets/Textures/Icons/src/iolsimulator-mark.svg` (símbolo) e
+  `iolsimulator-wordmark.svg` (wordmark "IOL" Inter SemiBold + "SIMULATOR" Inter Regular sin
+  espacio, vía `<tspan font-weight=...>`, requiere la familia "Inter" registrada para
+  renderizar con `rsvg-convert` — `Assets/Fonts/Inter/*.ttf`), sin `.meta` propio (el Editor los
+  generó al importarlos, como cualquier asset nuevo). Assets rasterizados: `icon_visor.png`/
+  `icon_tablet.png` regenerados a partir del mismo símbolo (ver `docs/builds-deploy.md`) y
+  `Assets/Resources/TabletBrand/logo_mark.png` (512×512 con alpha) para el glifo de la app,
+  todos supersampleados desde el SVG a 2048 px y reducidos con Lanczos para bordes limpios.
+  **Wordmark descartado para la UI** (`logo_wordmark.png` se generó y se ve bien, pero NO se
+  cableó): es una imagen de color plano `#0B2A4A` fijo y el header/`ConnectScreen` corren sobre
+  el tema Dark por defecto (`Bg = #11151C`, `TabletPalette.cs`) donde ese navy es casi invisible
+  — el título ya es un `TMP_Text` (`LabelKind.Title`) que sí se retematiza con
+  `TextPrimary` en cada toggle de tema (`docs/tablet.md` "Theming por repaint registrado"),
+  cambiarlo por una imagen de color fijo hubiera roto esa adaptación. Tampoco se probó
+  `<b>IOL</b>SIMULATOR` en el título: `TabletUiKit.Label()` fija `t.richText = false` para TODOS
+  los labels (`TabletUiKit.cs`), casi seguro deliberado porque varios labels muestran texto de
+  red sin sanitizar (`device_label` del beacon UDP, nombres de lente del catálogo) — habilitarlo
+  aunque sea solo para el título hubiera sido una superficie de inyección de tags nueva para un
+  beneficio cosmético menor; el título sigue siendo texto plano `app.title` = "IOLSIMULATOR".
+  `EyeGlyph()` (glifo compartido por ConnectScreen/PinScreen/ReconnectScreen/Header, antes 3
+  círculos concentricos dibujados por código con `Circle()`) ahora es una sola `Image` con el
+  sprite `Resources.Load<Sprite>("TabletBrand/logo_mark")`, `preserveAspect = true` y color fijo
+  blanco (**sin** `_kit.Tint`, a propósito: el sprite ya trae su propio gradiente, entintarlo por
+  tema lo hubiera desaturado) — `Circle()` se borró por quedar sin uso. Verificado en Play Mode
+  (`Tablet.unity`): `ConnectScreen` con el glifo nuevo, tema Dark por defecto, sin errores de
+  consola atribuibles al cambio.
 - **Kiosco vía Android Device Owner (Fase A, vendemos bundles Quest + tablet a clínicas sin volver
   a tocar el dispositivo)** → la tablet sale del taller provisionada por cable
   (`adb shell dpm set-device-owner`, `scripts/provision-tablet.sh`, requiere una tablet de fábrica
@@ -229,12 +280,55 @@ TabletController.Start()
   abría NADA, la tablet volvía al kiosco sola. El fix es un **modo servicio** real: `EnterServiceMode()`
   sale de lock task, libera la HOME persistente (`clearPackagePersistentPreferredActivities`, así
   Home vuelve al launcher del sistema) y reactiva keyguard/barra de estado — la app se queda
-  ABIERTA (nunca hace `Quit()`) mostrando un banner con un botón para volver
-  (`LeaveServiceMode()`, que reaplica `ApplyPolicies()` + `EnterLockTask()`). Un flag persistido
-  en disco (`kiosk_service_mode`, no un booleano en memoria) sobrevive a que Android relance la
-  app mientras el operador está en Ajustes — sin él, `Start()`/`OnApplicationPause(false)`
-  volverían a fijar el kiosco apenas la app pierde y recupera foco, cerrándole la ventana al
+  ABIERTA (nunca hace `Quit()`) mostrando un banner con un botón para volver (`LeaveServiceMode()`).
+  Un flag persistido en disco (`kiosk_service_mode`, no un booleano en memoria) sobrevive a que
+  Android relance la app mientras el operador está en Ajustes — sin él, `Start()`/
+  `OnApplicationPause(false)` volverían a fijar el kiosco apenas la app pierde y recupera foco,
+  cerrándole la ventana al
   operador a mitad de la sesión de soporte.
+- **`LeaveServiceMode()` reinicia el proceso en vez de llamar `EnterLockTask()` directo (fix
+  2026-09-03, misma carrera que docs/builds-deploy.md "Provisión de tablets").** Mientras estaba
+  en modo servicio, el operador pudo haber relanzado la app desde el launcher del sistema (la
+  HOME persistente estaba liberada por `EnterServiceMode()`) — eso crea una tarea `type=standard`
+  aunque la Activity sea `singleTask`. Si `LeaveServiceMode()` simplemente hiciera
+  `ApplyPolicies()` + `EnterLockTask()` sobre ESA tarea y después alguien pulsara Home, se
+  dispara la misma carrera tarea-standard-vs-home que crashea Unity
+  (`UnityFoldingFeaturesWrapper.init()`). Y a diferencia del script de provisión, acá no hay
+  forma de "solo lanzar bien la primera vez": la tarea standard, si existe, ya existe. Fix:
+  `LeaveServiceMode()` llama `ApplyPolicies()` (deja el HOME persistente puesto de nuevo) y en vez
+  de `EnterLockTask()` hace `activity.finishAndRemoveTask()` + `Process.killProcess(myPid())`
+  (los dos en el hilo de UI de Android, uno después del otro — `KioskManager.RestartProcess()`,
+  público desde el hallazgo de abajo, marcado `// SIM: atajo deliberado`). Sin tarea que retomar,
+  Android resuelve HOME de nuevo contra el persistent-preferred recién repuesto y relanza la
+  Activity vía un intent HOME real — mismo mecanismo, y misma garantía de `type=home`, que usa
+  para relanzar la app sola tras un reboot. El propio `Start()` de la instancia nueva vuelve a
+  llamar `ApplyPolicies()` + `EnterLockTask()`, esta vez sobre la tarea "home" correcta.
+  **Gotcha (corrección 2026-09-03): `adb shell input tap` SÍ llega a la uGUI** — verificado en la
+  PHILCO (serial `TP10A46414379100691`) con capturas reales: tocó el botón "EN" de la
+  `ConnectScreen` y su popup, y abrió el panel de Wi-Fi (coordenadas en el espacio de la captura
+  landscape 1280×800).
+- **`Application.Quit()` es no-op bajo lock task (hallazgo 2026-09-03, PHILCO
+  `TP10A46414379100691`) — corrige la entrada anterior de este documento, que afirmaba lo
+  contrario.** Logcat literal tras tocar "Change" en el popup de idioma: `Unity: Quit requested`
+  seguido de `ActivityTaskManager: Not finishing task in lock task mode`. El PID NO cambió, el
+  popup se cerró, la pref `lang=` se guardó, pero la UI siguió en el idioma viejo porque nunca hubo
+  reinicio real — Android bloquea el `finish()` de la Activity raíz de la tarea bloqueada por lock
+  task, y `Application.Quit()` internamente termina llamando a eso. Consecuencia: bajo kiosco, el
+  toggle de idioma y (cuando estaba visible) el botón "Salir" de la `ConnectScreen` NO hacían nada
+  hasta un reboot manual. Lo que SÍ relanza la app es que el **proceso muera**
+  (`Process.killProcess`, no `finish()`/`Quit()`): la HOME persistente lo detecta y relanza sola
+  (se había observado esto mismo con crashes de la app, y es el mecanismo que ya usaba
+  `LeaveServiceMode()`/`RestartProcess()` de arriba). **Fix, verificado end-to-end en la PHILCO:**
+  `KioskManager.RestartProcess()` (antes `RestartProcessToRebornAsHome`, privado) se hizo público;
+  `TabletController.OnLangConfirmPressed()` lo llama en vez de `Application.Quit()` cuando
+  `KioskManager.IsDeviceOwner` (en tablet de desarrollo sigue usando `Quit()`, que ahí SÍ cierra la
+  app). El PID cambia (proceso nuevo), `mLockTaskModeState` vuelve a `LOCKED` y la tarea nace
+  `type=home`, igual que documenta la entrada de `LeaveServiceMode()` arriba. **Verificado también
+  el gesto completo de servicio** (7 taps en el título + PIN `4127` → `EnterServiceMode()` saca de
+  lock task de verdad, `mLockTaskModeState=NONE`, banner visible con "Volver al kiosco" → tocarlo
+  llama `LeaveServiceMode()`/`RestartProcess()`, PID cambia, vuelve a `LOCKED`/`type=home`) y 3×
+  `KEYCODE_HOME` sin `FATAL` y con el mismo PID — cierra el pendiente que dejaba abierto el hallazgo
+  anterior.
 - **PIN de servicio hardcodeado (`TabletController.ServicePin = "4127"`, marcado `// SIM: atajo
   deliberado`)** → la salida de servicio (7 taps + PIN) necesita ALGÚN secreto compartido entre el
   operador de soporte y la app para no ser un gesto público; construir un canal de distribución de
@@ -324,13 +418,17 @@ TabletController.Start()
   el estado de la sesión de red en curso — complejidad real sin caso de uso clínico (el clínico no
   cambia el idioma de la tablet a mitad de una consulta, mismo criterio que "sin cambio en caliente"
   de `docs/localizacion.md`). El toggle del header (ver "MainScreen / Header" arriba) persiste el
-  código nuevo en `ui_prefs.cfg` y llama `Application.Quit()`: en una tablet **kiosco** (Device
-  Owner, Fase A) la HOME persistente relanza la app al instante, ya en el idioma nuevo — el clínico
-  ni lo nota; en una tablet de **desarrollo** (sin Device Owner) la app simplemente se cierra y hay
-  que reabrirla a mano; en el **Editor**, `Application.Quit()` es un no-op documentado de Unity (no
-  sale de Play Mode) — para validar un cambio de idioma en el Editor hay que forzar el override
-  escribiendo `ui_prefs.cfg` a mano (`lang=es|en` en `Application.persistentDataPath`) y volver a
-  entrar a Play Mode, no alcanza con tocar el toggle desde adentro.
+  código nuevo en `ui_prefs.cfg` y reinicia la app (fix 2026-09-03, ver Decisiones
+  "`Application.Quit()` es no-op bajo lock task" más abajo): en una tablet **kiosco** (Device
+  Owner, Fase A) `Application.Quit()` NO sirve bajo lock task (Android bloquea el `finish()` de la
+  Activity raíz, `"Not finishing task in lock task mode"`), así que `OnLangConfirmPressed` llama
+  `KioskManager.RestartProcess()` (mata el proceso; la HOME persistente lo relanza sola, ya en el
+  idioma nuevo — el clínico ni lo nota); en una tablet de **desarrollo** (sin Device Owner) sigue
+  usando `Application.Quit()`, que ahí SÍ cierra la app y hay que reabrirla a mano; en el
+  **Editor**, `Application.Quit()` es un no-op documentado de Unity (no sale de Play Mode) — para
+  validar un cambio de idioma en el Editor hay que forzar el override escribiendo `ui_prefs.cfg` a
+  mano (`lang=es|en` en `Application.persistentDataPath`) y volver a entrar a Play Mode, no alcanza
+  con tocar el toggle desde adentro.
 - **`TabletButton` en vez de `Button` de uGUI** → los StyleBox de Godot cambian fill, borde y texto
   por estado y por modo toggle; el `ColorBlock` de uGUI no puede, así que se pinta a mano en `Repaint()`.
 - **Sprites redondeados generados en runtime** → `TabletUiKit.Rounded(radius)` fabrica la textura
@@ -1169,7 +1267,11 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
     reabre la app). El texto fijo "El visor Quest y la tablet deben estar conectados a la misma
     red Wi-Fi." debe seguir apareciendo igual. Tocar "Salir" → la app debe cerrarse
     (`Application.Quit()`; en el Editor esto NO sale de Play Mode, es el comportamiento estándar
-    de Unity — probar el cierre real en un build de device).
+    de Unity — probar el cierre real en un build de device de **desarrollo**, sin Device Owner).
+    **En kiosco (Device Owner) el botón "Salir" NO aparece** (`KioskManager.IsDeviceOwner`, fix
+    2026-09-03) — bajo lock task no hay adónde salir y `Application.Quit()` ahí es un no-op (ver
+    Decisiones "`Application.Quit()` es no-op bajo lock task"); no hay nada que probar ahí salvo
+    confirmar que el botón está ausente.
 2. Tocar el visor detectado: debe aparecer el `PinScreen` pidiendo el PIN
    de 6 dígitos (lo loguea la consola del visor: `Net: PIN de emparejamiento de esta sesion: ...`;
    en el visor real lo muestra el HUD). Ingresarlo mal a propósito una vez → "PIN incorrecto. Volvé
