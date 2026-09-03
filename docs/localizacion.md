@@ -158,6 +158,7 @@ Fuente única para toda clave nueva — no traducir literal, usar estos término
 | Actualizar (refresco de catálogo) | Refresh |
 | Actualizar (update de la app) | Update |
 | Propia / Genérica | Custom / Generic |
+| Marca `IOLSIMULATOR` | `IOLSIMULATOR` (no se traduce — idéntica en `app.title` es/en, ver `docs/tablet.md` Decisiones) |
 
 **Voz**: instrucciones al clínico en imperativo neutro ("Enter the PIN"), nunca "vos/tú" (el
 español del proyecto SÍ usa voseo rioplatense — "Ingresá el PIN" — porque así nació el

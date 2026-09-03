@@ -69,9 +69,11 @@ namespace Simulador.EditorTools
         const string XrConfigKey = "com.unity.xr.management.loader_settings";
 
         // P6.7: identifier/nombre propios de la tablet. El visor (build normal, fuera
-        // de este script) sigue con com.simulador.vr / "Simulador" (Project Settings).
+        // de este script) sigue con com.simulador.vr / "IOLSIMULATOR" (Project Settings).
+        // Marca visible IOLSIMULATOR (2026-09-03, ver docs/tablet.md Decisiones); el
+        // applicationIdentifier NO cambia (es contrato de Device Owner/OTA).
         const string TabletApplicationIdentifier = "com.simulador.tablet";
-        const string TabletProductName = "Simulador Tablet";
+        const string TabletProductName = "IOLSIMULATOR Tablet";
 
         // Icono propio de la tablet. El default del proyecto (PlayerSettings, target
         // Unknown) es el del visor -- Android hereda ese default cuando sus platform

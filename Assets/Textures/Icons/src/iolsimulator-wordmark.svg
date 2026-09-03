@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 120">
+  <!--
+    IOLSIMULATOR - wordmark.
+    "IOL" en Inter SemiBold + "SIMULATOR" en Inter Regular, sin espacio entre
+    ambas (igual que el folleto de referencia), mayusculas, tracking leve,
+    azul marino #0B2A4A. Requiere la familia "Inter" instalada para
+    renderizar este SVG con rsvg-convert (Assets/Fonts/Inter/*.ttf): el PNG
+    final del proyecto se generó con este mismo SVG vía rsvg-convert tras
+    registrar esas fuentes.
+  -->
+  <text x="0" y="88" font-family="Inter" font-size="100" letter-spacing="1.5" fill="#0B2A4A"><tspan font-weight="600">IOL</tspan><tspan font-weight="400">SIMULATOR</tspan></text>
+</svg>

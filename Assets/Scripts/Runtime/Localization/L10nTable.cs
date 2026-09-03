@@ -38,7 +38,7 @@ namespace Simulador.Localization
             ["common.retry"] = "Reintentar",
 
             // ---- app ----
-            ["app.title"] = "Simulador IOL",
+            ["app.title"] = "IOLSIMULATOR",
 
             // ---- connect (ConnectScreen + TabletSession) ----
             ["connect.session_ended"] = "Sesión finalizada.",
@@ -285,7 +285,7 @@ namespace Simulador.Localization
             ["common.exit"] = "Exit",
             ["common.retry"] = "Retry",
 
-            ["app.title"] = "IOL Simulator",
+            ["app.title"] = "IOLSIMULATOR",
 
             ["connect.session_ended"] = "Session ended.",
             ["connect.unpaired"] = "Unpaired. Enter the PIN if you want to connect again.",

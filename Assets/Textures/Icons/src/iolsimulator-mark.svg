@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
+  <!--
+    IOLSIMULATOR - simbolo de marca.
+    Reconstruido en vectorial a partir de la foto de folleto (referencia:
+    WhatsApp Image 2026-09-03 at 12.03.03.jpeg), simplificando el motivo
+    original (unas gafas VR estilizadas con dos anillos diagonales
+    alrededor de una esfera brillante) a dos anillos elipticos finos que
+    cruzan en diagonal delante/detras de una esfera con gradiente radial,
+    para que siga leyendose limpio a 48 px (icono de app).
+    Orden de dibujo (da el efecto de profundidad sin geometria 3D real):
+      1) anillo de atras (elipse completa, el centro queda tapado por la esfera)
+      2) esfera con gradiente + brillo especular
+      3) anillo de adelante (elipse completa, dibujada ENCIMA de la esfera)
+  -->
+  <defs>
+    <radialGradient id="sphere" cx="34%" cy="30%" r="78%">
+      <stop offset="0%" stop-color="#CFF6FF"/>
+      <stop offset="30%" stop-color="#6FD3F8"/>
+      <stop offset="65%" stop-color="#2F8FDE"/>
+      <stop offset="100%" stop-color="#1B5FBE"/>
+    </radialGradient>
+    <linearGradient id="ring" x1="10%" y1="0%" x2="90%" y2="100%">
+      <stop offset="0%" stop-color="#7C93A8"/>
+      <stop offset="100%" stop-color="#33495E"/>
+    </linearGradient>
+    <radialGradient id="spec" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- 1) anillo de atras -->
+  <ellipse cx="100" cy="103" rx="78" ry="26" fill="none" stroke="url(#ring)"
+           stroke-width="9" stroke-linecap="round"
+           transform="rotate(-24 100 103)"/>
+
+  <!-- 2) esfera -->
+  <circle cx="100" cy="99" r="49" fill="url(#sphere)"/>
+  <ellipse cx="82" cy="78" rx="17" ry="10" fill="url(#spec)" transform="rotate(-28 82 78)"/>
+
+  <!-- 3) anillo de adelante -->
+  <ellipse cx="100" cy="95" rx="78" ry="26" fill="none" stroke="url(#ring)"
+           stroke-width="9" stroke-linecap="round"
+           transform="rotate(24 100 95)"/>
+</svg>
