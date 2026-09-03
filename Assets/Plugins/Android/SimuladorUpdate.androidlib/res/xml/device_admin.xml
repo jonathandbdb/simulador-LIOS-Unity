@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Metadata del Device Admin del kiosco (SimuladorDeviceAdminReceiver, ver ese
+     .java). Sin policies legacy: como Device Owner las policies de kiosco
+     (lock task, restricciones de usuario, ajustes globales, etc.) se
+     administran via DevicePolicyManager directo (KioskManager.cs), NO via
+     <uses-policies>: ese bloque es del modelo viejo de "device admin" simple
+     (pre-Device Owner) y aca queda vacio a proposito. Vive en este androidlib
+     (compartido con file_paths.xml) para no crear un modulo nuevo solo para un
+     recurso mas; ver docs/tablet.md. -->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+    </uses-policies>
+</device-admin>

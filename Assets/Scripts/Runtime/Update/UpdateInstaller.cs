@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Simulador.Tablet;
 using UnityEngine;
 
 namespace Simulador.Update
@@ -13,6 +14,11 @@ namespace Simulador.Update
     /// <see cref="Simulador.Tablet.TabletController"/> (TryGetWifiSsid), IL2CPP-safe.
     /// Ver docs/updates.md (flujo del intent, permiso de fuentes desconocidas, marcador
     /// <c>update_pending.json</c>).
+    /// Fase C (kiosco): si <see cref="KioskManager.IsDeviceOwner"/>, en vez del intent
+    /// ACTION_VIEW visible se instala TOTALMENTE en silencio via
+    /// <c>com.simulador.kiosk.SilentInstaller</c> (PackageInstaller) -- nadie va a tocar
+    /// una tablet vendida a una clinica de otro pais para aceptar un dialogo ni conceder
+    /// el permiso de "fuentes desconocidas". Ver <see cref="InstallLaunchResult.StartedSilent"/>.
     /// </summary>
     public static class UpdateInstaller
     {
@@ -26,6 +32,10 @@ namespace Simulador.Update
             PermissionRequested,
             /// <summary>Fallo (excepcion atrapada); ya se reporto via el callback de fallo.</summary>
             Failed,
+            /// <summary>Fase C: instalado en background via PackageInstaller, sin dialogo
+            /// ni intervencion humana (tablet Device Owner, ver
+            /// <see cref="KioskManager.IsDeviceOwner"/>).</summary>
+            StartedSilent,
         }
 
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -47,6 +57,34 @@ namespace Simulador.Update
             {
                 using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
                 using var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+
+                // Fase C: tablet Device Owner -> instalacion TOTALMENTE
+                // silenciosa via PackageInstaller, sin pasar por el intent
+                // ACTION_VIEW de abajo (que abre un dialogo visible) ni por el
+                // permiso de "fuentes desconocidas". Si esto falla, NO caemos
+                // al ACTION_VIEW como fallback a proposito: mostraria un
+                // dialogo del sistema en una tablet kiosco sin nadie delante
+                // para tocarlo -- mejor fallar, reportarlo por telemetria
+                // (update_install_launched result=Failed) y dejar que el
+                // proximo arranque de la app reintente el chequeo de manifest.
+                if (KioskManager.IsDeviceOwner)
+                {
+                    try
+                    {
+                        WritePendingMarker(targetVersion);
+                        using var installer = new AndroidJavaClass("com.simulador.kiosk.SilentInstaller");
+                        installer.CallStatic("install", activity, apkPath);
+                        Debug.Log("Update: instalacion silenciosa lanzada (Device Owner) para " + apkPath);
+                        return InstallLaunchResult.StartedSilent;
+                    }
+                    catch (Exception silentEx)
+                    {
+                        Debug.LogWarning("Update: fallo la instalacion silenciosa (" + silentEx.GetType().Name + "): " + silentEx.Message);
+                        onFailed?.Invoke("silent_install_failed: " + silentEx.GetType().Name);
+                        return InstallLaunchResult.Failed;
+                    }
+                }
+
                 using var packageManager = activity.Call<AndroidJavaObject>("getPackageManager");
 
                 bool canInstall = packageManager.Call<bool>("canRequestPackageInstalls");

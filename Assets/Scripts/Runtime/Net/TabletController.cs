@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
+using Simulador.Localization;
 using Simulador.Update;
 using TMPro;
 using UnityEngine;
@@ -79,6 +80,15 @@ namespace Simulador.Tablet
         // accidental en el boton discreto del header ya no dispara _session.Unpair()
         // directo (ver OnUnpairPressed/BuildUnpairConfirm).
         private GameObject _unpairConfirm;
+
+        // --- Confirmacion de cambio de idioma (D2, header) ---
+        // Cambiar el idioma reinicia la app (la UI se construye UNA vez en Start(),
+        // no hay repintado en caliente -- ver docs/localizacion.md/docs/tablet.md
+        // "Idioma fijo al arrancar"). El codigo destino se calcula al abrir el
+        // popup (el idioma activo no cambia durante la sesion) y se persiste
+        // recien al confirmar.
+        private GameObject _langConfirm;
+        private string _pendingLangCode;
 
         // --- Stream ---
         private RawImage _streamLeft, _streamRight;
@@ -168,6 +178,25 @@ namespace Simulador.Tablet
         private TabletButton _updatePrimaryBtn, _updateSecondaryBtn;
         private UpdateLogic.UpdateManifest _updateManifest;
         private bool _updateForced;
+        // Fase C (kiosco): true cuando ReadyToInstall llego con una sesion activa con el
+        // visor (clinico en consulta) -- se instala recien cuando la tablet vuelva a
+        // quedar ociosa, ver OnUpdateReadyToInstall/ShowConnectScreen.
+        private bool _installWhenIdle;
+        // CRITICO #2 (correcciones, ver docs/updates.md): watchdog de la instalacion
+        // silenciosa -- si StartedSilent no llega a un resultado (STATUS_SUCCESS mata
+        // el proceso; cualquier otro estado llama OnSilentInstallResult via
+        // InstallResultReceiver.java) en este plazo, se reporta como fallo y se
+        // destraba el modal "Instalando...". Cancelado si OnSilentInstallResult
+        // llega antes (ver HandleSilentInstallFailure).
+        private const float SilentInstallWatchdogSeconds = 120f;
+        private Coroutine _silentInstallWatchdogCo;
+        // MENOR (correcciones, revision final): true apenas HandleSilentInstallFailure
+        // resuelve el resultado de ESTA instalacion silenciosa (watchdog o
+        // OnSilentInstallResult, lo que llegue primero) -- hace no-op al segundo
+        // llamado si el watchdog dispara justo antes de que llegue el
+        // INSTALL_FAILED_* real (o viceversa), evitando un update_install_failed
+        // duplicado. Se resetea en LaunchSilentInstall() al arrancar cada intento.
+        private bool _silentInstallResolved;
 
         // --- Stream a pantalla completa ---
         // Overlay que reusa las MISMAS Texture2D del stream normal (_texLeft/
@@ -207,6 +236,10 @@ namespace Simulador.Tablet
             var semibold = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-SemiBold SDF");
             _isDark = LoadThemePref();
             _kit = new TabletUiKit(TabletPalette.For(_isDark), regular, semibold);
+            // D2: fija el idioma ANTES de construir la UI (BuildUI ya toca
+            // ParamMeta/L10n.T) -- override desde ui_prefs.cfg ("lang="); null/
+            // invalido cae al idioma del sistema (ver docs/localizacion.md).
+            L10n.Initialize(LoadLangPref());
 
             _texLeft = new Texture2D(2, 2, TextureFormat.RGB24, false);
             _texRight = new Texture2D(2, 2, TextureFormat.RGB24, false);
@@ -214,6 +247,23 @@ namespace Simulador.Tablet
             BuildUI();
             ApplyTheme(_isDark);
             SubscribeUpdateEvents();
+
+            // Kiosco (Fase A, ver docs/tablet.md): no-op en una tablet de
+            // desarrollo sin Device Owner (KioskManager.IsDeviceOwner false).
+            // MAYOR #12 (correcciones): si la tablet quedo en "modo servicio"
+            // (flag persistido por KioskManager.EnterServiceMode -- ver
+            // OnServiceExitConfirmPressed), NO reaplicar el kiosco: se queda
+            // abierta con el banner de servicio hasta que el operador la saque
+            // de ese modo (OnLeaveServiceModePressed).
+            if (KioskManager.IsDeviceOwner && KioskManager.IsInServiceMode)
+            {
+                ShowServiceModeBanner();
+            }
+            else
+            {
+                KioskManager.ApplyPolicies();
+                KioskManager.EnterLockTask();
+            }
 
             _session = new TabletSession();
             _session.Connected += OnSessionConnected;
@@ -229,7 +279,7 @@ namespace Simulador.Tablet
             _session.LensError += OnLensError;
             _session.Begin();
 
-            ShowConnectScreen("Buscando visores en la red...");
+            ShowConnectScreen(L10n.T("connect.searching"));
         }
 
         private void Update()
@@ -241,6 +291,20 @@ namespace Simulador.Tablet
 
             _footerTimer += Time.deltaTime;
             if (_footerTimer >= 1f) { _footerTimer = 0f; UpdateFooter(); }
+        }
+
+        // Kiosco (Fase A): Android puede soltar el lock task tras ciertas
+        // transiciones (volver de Ajustes, recibir una llamada, etc.) -- re-
+        // entrar al volver a foco es el patron estandar. Tambien refresca el
+        // label de red (Fase B, "Red Wi-Fi"): al volver de Ajustes de WiFi el
+        // SSID pudo haber cambiado.
+        private void OnApplicationPause(bool pause)
+        {
+            if (pause) return;
+            // MAYOR #12 (correcciones): en modo servicio no hay que reentrar a
+            // lock task al volver a foco -- ver Start()/EnterServiceMode.
+            if (!KioskManager.IsInServiceMode) KioskManager.EnterLockTask();
+            RefreshNetworkInfo();
         }
 
         private void OnDestroy()
@@ -259,11 +323,11 @@ namespace Simulador.Tablet
             // _hudVisible, no hay estado de HUD que sincronizar desde el visor.
             _hudVisible = true;
             UpdateHudToggleLabel();
-            if (_session.IsReconnecting) SetReconnectStatus("Conectado. Autenticando...");
-            else SetConnectStatus("Conectado. Autenticando...");
+            if (_session.IsReconnecting) SetReconnectStatus(L10n.T("connect.authenticating"));
+            else SetConnectStatus(L10n.T("connect.authenticating"));
         }
 
-        private void OnSessionAuthOk() => SetConnectStatus("Autenticado. Esperando catálogo del visor...");
+        private void OnSessionAuthOk() => SetConnectStatus(L10n.T("connect.auth_ok_waiting_catalog"));
 
         private void OnSessionPinScreenRequested(string message) => ShowPinScreen(_session.CurrentHost, message);
 
@@ -364,30 +428,65 @@ namespace Simulador.Tablet
             _isDark = dark;
             _kit.Apply(TabletPalette.For(dark));
             if (_themeToggle?.Label != null)
-                _themeToggle.Label.text = dark ? "Modo claro" : "Modo oscuro";
+                _themeToggle.Label.text = dark ? L10n.T("main.theme_toggle_light") : L10n.T("main.theme_toggle_dark");
             SaveThemePref();
+        }
+
+        // D2: mini lector/escritor INI compartido por "dark_mode" y "lang" -- antes
+        // SaveThemePref sobreescribia el archivo ENTERO con solo "dark_mode=", lo
+        // que hubiera borrado "lang=" en cada toggle de tema (y viceversa). Formato
+        // sin cambios ("[ui]" + una linea "clave=valor" por preferencia, ver
+        // docs/tablet.md "Prefs"): un ui_prefs.cfg viejo con solo "dark_mode=" sigue
+        // leyendose igual.
+        private Dictionary<string, string> ReadPrefsFile()
+        {
+            var dict = new Dictionary<string, string>();
+            try
+            {
+                if (System.IO.File.Exists(PrefsPath))
+                    foreach (var line in System.IO.File.ReadAllLines(PrefsPath))
+                    {
+                        int eq = line.IndexOf('=');
+                        if (eq <= 0) continue;
+                        dict[line.Substring(0, eq).Trim()] = line.Substring(eq + 1).Trim();
+                    }
+            }
+            catch { }
+            return dict;
+        }
+
+        private void WritePrefsFile(string key, string value)
+        {
+            var dict = ReadPrefsFile();
+            dict[key] = value;
+            try
+            {
+                var sb = new System.Text.StringBuilder("[ui]\n");
+                foreach (var kv in dict) sb.Append(kv.Key).Append('=').Append(kv.Value).Append('\n');
+                System.IO.File.WriteAllText(PrefsPath, sb.ToString());
+            }
+            catch { }
         }
 
         private bool LoadThemePref()
         {
-            try
-            {
-                if (System.IO.File.Exists(PrefsPath))
-                {
-                    foreach (var line in System.IO.File.ReadAllLines(PrefsPath))
-                        if (line.Trim().StartsWith("dark_mode"))
-                            return line.Contains("true") || line.Contains("1");
-                }
-            }
-            catch { }
+            if (ReadPrefsFile().TryGetValue("dark_mode", out var v)) return v.Contains("true") || v.Contains("1");
             return true;
         }
 
-        private void SaveThemePref()
+        private void SaveThemePref() => WritePrefsFile("dark_mode", _isDark ? "true" : "false");
+
+        // D2: override de idioma persistido junto a dark_mode (ver
+        // docs/localizacion.md / docs/tablet.md "Prefs"). null si no hay override
+        // guardado (o el archivo no existe todavia) -- L10n.Initialize cae al
+        // idioma del sistema en ese caso.
+        private string LoadLangPref()
         {
-            try { System.IO.File.WriteAllText(PrefsPath, "[ui]\ndark_mode=" + (_isDark ? "true" : "false") + "\n"); }
-            catch { }
+            string v = ReadPrefsFile().TryGetValue("lang", out var lang) ? lang : null;
+            return string.IsNullOrWhiteSpace(v) ? null : v;
         }
+
+        private void SaveLangPref(string code) => WritePrefsFile("lang", code);
 
         // ============================================================
         // Pantallas
@@ -396,6 +495,12 @@ namespace Simulador.Tablet
         {
             CloseFullscreenStream(); // sesion interrumpida: no dejar el overlay de stream congelado
             CloseUnpairConfirm();
+            // MENOR (correcciones): tambien cerrar estos dos popups modales --
+            // antes solo se cerraba UnpairConfirm, dejando LangConfirm/
+            // ServiceExitConfirm potencialmente abiertos sobre una pantalla que
+            // ya no es la que los abrio.
+            CloseLangConfirm();
+            CloseServiceExitConfirm();
             _connectScreen.SetActive(true);
             _pinScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
@@ -404,10 +509,23 @@ namespace Simulador.Tablet
             SetConnectStatus(message, isError);
             RefreshNetworkInfo();
             RequestLocationPermissionOnce();
+
+            // Fase C (kiosco): este es el punto por el que pasa TODA vuelta a ocioso
+            // (fin de sesion, PIN cancelado, reconexion agotada, etc.) -- si un update
+            // quedo diferido por sesion activa (OnUpdateReadyToInstall), instalarlo
+            // recien ahora que el clinico ya no esta en consulta.
+            if (_installWhenIdle)
+            {
+                _installWhenIdle = false;
+                LaunchSilentInstall();
+            }
         }
 
         private void ShowMainScreen()
         {
+            // MENOR (correcciones): ver comentario identico en ShowConnectScreen.
+            CloseLangConfirm();
+            CloseServiceExitConfirm();
             _connectScreen.SetActive(false);
             _pinScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
@@ -439,7 +557,7 @@ namespace Simulador.Tablet
             _standardScreen.SetActive(false);
             _reconnectScreen.SetActive(false);
             _pinScreen.SetActive(true);
-            _pinHostLabel.text = "Visor: " + host;
+            _pinHostLabel.text = L10n.T("pin.host_prefix", host);
             _pinEdit.text = "";
             SetPinStatus(message);
         }
@@ -457,7 +575,7 @@ namespace Simulador.Tablet
             _mainScreen.SetActive(false);
             _standardScreen.SetActive(false);
             _reconnectScreen.SetActive(true);
-            _reconnectHostLabel.text = "Visor: " + host;
+            _reconnectHostLabel.text = L10n.T("pin.host_prefix", host);
             SetReconnectStatus(message);
         }
 
@@ -519,10 +637,10 @@ namespace Simulador.Tablet
 
             if (current.Count == 0)
             {
-                if (!_session.IsConnecting) SetConnectStatus("Buscando visores en la red...");
+                if (!_session.IsConnecting) SetConnectStatus(L10n.T("connect.searching"));
                 return;
             }
-            if (!_session.IsConnecting) SetConnectStatus("Tocá un visor para conectarte.");
+            if (!_session.IsConnecting) SetConnectStatus(L10n.T("connect.tap_to_connect"));
         }
 
         // Deriva un nombre amigable a partir del device_label del beacon (formato
@@ -556,7 +674,7 @@ namespace Simulador.Tablet
         {
             if (string.IsNullOrEmpty(host))
             {
-                SetConnectStatus("Ingresá la IP del visor o tocá uno detectado.", true);
+                SetConnectStatus(L10n.T("connect.enter_ip_or_tap"), true);
                 return;
             }
             if (_session.TryGetCachedToken(host, out var savedToken))
@@ -565,14 +683,14 @@ namespace Simulador.Tablet
                 ShowPinScreen(host);
         }
 
-        private void OnPinCancelPressed() => ShowConnectScreen("Tocá un visor para conectarte.");
+        private void OnPinCancelPressed() => ShowConnectScreen(L10n.T("connect.tap_to_connect"));
 
         private void OnPinConfirmPressed()
         {
             string pin = (_pinEdit.text ?? "").Trim();
             if (pin.Length != 6)
             {
-                SetPinStatus("El PIN tiene 6 dígitos.", true);
+                SetPinStatus(L10n.T("pin.must_be_six_digits"), true);
                 return;
             }
             BeginConnect(_pinPendingHost, pin);
@@ -580,13 +698,13 @@ namespace Simulador.Tablet
 
         private void BeginConnect(string host, string pin)
         {
-            ShowConnectScreen("Conectando a " + host + "...");
+            ShowConnectScreen(L10n.T("connect.connecting_to", host));
             _session.Connect(host, pin);
         }
 
         private void BeginConnectWithToken(string host, string token)
         {
-            ShowConnectScreen("Conectando a " + host + "...");
+            ShowConnectScreen(L10n.T("connect.connecting_to", host));
             _session.ConnectWithToken(host, token);
         }
 
@@ -609,6 +727,32 @@ namespace Simulador.Tablet
         }
 
         private void CloseUnpairConfirm() => _unpairConfirm?.SetActive(false);
+
+        // D2: toggle de idioma del header -- abre el popup de confirmacion (mismo
+        // patron que Desvincular) en vez de aplicar el cambio directo, porque
+        // cambiar de idioma reinicia la app (ver comentario del campo
+        // _langConfirm). El codigo destino se fija una sola vez al abrir (el
+        // idioma activo no cambia durante la sesion).
+        private void OnLangTogglePressed()
+        {
+            _pendingLangCode = L10n.Lang == "es" ? "en" : "es";
+            _langConfirm?.SetActive(true);
+        }
+
+        private void OnLangConfirmPressed()
+        {
+            CloseLangConfirm();
+            SaveLangPref(_pendingLangCode);
+            // Reinicia la app para aplicar el idioma nuevo (la UI se construye UNA
+            // vez en Start(), ver docs/tablet.md "Idioma fijo al arrancar"): en
+            // kiosco (Device Owner) la HOME persistente relanza la app al
+            // instante, ya en el idioma nuevo; en una tablet de desarrollo la app
+            // simplemente se cierra y hay que reabrirla a mano; en el Editor
+            // Application.Quit() es un no-op (no sale de Play Mode).
+            Application.Quit();
+        }
+
+        private void CloseLangConfirm() => _langConfirm?.SetActive(false);
 
         // P5.4: refresh en caliente -- pide {"cmd":"refresh"}; el visor responde con
         // el mismo payload del "hello" (BuildHello reusado del lado visor) y
@@ -648,12 +792,12 @@ namespace Simulador.Tablet
         private void UpdateHudToggleLabel()
         {
             if (_hudToggleBtn?.Label != null)
-                _hudToggleBtn.Label.text = _hudVisible ? "Ocultar HUD" : "Mostrar HUD";
+                _hudToggleBtn.Label.text = _hudVisible ? L10n.T("main.hud_hide") : L10n.T("main.hud_show");
         }
 
         private void OnReconnectCancelPressed()
         {
-            if (!_session.CancelReconnect()) ShowConnectScreen("Tocá un visor para conectarte.");
+            if (!_session.CancelReconnect()) ShowConnectScreen(L10n.T("connect.tap_to_connect"));
         }
 
         // ============================================================
@@ -747,14 +891,14 @@ namespace Simulador.Tablet
             if (isBlend)
             {
                 _rightEyePane.SetActive(true);
-                _leftEyeLabel.text = "OI · " + LensDisplayName(leftId);
-                _rightEyeLabel.text = "OD · " + LensDisplayName(rightId);
+                _leftEyeLabel.text = L10n.T("lens.chip_prefix_os", LensDisplayName(leftId));
+                _rightEyeLabel.text = L10n.T("lens.chip_prefix_od", LensDisplayName(rightId));
             }
             else
             {
                 _rightEyePane.SetActive(false);
                 _leftEyeLabel.text = string.IsNullOrEmpty(leftId)
-                    ? "Ambos ojos" : "Ambos ojos · " + LensDisplayName(leftId);
+                    ? L10n.T("common.both_eyes") : L10n.T("lens.both_eyes_with", LensDisplayName(leftId));
             }
             RefreshFullscreenUI(isBlend, leftId, rightId); // mantiene el overlay al dia con cualquier cambio de vision_state
             RefreshStandardUI(isBlend, leftId, rightId);   // idem para la pantalla del modo Standard (P7)
@@ -775,14 +919,14 @@ namespace Simulador.Tablet
             if (isBlend)
             {
                 _fsRightPane.SetActive(true);
-                _fsLeftLabel.text = "OI — " + LensDisplayName(leftId);
-                _fsRightLabel.text = "OD — " + LensDisplayName(rightId);
+                _fsLeftLabel.text = L10n.T("lens.chip_dash_os", LensDisplayName(leftId));
+                _fsRightLabel.text = L10n.T("lens.chip_dash_od", LensDisplayName(rightId));
             }
             else
             {
                 _fsRightPane.SetActive(false);
                 _fsLeftLabel.text = string.IsNullOrEmpty(leftId)
-                    ? "Ambos ojos" : "Ambos ojos — " + LensDisplayName(leftId);
+                    ? L10n.T("common.both_eyes") : L10n.T("lens.both_eyes_dash", LensDisplayName(leftId));
             }
         }
 
@@ -815,7 +959,7 @@ namespace Simulador.Tablet
             if (!_session.LensesById.TryGetValue(lensId, out var lens) || !(lens["params"] is JObject paramsDef) || !paramsDef.HasValues)
             {
                 _resetButton.interactable = false;
-                _editingLensLabel.text = "Esta lente no tiene parámetros editables.";
+                _editingLensLabel.text = L10n.T("lens.no_editable_params");
                 if (_lensNameEdit != null) _lensNameEdit.gameObject.SetActive(false);
                 return;
             }
@@ -855,15 +999,15 @@ namespace Simulador.Tablet
 
             _resetButton.interactable = added > 0;
             _editingLensLabel.text = added == 0
-                ? "Esta lente no tiene parámetros editables."
+                ? L10n.T("lens.no_editable_params")
                 : ownCustom
-                    ? "Lente propia: todos los parámetros son editables. \"Guardar en la lente\" persiste los valores actuales."
+                    ? L10n.T("lens.editable_custom")
                     : isAdmin
                         // P7.2: origen=="generic" ya no llega del backend (esas lentes
                         // se fusionaron con el catalogo base) -- el admin edita Y
                         // elimina CUALQUIER lente de catalogo, sin distincion.
-                        ? "Modo administrador: todos los parámetros son editables. Podés guardarlos o eliminar esta lente del catálogo."
-                        : "Los ajustes se aplican al ojo que tiene esta lente. Para editar todos los parámetros, creá una lente propia desde \"Crear lente\".";
+                        ? L10n.T("lens.editable_admin")
+                        : L10n.T("lens.editable_standard");
 
             // Botones de lente propia (guardar cambios / eliminar): las propias
             // siempre las tienen; P7.2 -- un visor ADMIN puede EDITAR y tambien
@@ -879,7 +1023,7 @@ namespace Simulador.Tablet
                 bool canDelete = ownCustom || isAdmin;
                 _saveLensButton.gameObject.SetActive(canSave);
                 _deleteLensButton.gameObject.SetActive(canDelete);
-                if (canDelete && _deleteLensButton.Label != null) _deleteLensButton.Label.text = "Eliminar lente";
+                if (canDelete && _deleteLensButton.Label != null) _deleteLensButton.Label.text = L10n.T("lens.delete_button");
                 if (_lensNameEdit != null)
                 {
                     _lensNameEdit.gameObject.SetActive(canSave);
@@ -972,10 +1116,17 @@ namespace Simulador.Tablet
             RebuildStandardScenarioList(); // P7: espejo en la barra del modo Standard
         }
 
-        // Fallback defensivo si algun id llega sin label en el "hello" (no deberia
-        // pasar: NetworkController siempre manda {id,label}).
+        // D2: traducido por id, sin cambiar el protocolo -- el hello sigue trayendo
+        // {id,label} tal cual (NetworkController.BuildScenarios). Si hay una clave
+        // "scenario.<id>" en la tabla (ver docs/localizacion.md) gana sobre el
+        // label crudo del visor; si no (escenario nuevo sin traduccion todavia, o
+        // un visor viejo con un id no contemplado), cae al label del hello y, en
+        // ultimo caso, al id capitalizado (no deberia pasar: NetworkController
+        // siempre manda {id,label}).
         private string ScenarioLabel(string sid)
         {
+            string key = "scenario." + sid;
+            if (L10n.Has(key)) return L10n.T(key);
             if (_session.ScenarioLabels.TryGetValue(sid, out var label) && !string.IsNullOrEmpty(label)) return label;
             return sid.Length > 0 ? char.ToUpper(sid[0]) + sid.Substring(1) : sid;
         }
@@ -1037,7 +1188,7 @@ namespace Simulador.Tablet
             // 'B' por tick, el conteo crudo ya es la tasa real.
             bool blend = (bool?)_session.VisionState["blend_active"] ?? false;
             int fps = blend ? rawFps / 2 : rawFps;
-            _footer.text = fps + " fps · " + (_bytesReceived / 1048576.0).ToString("F1", CultureInfo.InvariantCulture) + " MB recibidos";
+            _footer.text = L10n.T("main.footer_stats", fps, (_bytesReceived / 1048576.0).ToString("F1", CultureInfo.InvariantCulture));
         }
 
         // ============================================================
@@ -1080,9 +1231,12 @@ namespace Simulador.Tablet
             BuildReconnectScreen(canvasGo.transform);
             BuildMainScreen(canvasGo.transform);
             BuildUnpairConfirm(canvasGo.transform); // overlay de confirmacion (header Pro, boton Desvincular)
+            BuildLangConfirm(canvasGo.transform); // D2: overlay de confirmacion del toggle de idioma (header)
+            BuildServiceExitConfirm(canvasGo.transform); // overlay de salida de servicio del kiosco (gesto 7 taps, Fase A)
             BuildStandardScreen(canvasGo.transform); // P7: UI simplificada (modo standard del visor)
             BuildFullscreenStream(canvasGo.transform);
             BuildUpdateScreen(canvasGo.transform); // ULTIMO: debe quedar arriba de TODAS las demas pantallas/overlays
+            BuildServiceModeBanner(canvasGo.transform); // correcciones (MAYOR #12): por encima incluso del update screen
         }
 
         private void BuildConnectScreen(Transform parent)
@@ -1105,20 +1259,200 @@ namespace Simulador.Tablet
             fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
             EyeGlyph(wrap.transform, 56);
-            _kit.Label(wrap.transform, "Simulador IOL", LabelKind.Title, TextAlignmentOptions.Center);
-            _kit.Label(wrap.transform, "Control para consultorio oftalmológico", LabelKind.Subtitle, TextAlignmentOptions.Center);
+            var title = _kit.Label(wrap.transform, L10n.T("app.title"), LabelKind.Title, TextAlignmentOptions.Center);
+            AttachServiceExitGesture(title.gameObject); // 7 taps en el titulo -> salida de servicio (Fase A, ver mas abajo)
+            _kit.Label(wrap.transform, L10n.T("connect.subtitle"), LabelKind.Subtitle, TextAlignmentOptions.Center);
             _kit.Spacer(wrap.transform, 12, false);
-            _kit.Label(wrap.transform, "Visores detectados", LabelKind.Section, TextAlignmentOptions.Left);
+            _kit.Label(wrap.transform, L10n.T("connect.detected_headsets"), LabelKind.Section, TextAlignmentOptions.Left);
             _discoveredList = _kit.Box(wrap.transform, "DiscoveredList", true, 8, null, expandW: true);
-            _connectStatus = _kit.Label(wrap.transform, "Buscando visores en la red...", LabelKind.Hint, TextAlignmentOptions.Center);
+            _connectStatus = _kit.Label(wrap.transform, L10n.T("connect.searching"), LabelKind.Hint, TextAlignmentOptions.Center);
             _networkInfoLabel = _kit.Label(wrap.transform, "", LabelKind.Hint, TextAlignmentOptions.Center);
             _kit.Label(wrap.transform,
-                "El visor Quest y la tablet deben estar conectados a la misma red Wi-Fi.",
+                L10n.T("connect.wifi_help"),
                 LabelKind.Hint, TextAlignmentOptions.Center);
             _kit.Spacer(wrap.transform, 12, false);
 
-            var exitBtn = _kit.Button(wrap.transform, "Salir", BtnStyle.Ghost, false, 48, 16);
+            // Fase B: sirve tambien en una tablet SIN Device Owner (no gateado
+            // por KioskManager.IsDeviceOwner, ver ese metodo).
+            var wifiBtn = _kit.Button(wrap.transform, L10n.T("connect.wifi_button"), BtnStyle.Ghost, false, 48, 16);
+            wifiBtn.OnClick = KioskManager.OpenWifiSettings;
+
+            // MENOR (correcciones): toggle de idioma tambien en la ConnectScreen --
+            // antes solo estaba en el header de MainScreen, inalcanzable hasta
+            // emparejar con un visor. Una clinica nueva necesita poder fijar el
+            // idioma ANTES de conectar. Mismo handler/popup que el del header
+            // (OnLangTogglePressed/BuildLangConfirm), mismo texto (codigo ISO del
+            // idioma AL QUE CAMBIARIA).
+            var langToggleConnect = _kit.Button(wrap.transform, L10n.Lang == "es" ? "EN" : "ES", BtnStyle.Ghost, false, 48, 16);
+            langToggleConnect.OnClick = OnLangTogglePressed;
+
+            var exitBtn = _kit.Button(wrap.transform, L10n.T("common.exit"), BtnStyle.Ghost, false, 48, 16);
             exitBtn.OnClick = () => Application.Quit();
+        }
+
+        // ------------------------------------------------------------
+        // Salida de servicio del kiosco (Fase A, correcciones ver docs/tablet.md
+        // "Salida de servicio"): 7 taps en el titulo de la ConnectScreen dentro
+        // de 3s abre un popup con PIN de servicio; PIN correcto entra a "modo
+        // servicio" (KioskManager.EnterServiceMode -- sale del lock task de
+        // verdad, no cierra la app, y muestra un banner con boton para volver al
+        // kiosco, ver ShowServiceModeBanner/OnLeaveServiceModePressed). Inerte
+        // en tablets de desarrollo (KioskManager.IsDeviceOwner false): el gesto
+        // no cuenta taps ahi, asi que el popup nunca aparece.
+        // ------------------------------------------------------------
+        private int _serviceExitTapCount;
+        private float _serviceExitTapWindowStart;
+        private const int ServiceExitTapsRequired = 7;
+        private const float ServiceExitTapWindowSeconds = 3f;
+        // SIM: atajo deliberado -- PIN de servicio hardcodeado; migrar a
+        // BackendConfig cuando exista el canal (ver docs/tablet.md Decisiones).
+        private const string ServicePin = "4127";
+        private GameObject _serviceExitConfirm;
+        private TMP_InputField _serviceExitPinEdit;
+        private TMP_Text _serviceExitStatus;
+        // Banner discreto de "modo servicio" (correcciones, MAYOR #12): activo
+        // solo si la tablet arranco (o entro via el gesto) con el flag de
+        // KioskManager.IsInServiceMode puesto. Ver BuildServiceModeBanner.
+        private GameObject _serviceModeBanner;
+
+        private void AttachServiceExitGesture(GameObject go)
+        {
+            var btn = go.AddComponent<Button>();
+            btn.transition = Selectable.Transition.None;
+            btn.onClick.AddListener(OnServiceExitGestureTap);
+        }
+
+        private void OnServiceExitGestureTap()
+        {
+            if (!KioskManager.IsDeviceOwner) return; // gesto inerte fuera de kiosco
+            float now = Time.unscaledTime;
+            if (now - _serviceExitTapWindowStart > ServiceExitTapWindowSeconds)
+            {
+                _serviceExitTapWindowStart = now;
+                _serviceExitTapCount = 0;
+            }
+            _serviceExitTapCount++;
+            if (_serviceExitTapCount >= ServiceExitTapsRequired)
+            {
+                _serviceExitTapCount = 0;
+                OpenServiceExitConfirm();
+            }
+        }
+
+        private void OpenServiceExitConfirm()
+        {
+            _serviceExitStatus.text = "";
+            _serviceExitPinEdit.text = "";
+            _serviceExitConfirm.SetActive(true);
+        }
+
+        private void CloseServiceExitConfirm() => _serviceExitConfirm?.SetActive(false);
+
+        private void OnServiceExitConfirmPressed()
+        {
+            if (_serviceExitPinEdit.text == ServicePin)
+            {
+                CloseServiceExitConfirm();
+                // MAYOR #12 (correcciones): antes esto hacia ExitLockTask()
+                // (asincronico, runOnUiThread) + Application.Quit() -- una
+                // carrera que ademas no serviria de nada, porque la HOME
+                // persistente relanza la app y su Start() volvia a entrar a
+                // lock task. Ahora la app se queda ABIERTA en "modo servicio":
+                // sale del kiosco de verdad y le da al operador una ventana
+                // real para ir a Home/Ajustes/adb.
+                KioskManager.EnterServiceMode();
+                ShowServiceModeBanner();
+            }
+            else
+            {
+                _serviceExitStatus.text = L10n.T("kiosk.pin_incorrect");
+            }
+        }
+
+        private void ShowServiceModeBanner() => _serviceModeBanner?.SetActive(true);
+
+        private void OnLeaveServiceModePressed()
+        {
+            KioskManager.LeaveServiceMode();
+            _serviceModeBanner?.SetActive(false);
+        }
+
+        // Banner de "modo servicio": barra angosta anclada arriba de TODA la UI
+        // (agregada al final de BuildUI, mismo criterio que BuildUpdateScreen --
+        // se dibuja por encima de cualquier pantalla). Solo se activa si la
+        // tablet arranca (o entra via el gesto de servicio) con el flag de
+        // KioskManager.IsInServiceMode puesto -- ver Start()/
+        // OnServiceExitConfirmPressed. No es capturable en el Editor
+        // (KioskManager.IsDeviceOwner siempre false ahi).
+        private void BuildServiceModeBanner(Transform parent)
+        {
+            _serviceModeBanner = new GameObject("ServiceModeBanner", typeof(RectTransform));
+            _serviceModeBanner.transform.SetParent(parent, false);
+            var rt = _serviceModeBanner.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 1f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.sizeDelta = new Vector2(0f, 56f);
+            rt.anchoredPosition = Vector2.zero;
+            _serviceModeBanner.SetActive(false);
+
+            var bg = _serviceModeBanner.AddComponent<Image>();
+            _kit.Tint(bg, p => p.Accent);
+
+            var hlg = _serviceModeBanner.AddComponent<HorizontalLayoutGroup>();
+            hlg.padding = new RectOffset(16, 16, 8, 8);
+            hlg.spacing = 12;
+            hlg.childAlignment = TextAnchor.MiddleLeft;
+            hlg.childControlWidth = true; hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false; hlg.childForceExpandHeight = false;
+
+            _kit.Label(_serviceModeBanner.transform, L10n.T("kiosk.service_mode_banner"), LabelKind.Section, TextAlignmentOptions.Left);
+            _kit.Spacer(_serviceModeBanner.transform, 0, true);
+            var exitServiceBtn = _kit.Button(_serviceModeBanner.transform, L10n.T("kiosk.service_mode_exit"), BtnStyle.Ghost, false, 40, 14);
+            exitServiceBtn.OnClick = OnLeaveServiceModePressed;
+        }
+
+        // Mismo patron scrim + card centrada que BuildUnpairConfirm.
+        private void BuildServiceExitConfirm(Transform parent)
+        {
+            _serviceExitConfirm = new GameObject("ServiceExitConfirm", typeof(RectTransform));
+            _serviceExitConfirm.transform.SetParent(parent, false);
+            Stretch(_serviceExitConfirm.GetComponent<RectTransform>());
+            _serviceExitConfirm.SetActive(false);
+
+            var scrim = new GameObject("ServiceExitScrim", typeof(RectTransform), typeof(Image), typeof(Button));
+            scrim.transform.SetParent(_serviceExitConfirm.transform, false);
+            Stretch(scrim.GetComponent<RectTransform>());
+            scrim.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f);
+            var scrimBtn = scrim.GetComponent<Button>();
+            scrimBtn.transition = Selectable.Transition.None;
+            scrimBtn.onClick.AddListener(CloseServiceExitConfirm);
+
+            var card = _kit.Card(_serviceExitConfirm.transform, "ServiceExitCard");
+            card.anchorMin = card.anchorMax = new Vector2(0.5f, 0.5f);
+            card.pivot = new Vector2(0.5f, 0.5f);
+            card.sizeDelta = new Vector2(420, 0);
+            var fit = card.gameObject.AddComponent<ContentSizeFitter>();
+            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            _kit.Label(card, L10n.T("kiosk.exit_title"), LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(card, L10n.T("kiosk.exit_body"), LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Spacer(card, 4, false);
+
+            _serviceExitPinEdit = _kit.LineEdit(card, L10n.T("kiosk.pin_placeholder"));
+            _serviceExitPinEdit.contentType = TMP_InputField.ContentType.IntegerNumber;
+            _serviceExitPinEdit.characterLimit = 8;
+
+            _serviceExitStatus = _kit.Label(card, "", LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Spacer(card, 4, false);
+
+            var row = _kit.Box(card, "ServiceExitButtons", false, 8, null, expandW: true);
+            var cancelBtn = _kit.Button(row, L10n.T("common.cancel"), BtnStyle.Ghost, false, 48, 16);
+            _kit.Size(cancelBtn.GetComponent<RectTransform>(), flexW: 1);
+            cancelBtn.OnClick = CloseServiceExitConfirm;
+            var confirmBtn = _kit.Button(row, L10n.T("kiosk.exit_title"), BtnStyle.Accent, false, 48, 16);
+            _kit.Size(confirmBtn.GetComponent<RectTransform>(), flexW: 1);
+            confirmBtn.OnClick = OnServiceExitConfirmPressed;
         }
 
         // Info de red Wi-Fi de la ConnectScreen (SSID si hay permiso de ubicacion,
@@ -1130,7 +1464,7 @@ namespace Simulador.Tablet
             if (_networkInfoLabel == null) return;
             string info = TryGetWifiSsid();
             if (string.IsNullOrEmpty(info)) info = TryGetLocalIPv4();
-            _networkInfoLabel.text = string.IsNullOrEmpty(info) ? "Red: no disponible" : "Red: " + info;
+            _networkInfoLabel.text = string.IsNullOrEmpty(info) ? L10n.T("connect.network_unavailable") : L10n.T("connect.network_prefix", info);
         }
 
 #if UNITY_ANDROID && !UNITY_EDITOR
@@ -1241,12 +1575,12 @@ namespace Simulador.Tablet
             fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
             EyeGlyph(wrap.transform, 48);
-            _kit.Label(wrap.transform, "PIN de emparejamiento", LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(wrap.transform, L10n.T("pin.title"), LabelKind.Title, TextAlignmentOptions.Center);
             _pinHostLabel = _kit.Label(wrap.transform, "", LabelKind.Subtitle, TextAlignmentOptions.Center);
-            _kit.Label(wrap.transform, "Ingresá el PIN de 6 dígitos que muestra el visor.", LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Label(wrap.transform, L10n.T("pin.instructions"), LabelKind.Hint, TextAlignmentOptions.Center);
             _kit.Spacer(wrap.transform, 8, false);
 
-            _pinEdit = _kit.LineEdit(wrap.transform, "000000");
+            _pinEdit = _kit.LineEdit(wrap.transform, L10n.T("pin.placeholder"));
             _pinEdit.contentType = TMP_InputField.ContentType.IntegerNumber;
             _pinEdit.characterLimit = 6;
             _pinEdit.onSubmit.AddListener(_ => OnPinConfirmPressed());
@@ -1255,10 +1589,10 @@ namespace Simulador.Tablet
             _kit.Spacer(wrap.transform, 8, false);
 
             var row = _kit.Box(wrap.transform, "PinButtons", false, 8, null, expandW: true);
-            var cancelBtn = _kit.Button(row, "Cancelar", BtnStyle.Ghost, false, 48, 16);
+            var cancelBtn = _kit.Button(row, L10n.T("common.cancel"), BtnStyle.Ghost, false, 48, 16);
             _kit.Size(cancelBtn.GetComponent<RectTransform>(), flexW: 1);
             cancelBtn.OnClick = OnPinCancelPressed;
-            var confirmBtn = _kit.Button(row, "Conectar", BtnStyle.Accent, false, 48, 16);
+            var confirmBtn = _kit.Button(row, L10n.T("pin.connect_button"), BtnStyle.Accent, false, 48, 16);
             _kit.Size(confirmBtn.GetComponent<RectTransform>(), flexW: 1);
             confirmBtn.OnClick = OnPinConfirmPressed;
         }
@@ -1286,13 +1620,13 @@ namespace Simulador.Tablet
             fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
             EyeGlyph(wrap.transform, 48);
-            _kit.Label(wrap.transform, "Reconectando", LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(wrap.transform, L10n.T("reconnect.title"), LabelKind.Title, TextAlignmentOptions.Center);
             _reconnectHostLabel = _kit.Label(wrap.transform, "", LabelKind.Subtitle, TextAlignmentOptions.Center);
             _kit.Spacer(wrap.transform, 8, false);
             _reconnectStatus = _kit.Label(wrap.transform, "", LabelKind.Hint, TextAlignmentOptions.Center);
             _kit.Spacer(wrap.transform, 8, false);
 
-            var cancelBtn = _kit.Button(wrap.transform, "Cancelar", BtnStyle.Ghost, false, 48, 16);
+            var cancelBtn = _kit.Button(wrap.transform, L10n.T("common.cancel"), BtnStyle.Ghost, false, 48, 16);
             cancelBtn.OnClick = OnReconnectCancelPressed;
         }
 
@@ -1338,18 +1672,55 @@ namespace Simulador.Tablet
             var fit = card.gameObject.AddComponent<ContentSizeFitter>();
             fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
-            _kit.Label(card, "Desvincular", LabelKind.Title, TextAlignmentOptions.Center);
-            _kit.Label(card, "¿Desvincular la tablet de este visor? Vas a necesitar el PIN para volver a conectarte.",
+            _kit.Label(card, L10n.T("unpair.title"), LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(card, L10n.T("unpair.body"),
                 LabelKind.Hint, TextAlignmentOptions.Center);
             _kit.Spacer(card, 4, false);
 
             var row = _kit.Box(card, "UnpairButtons", false, 8, null, expandW: true);
-            var cancelBtn = _kit.Button(row, "Cancelar", BtnStyle.Ghost, false, 48, 16);
+            var cancelBtn = _kit.Button(row, L10n.T("common.cancel"), BtnStyle.Ghost, false, 48, 16);
             _kit.Size(cancelBtn.GetComponent<RectTransform>(), flexW: 1);
             cancelBtn.OnClick = CloseUnpairConfirm;
-            var confirmBtn = _kit.Button(row, "Desvincular", BtnStyle.Accent, false, 48, 16);
+            var confirmBtn = _kit.Button(row, L10n.T("main.unpair"), BtnStyle.Accent, false, 48, 16);
             _kit.Size(confirmBtn.GetComponent<RectTransform>(), flexW: 1);
             confirmBtn.OnClick = OnUnpairConfirmed;
+        }
+
+        // D2: overlay modal de confirmacion para el toggle de idioma del header --
+        // mismo patron scrim + card centrada que BuildUnpairConfirm de arriba.
+        private void BuildLangConfirm(Transform parent)
+        {
+            _langConfirm = new GameObject("LangConfirm", typeof(RectTransform));
+            _langConfirm.transform.SetParent(parent, false);
+            Stretch(_langConfirm.GetComponent<RectTransform>());
+            _langConfirm.SetActive(false);
+
+            var scrim = new GameObject("LangScrim", typeof(RectTransform), typeof(Image), typeof(Button));
+            scrim.transform.SetParent(_langConfirm.transform, false);
+            Stretch(scrim.GetComponent<RectTransform>());
+            scrim.GetComponent<Image>().color = new Color(0f, 0f, 0f, 0.6f);
+            var scrimBtn = scrim.GetComponent<Button>();
+            scrimBtn.transition = Selectable.Transition.None;
+            scrimBtn.onClick.AddListener(CloseLangConfirm);
+
+            var card = _kit.Card(_langConfirm.transform, "LangCard");
+            card.anchorMin = card.anchorMax = new Vector2(0.5f, 0.5f);
+            card.pivot = new Vector2(0.5f, 0.5f);
+            card.sizeDelta = new Vector2(420, 0);
+            var fit = card.gameObject.AddComponent<ContentSizeFitter>();
+            fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            _kit.Label(card, L10n.T("lang.change_title"), LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(card, L10n.T("lang.change_body"), LabelKind.Hint, TextAlignmentOptions.Center);
+            _kit.Spacer(card, 4, false);
+
+            var langRow = _kit.Box(card, "LangButtons", false, 8, null, expandW: true);
+            var langCancelBtn = _kit.Button(langRow, L10n.T("common.cancel"), BtnStyle.Ghost, false, 48, 16);
+            _kit.Size(langCancelBtn.GetComponent<RectTransform>(), flexW: 1);
+            langCancelBtn.OnClick = CloseLangConfirm;
+            var langConfirmBtn = _kit.Button(langRow, L10n.T("lang.change_confirm"), BtnStyle.Accent, false, 48, 16);
+            _kit.Size(langConfirmBtn.GetComponent<RectTransform>(), flexW: 1);
+            langConfirmBtn.OnClick = OnLangConfirmPressed;
         }
 
         private void BuildHeader(Transform parent)
@@ -1360,27 +1731,33 @@ namespace Simulador.Tablet
             _kit.Size(header, minH: 62);
 
             EyeGlyph(header, 26);
-            var title = _kit.Label(header, "Simulador IOL", LabelKind.Title, TextAlignmentOptions.Left);
+            var title = _kit.Label(header, L10n.T("app.title"), LabelKind.Title, TextAlignmentOptions.Left);
             title.fontSize = 19;
             _kit.Spacer(header, 0, true);
-            _kit.Label(header, "Escenario:", LabelKind.Subtitle, TextAlignmentOptions.Right);
+            _kit.Label(header, L10n.T("main.scenario_label"), LabelKind.Subtitle, TextAlignmentOptions.Right);
             _scenarioList = _kit.Box(header, "ScenarioList", false, 6, null, expandW: false);
             _scenarioList.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-            var recenterBtn = _kit.Button(header, "Recentrar", BtnStyle.Ghost, false, 44, 14);
+            var recenterBtn = _kit.Button(header, L10n.T("main.recenter"), BtnStyle.Ghost, false, 44, 14);
             recenterBtn.OnClick = OnRecenterPressed;
             _kit.Spacer(header, 0, true);
-            _themeToggle = _kit.Button(header, "Modo claro", BtnStyle.Ghost, false, 44, 14);
+            _themeToggle = _kit.Button(header, L10n.T("main.theme_toggle_light"), BtnStyle.Ghost, false, 44, 14);
             _themeToggle.OnClick = () => ApplyTheme(!_isDark);
-            var refreshBtn = _kit.Button(header, "Actualizar", BtnStyle.Ghost, false, 44, 14);
+            // D2: toggle de idioma, mismo estilo que el de tema, junto a el (ver
+            // BuildLangConfirm/OnLangTogglePressed). El texto es el codigo ISO del
+            // idioma AL QUE CAMBIARIA -- no se traduce (es un codigo universal,
+            // igual sea cual sea el idioma activo).
+            var langToggle = _kit.Button(header, L10n.Lang == "es" ? "EN" : "ES", BtnStyle.Ghost, false, 44, 14);
+            langToggle.OnClick = OnLangTogglePressed;
+            var refreshBtn = _kit.Button(header, L10n.T("main.refresh"), BtnStyle.Ghost, false, 44, 14);
             refreshBtn.OnClick = OnRefreshPressed;
-            _hudToggleBtn = _kit.Button(header, "Ocultar HUD", BtnStyle.Ghost, false, 44, 14);
+            _hudToggleBtn = _kit.Button(header, L10n.T("main.hud_hide"), BtnStyle.Ghost, false, 44, 14);
             _hudToggleBtn.OnClick = OnHudTogglePressed;
-            var disconnect = _kit.Button(header, "Desconectar", BtnStyle.Ghost, false, 44, 14);
+            var disconnect = _kit.Button(header, L10n.T("main.disconnect"), BtnStyle.Ghost, false, 44, 14);
             disconnect.OnClick = OnDisconnectPressed;
             // Emparejamiento persistente por token (ver docs/networking.md): discreto,
             // al lado de Desconectar -- accion poco frecuente (revocar el
             // emparejamiento), no un boton principal del flujo clinico.
-            var unpair = _kit.Button(header, "Desvincular", BtnStyle.Ghost, false, 44, 14);
+            var unpair = _kit.Button(header, L10n.T("main.unpair"), BtnStyle.Ghost, false, 44, 14);
             unpair.OnClick = OnUnpairPressed;
         }
 
@@ -1404,21 +1781,21 @@ namespace Simulador.Tablet
             // no-blend -- su posicion ahi es irrelevante porque es el unico hijo activo.
             _rightEyePane = _kit.Box(eyes, "RightEyePane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_rightEyePane.GetComponent<RectTransform>(), flexW: 1);
-            _rightEyeLabel = _kit.Label(_rightEyePane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _rightEyeLabel = _kit.Label(_rightEyePane.transform, L10n.T("common.od"), LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_rightEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
             _streamRight = MakeStreamView(_rightEyePane.transform);
             _rightEyePane.SetActive(false);
 
             var leftPane = _kit.Box(eyes, "LeftEyePane", true, 6, null, expandW: true, expandH: false);
             _kit.Size(leftPane, flexW: 1);
-            _leftEyeLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _leftEyeLabel = _kit.Label(leftPane, L10n.T("common.both_eyes"), LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_leftEyeLabel.rectTransform, minH: 22, prefH: 22, flexH: 0);
             _streamLeft = MakeStreamView(leftPane);
 
             // Boton "Pantalla completa": overlay ignoreLayout anclado a la esquina
             // superior derecha del StreamPanel (no participa del HorizontalLayoutGroup
             // del panel, ver PinTopRight).
-            var fullscreenBtn = _kit.Button(stream, "Pantalla completa", BtnStyle.Overlay, false, 36, 13);
+            var fullscreenBtn = _kit.Button(stream, L10n.T("main.fullscreen_button"), BtnStyle.Overlay, false, 36, 13);
             PinTopRight(fullscreenBtn.GetComponent<RectTransform>(), fullscreenBtn.GetComponent<LayoutElement>(), 8, 8);
             fullscreenBtn.OnClick = OpenFullscreenStream;
 
@@ -1436,11 +1813,11 @@ namespace Simulador.Tablet
         private void BuildEyeCard(Transform parent)
         {
             var card = _kit.Card(parent, "EyeCard");
-            _kit.Label(card, "Ojo a tratar", LabelKind.Section, TextAlignmentOptions.Left);
+            _kit.Label(card, L10n.T("main.eye_to_treat_title"), LabelKind.Section, TextAlignmentOptions.Left);
             var row = _kit.Box(card, "EyeSelector", false, 6, null, expandW: true);
-            _eyeBoth = _kit.Button(row, "Ambos", BtnStyle.Segment, true, 52, 16);
-            _eyeOd = _kit.Button(row, "OD · Derecho", BtnStyle.Segment, true, 52, 15);
-            _eyeOi = _kit.Button(row, "OI · Izquierdo", BtnStyle.Segment, true, 52, 15);
+            _eyeBoth = _kit.Button(row, L10n.T("common.both"), BtnStyle.Segment, true, 52, 16);
+            _eyeOd = _kit.Button(row, L10n.T("main.eye_od_full"), BtnStyle.Segment, true, 52, 15);
+            _eyeOi = _kit.Button(row, L10n.T("main.eye_os_full"), BtnStyle.Segment, true, 52, 15);
             foreach (var b in new[] { _eyeBoth, _eyeOd, _eyeOi })
                 _kit.Size(b.GetComponent<RectTransform>(), flexW: 1);
             _eyeBoth.OnClick = () => SelectEye("both");
@@ -1460,34 +1837,34 @@ namespace Simulador.Tablet
         private void BuildLensesCard(Transform parent)
         {
             var card = _kit.Card(parent, "LensesCard");
-            _kit.Label(card, "Lentes intraoculares", LabelKind.Section, TextAlignmentOptions.Left);
+            _kit.Label(card, L10n.T("main.lenses_section_title"), LabelKind.Section, TextAlignmentOptions.Left);
             _lensList = _kit.Box(card, "LensList", true, 8, null, expandW: true);
         }
 
         private void BuildParamsCard(Transform parent)
         {
             var card = _kit.Card(parent, "ParamsCard");
-            var paramsToggle = _kit.Button(card, "Ajuste fino", BtnStyle.Ghost, true, 48, 16);
+            var paramsToggle = _kit.Button(card, L10n.T("main.fine_tuning"), BtnStyle.Ghost, true, 48, 16);
             _paramsContent = _kit.Box(card, "ParamsContent", true, 10, null, expandW: true);
-            _editingLensLabel = _kit.Label(_paramsContent, "Aplicá una lente para ajustar sus parámetros.", LabelKind.Hint, TextAlignmentOptions.Left);
+            _editingLensLabel = _kit.Label(_paramsContent, L10n.T("lens.apply_to_adjust"), LabelKind.Hint, TextAlignmentOptions.Left);
             _paramsList = _kit.Box(_paramsContent, "ParamsList", true, 10, null, expandW: true);
-            _resetButton = _kit.Button(_paramsContent, "Restaurar valores", BtnStyle.Ghost, false, 44, 15);
+            _resetButton = _kit.Button(_paramsContent, L10n.T("main.restore_values"), BtnStyle.Ghost, false, 44, 15);
             _resetButton.OnClick = OnResetParamsPressed;
             _resetButton.interactable = false;
 
             // D1: nombre editable de la lente en edicion -- mismo patron que
             // _createNameEdit (Crear lente), limite de caracteres igual al
             // max_length del backend. Solo visible si canSave (ver BuildParamsEditor).
-            _lensNameEdit = _kit.LineEdit(_paramsContent, "Nombre de la lente");
+            _lensNameEdit = _kit.LineEdit(_paramsContent, L10n.T("lens.name_placeholder"));
             _lensNameEdit.characterLimit = 80;
             _lensNameEdit.gameObject.SetActive(false);
 
             // P7: acciones sobre la lente custom PROPIA en edicion (ocultas para
             // lentes base/genericas; ver BuildParamsEditor).
             var ownRow = _kit.Box(_paramsContent, "OwnLensRow", false, 8, null, expandW: true);
-            _saveLensButton = _kit.Button(ownRow, "Guardar en la lente", BtnStyle.Accent, false, 44, 15);
+            _saveLensButton = _kit.Button(ownRow, L10n.T("lens.save_button"), BtnStyle.Accent, false, 44, 15);
             _saveLensButton.OnClick = OnSaveLensPressed;
-            _deleteLensButton = _kit.Button(ownRow, "Eliminar lente", BtnStyle.Neutral, false, 44, 15);
+            _deleteLensButton = _kit.Button(ownRow, L10n.T("lens.delete_button"), BtnStyle.Neutral, false, 44, 15);
             _deleteLensButton.OnClick = OnDeleteLensPressed;
             _saveLensButton.gameObject.SetActive(false);
             _deleteLensButton.gameObject.SetActive(false);
@@ -1500,7 +1877,7 @@ namespace Simulador.Tablet
         private void BuildAstigCard(Transform parent)
         {
             var card = _kit.Card(parent, "AstigCard");
-            var astigToggle = _kit.Button(card, "Astigmatismo", BtnStyle.Ghost, true, 48, 16);
+            var astigToggle = _kit.Button(card, L10n.T("main.astig_title"), BtnStyle.Ghost, true, 48, 16);
             _astigContent = _kit.Box(card, "AstigContent", true, 8, null, expandW: true);
 
             // P4.4: aclaracion de precedencia -- desde que el catalogo trae astig_magnitude/
@@ -1510,15 +1887,15 @@ namespace Simulador.Tablet
             // que muestre el shader por encima del valor de catalogo mientras este activo;
             // cambiar de lente u override_params no lo apaga ni lo sincroniza. Ver
             // docs/tablet.md.
-            _kit.Label(_astigContent, "Ajuste temporal para esta sesión: se pisa al cambiar de lente o parámetros. Para un astigmatismo residual que persista con la lente, usá los sliders de \"Ajuste fino\".",
+            _kit.Label(_astigContent, L10n.T("main.astig_precedence_hint"),
                 LabelKind.Hint, TextAlignmentOptions.Left);
 
-            _kit.CheckToggle(_astigContent, "Simular astigmatismo", out _astigEnabled);
+            _kit.CheckToggle(_astigContent, L10n.T("main.astig_simulate_toggle"), out _astigEnabled);
             _astigEnabled.OnToggled += _ => SendAstigmatism();
 
             var magHeader = _kit.Box(_astigContent, "MagHeader", false, 8, null, expandW: true);
             magHeader.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-            var magLabel = _kit.Label(magHeader, "Magnitud", LabelKind.Body, TextAlignmentOptions.Left);
+            var magLabel = _kit.Label(magHeader, L10n.T("main.astig_magnitude_label"), LabelKind.Body, TextAlignmentOptions.Left);
             _kit.Size(magLabel.rectTransform, flexW: 1);
             _magValue = _kit.Label(magHeader, "25 px", LabelKind.Value, TextAlignmentOptions.Right);
             _magSlider = _kit.Slider(_astigContent);
@@ -1528,7 +1905,7 @@ namespace Simulador.Tablet
 
             var angleHeader = _kit.Box(_astigContent, "AngleHeader", false, 8, null, expandW: true);
             angleHeader.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-            var angleLabel = _kit.Label(angleHeader, "Eje", LabelKind.Body, TextAlignmentOptions.Left);
+            var angleLabel = _kit.Label(angleHeader, L10n.T("main.astig_axis_label"), LabelKind.Body, TextAlignmentOptions.Left);
             _kit.Size(angleLabel.rectTransform, flexW: 1);
             _angleValue = _kit.Label(angleHeader, "0°", LabelKind.Value, TextAlignmentOptions.Right);
             _angleSlider = _kit.Slider(_astigContent);
@@ -1553,13 +1930,13 @@ namespace Simulador.Tablet
         private void BuildCreateLensCard(Transform parent)
         {
             var card = _kit.Card(parent, "CreateLensCard");
-            var toggle = _kit.Button(card, "Crear lente", BtnStyle.Ghost, true, 48, 16);
+            var toggle = _kit.Button(card, L10n.T("lens.create_title"), BtnStyle.Ghost, true, 48, 16);
             var content = _kit.Box(card, "CreateLensContent", true, 8, null, expandW: true);
 
-            _kit.Label(content, "Crea una lente propia a partir de la lente en edición, con los ajustes actuales como valores base.",
+            _kit.Label(content, L10n.T("lens.create_description"),
                 LabelKind.Hint, TextAlignmentOptions.Left);
-            _createNameEdit = _kit.LineEdit(content, "Nombre de la lente nueva");
-            _createDescEdit = _kit.LineEdit(content, "Descripción (opcional)");
+            _createNameEdit = _kit.LineEdit(content, L10n.T("lens.create_name_placeholder"));
+            _createDescEdit = _kit.LineEdit(content, L10n.T("lens.create_desc_placeholder"));
 
             // Toggle "agregar al catalogo" (P7.2: reemplaza la nocion de
             // "generica" -- el protocolo NO cambia, sigue mandando
@@ -1567,10 +1944,10 @@ namespace Simulador.Tablet
             // si el visor conectado es admin (se decide en cada hello, ver
             // OnSessionHello).
             _createGenericRow = _kit.Box(content, "GenericRow", false, 8, null, expandW: true).gameObject;
-            _kit.CheckToggle(_createGenericRow.transform, "Agregar al catálogo (para todos)", out _createGenericToggle);
+            _kit.CheckToggle(_createGenericRow.transform, L10n.T("lens.create_add_to_catalog"), out _createGenericToggle);
             _createGenericRow.SetActive(false);
 
-            var createBtn = _kit.Button(content, "Crear desde la lente en edición", BtnStyle.Accent, false, 44, 15);
+            var createBtn = _kit.Button(content, L10n.T("lens.create_button"), BtnStyle.Accent, false, 44, 15);
             createBtn.OnClick = OnCreateLensPressed;
             _createStatus = _kit.Label(content, "", LabelKind.Hint, TextAlignmentOptions.Left);
 
@@ -1634,11 +2011,11 @@ namespace Simulador.Tablet
 
         private void OnCreateLensPressed()
         {
-            if (!_session.IsWsOpen) { SetLensStatus(_createStatus, ref _createStatusRoutine, "Sin conexión con el visor."); return; }
+            if (!_session.IsWsOpen) { SetLensStatus(_createStatus, ref _createStatusRoutine, L10n.T("lens.status_offline")); return; }
             string nombre = (_createNameEdit.text ?? "").Trim();
-            if (nombre.Length == 0) { SetLensStatus(_createStatus, ref _createStatusRoutine, "Poné un nombre para la lente."); return; }
+            if (nombre.Length == 0) { SetLensStatus(_createStatus, ref _createStatusRoutine, L10n.T("lens.status_need_name")); return; }
             var snapshot = BuildParamsSnapshot();
-            if (snapshot == null) { SetLensStatus(_createStatus, ref _createStatusRoutine, "Aplicá una lente primero (la nueva se crea a partir de ella)."); return; }
+            if (snapshot == null) { SetLensStatus(_createStatus, ref _createStatusRoutine, L10n.T("lens.status_need_base_lens")); return; }
 
             bool generic = _session.IsAdmin && _createGenericToggle != null && _createGenericToggle.IsOn;
             _session.SendCommand(new JObject
@@ -1649,17 +2026,17 @@ namespace Simulador.Tablet
                 ["descripcion"] = (_createDescEdit.text ?? "").Trim(),
                 ["params"] = snapshot,
             });
-            SetLensStatus(_createStatus, ref _createStatusRoutine, "Creando lente...",
-                LensStatusTimeoutS, "El visor no respondió todavía; puede seguir en curso.");
+            SetLensStatus(_createStatus, ref _createStatusRoutine, L10n.T("lens.status_creating"),
+                LensStatusTimeoutS, L10n.T("lens.status_no_response"));
         }
 
         private void OnSaveLensPressed()
         {
-            if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Sin conexión con el visor."); return; }
+            if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_offline")); return; }
             // D3: el nombre lo decide el campo editable (D1/D2), no el "nombre" crudo
             // del catalogo -- mismo patron de validacion que OnCreateLensPressed.
             string nombre = (_lensNameEdit.text ?? "").Trim();
-            if (nombre.Length == 0) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Poné un nombre para la lente."); return; }
+            if (nombre.Length == 0) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_need_name")); return; }
             if (!_session.LensesById.TryGetValue(_editingLensId, out var lens)) return;
             var snapshot = BuildParamsSnapshot();
             if (snapshot == null) return;
@@ -1671,25 +2048,25 @@ namespace Simulador.Tablet
                 ["descripcion"] = (string)lens["descripcion"] ?? "",
                 ["params"] = snapshot,
             });
-            SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Guardando...",
-                LensStatusTimeoutS, "El visor no respondió todavía; puede seguir en curso.");
+            SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_saving"),
+                LensStatusTimeoutS, L10n.T("lens.status_no_response"));
         }
 
         private void OnDeleteLensPressed()
         {
-            if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Sin conexión con el visor."); return; }
+            if (!_session.IsWsOpen) { SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_offline")); return; }
             // Doble tap para confirmar (sin dialogo modal): el primer tap arma, el
             // segundo ejecuta. Cambiar de lente (BuildParamsEditor) desarma.
             if (!_deleteArmed)
             {
                 _deleteArmed = true;
-                if (_deleteLensButton.Label != null) _deleteLensButton.Label.text = "¿Confirmar eliminación?";
+                if (_deleteLensButton.Label != null) _deleteLensButton.Label.text = L10n.T("lens.delete_confirm");
                 return;
             }
             _deleteArmed = false;
             _session.SendCommand(new JObject { ["cmd"] = "delete_lens", ["lens_id"] = _editingLensId });
-            SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Eliminando...",
-                LensStatusTimeoutS, "El visor no respondió todavía; puede seguir en curso.");
+            SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_deleting"),
+                LensStatusTimeoutS, L10n.T("lens.status_no_response"));
         }
 
         private void OnLensSaved(string op, string lensId)
@@ -1697,17 +2074,17 @@ namespace Simulador.Tablet
             if (op == "create_lens")
             {
                 SetLensStatus(_createStatus, ref _createStatusRoutine,
-                    "Lente creada ✓. Va a aparecer en la lista al actualizar el catálogo.", LensStatusClearS, "");
+                    L10n.T("lens.status_created"), LensStatusClearS, "");
                 _createNameEdit.text = "";
                 _createDescEdit.text = "";
             }
             else if (op == "update_lens")
             {
-                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Lente guardada ✓", LensStatusClearS, "");
+                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_saved"), LensStatusClearS, "");
             }
             else if (op == "delete_lens")
             {
-                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, "Lente eliminada ✓", LensStatusClearS, "");
+                SetLensStatus(_ownLensStatus, ref _ownLensStatusRoutine, L10n.T("lens.status_deleted"), LensStatusClearS, "");
             }
             // El catalogo actualizado llega solo: el visor re-sincroniza y
             // re-broadcastea el hello (RebuildLensList via OnSessionHello).
@@ -1717,20 +2094,20 @@ namespace Simulador.Tablet
         {
             string msg = reason switch
             {
-                "offline" => "El visor no pudo contactar al backend (sin internet).",
-                "MODE_NOT_PRO" => "Este visor no tiene el modo Pro habilitado.",
+                "offline" => L10n.T("lens.error_offline"),
+                "MODE_NOT_PRO" => L10n.T("lens.error_mode_not_pro"),
                 // P7.2: NOT_ADMIN ahora cubre 3 casos -- crear "para todos"
                 // (scope:"generic"), editar o eliminar cualquier lente del
                 // catalogo sin ser admin. BASE_LENS queda sin uso en un backend
                 // nuevo (P7.2 le permite al admin borrar cualquier lente de
                 // catalogo) pero se mantiene mapeado por compat con un backend
                 // viejo que todavia lo emita.
-                "NOT_ADMIN" => "Solo un dispositivo administrador puede modificar o eliminar lentes del catálogo.",
-                "NOT_OWNER" => "Esta lente pertenece a otro dispositivo.",
-                "BASE_LENS" => "Las lentes base no se pueden eliminar.",
-                "DEVICE_NOT_AUTHORIZED" => "El visor no está habilitado (licencia).",
-                "LENS_LIMIT_REACHED" => "Se alcanzó el tope de lentes.",
-                _ => $"No se pudo guardar la lente ({reason}).",
+                "NOT_ADMIN" => L10n.T("lens.error_not_admin"),
+                "NOT_OWNER" => L10n.T("lens.error_not_owner"),
+                "BASE_LENS" => L10n.T("lens.error_base_lens"),
+                "DEVICE_NOT_AUTHORIZED" => L10n.T("lens.error_not_authorized"),
+                "LENS_LIMIT_REACHED" => L10n.T("lens.error_limit_reached"),
+                _ => L10n.T("lens.error_generic", reason),
             };
             Debug.LogWarning($"[Tablet] {op}: {msg}");
             if (op == "create_lens")
@@ -1789,7 +2166,7 @@ namespace Simulador.Tablet
             // no-blend -- su posicion ahi es irrelevante porque es el unico hijo activo.
             _fsRightPane = _kit.Box(row, "FsRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_fsRightPane.GetComponent<RectTransform>(), flexW: 1);
-            _fsRightLabel = _kit.Label(_fsRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _fsRightLabel = _kit.Label(_fsRightPane.transform, L10n.T("common.od"), LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_fsRightLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
             _fsStreamRight = MakeStreamView(_fsRightPane.transform);
             _fsStreamRight.raycastTarget = false;
@@ -1797,12 +2174,12 @@ namespace Simulador.Tablet
 
             var leftPane = _kit.Box(row, "FsLeftPane", true, 6, null, expandW: true, expandH: false);
             _kit.Size(leftPane, flexW: 1);
-            _fsLeftLabel = _kit.Label(leftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _fsLeftLabel = _kit.Label(leftPane, L10n.T("common.both_eyes"), LabelKind.StreamChip, TextAlignmentOptions.Center);
             _kit.Size(_fsLeftLabel.rectTransform, minH: 26, prefH: 26, flexH: 0);
             _fsStreamLeft = MakeStreamView(leftPane);
             _fsStreamLeft.raycastTarget = false; // deja pasar el tap al fondo (tambien cierra)
 
-            var closeBtn = _kit.Button(_fullscreenStream.transform, "Cerrar", BtnStyle.Overlay, false, 40, 14);
+            var closeBtn = _kit.Button(_fullscreenStream.transform, L10n.T("common.close"), BtnStyle.Overlay, false, 40, 14);
             PinTopRight(closeBtn.GetComponent<RectTransform>(), closeBtn.GetComponent<LayoutElement>(), 16, 16);
             closeBtn.OnClick = CloseFullscreenStream;
         }
@@ -1889,7 +2266,7 @@ namespace Simulador.Tablet
             // se crea antes para quedar a la izquierda del StdStreamRow horizontal.
             _stdRightPane = _kit.Box(streamRow, "StdRightPane", true, 6, null, expandW: true, expandH: false).gameObject;
             _kit.Size(_stdRightPane.GetComponent<RectTransform>(), flexW: 1);
-            _stdRightLabel = _kit.Label(_stdRightPane.transform, "OD", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _stdRightLabel = _kit.Label(_stdRightPane.transform, L10n.T("common.od"), LabelKind.StreamChip, TextAlignmentOptions.Center);
             FloatStdPaneChip(_stdRightLabel, topMargin + topBarH + 8f);
             _stdStreamRight = MakeStreamView(_stdRightPane.transform, envelope: true);
             // El chip flota SOBRE el stream: al frente en el orden de hermanos, si no
@@ -1898,7 +2275,7 @@ namespace Simulador.Tablet
             _stdRightPane.SetActive(false);
             var stdLeftPane = _kit.Box(streamRow, "StdLeftPane", true, 6, null, expandW: true, expandH: false);
             _kit.Size(stdLeftPane, flexW: 1);
-            _stdLeftLabel = _kit.Label(stdLeftPane, "Ambos ojos", LabelKind.StreamChip, TextAlignmentOptions.Center);
+            _stdLeftLabel = _kit.Label(stdLeftPane, L10n.T("common.both_eyes"), LabelKind.StreamChip, TextAlignmentOptions.Center);
             FloatStdPaneChip(_stdLeftLabel, topMargin + topBarH + 8f);
             _stdStreamLeft = MakeStreamView(stdLeftPane, envelope: true);
             _stdLeftLabel.transform.SetAsLastSibling();
@@ -1911,15 +2288,15 @@ namespace Simulador.Tablet
             topBar.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
             _stdScenarioList = _kit.Box(topBar, "StdScenarios", false, 6, null, expandW: false);
             _kit.Spacer(topBar, 0, true);
-            var lensBtn = _kit.Button(topBar, "Lente", BtnStyle.Accent, false, 48, 15);
+            var lensBtn = _kit.Button(topBar, L10n.T("standard.lens_button"), BtnStyle.Accent, false, 48, 15);
             _kit.Size(lensBtn.GetComponent<RectTransform>(), minW: 140, prefW: 140, flexW: 0);
             lensBtn.OnClick = OpenStandardLensOverlay;
             // B3: mismo comando que el header Pro -- sin gating de admin, accion
             // clinica no destructiva.
-            var recenterStdBtn = _kit.Button(topBar, "Recentrar", BtnStyle.Neutral, false, 48, 15);
+            var recenterStdBtn = _kit.Button(topBar, L10n.T("main.recenter"), BtnStyle.Neutral, false, 48, 15);
             _kit.Size(recenterStdBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
             recenterStdBtn.OnClick = OnRecenterPressed;
-            var exitBtn = _kit.Button(topBar, "Salir", BtnStyle.Neutral, false, 48, 15);
+            var exitBtn = _kit.Button(topBar, L10n.T("common.exit"), BtnStyle.Neutral, false, 48, 15);
             _kit.Size(exitBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
             // "Salir" en Standard desconecta y vuelve al discovery (ConnectScreen),
             // NO cierra la app: en dispositivo se observo un Application.Quit
@@ -1968,7 +2345,7 @@ namespace Simulador.Tablet
             _stdAxisRow = _kit.Box(spCol, "StdAxisRow", true, 2, null, expandW: true).gameObject;
             var axHeader = _kit.Box(_stdAxisRow.transform, "StdAxisHeader", false, 8, null, expandW: true);
             axHeader.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
-            var axLabel = _kit.Label(axHeader, "Eje", LabelKind.Body, TextAlignmentOptions.Left);
+            var axLabel = _kit.Label(axHeader, L10n.T("main.astig_axis_label"), LabelKind.Body, TextAlignmentOptions.Left);
             _kit.Size(axLabel.rectTransform, flexW: 1);
             _stdAxisValue = _kit.Label(axHeader, "", LabelKind.Value, TextAlignmentOptions.Right);
             _stdAxisSlider = _kit.Slider(_stdAxisRow.transform);
@@ -2025,14 +2402,14 @@ namespace Simulador.Tablet
             if (isBlend)
             {
                 _stdRightPane.SetActive(true);
-                _stdLeftLabel.text = "OI — " + LensDisplayName(leftId);
-                _stdRightLabel.text = "OD — " + LensDisplayName(rightId);
+                _stdLeftLabel.text = L10n.T("lens.chip_dash_os", LensDisplayName(leftId));
+                _stdRightLabel.text = L10n.T("lens.chip_dash_od", LensDisplayName(rightId));
             }
             else
             {
                 _stdRightPane.SetActive(false);
                 _stdLeftLabel.text = string.IsNullOrEmpty(leftId)
-                    ? "Ambos ojos — sin lente (tocá \"Lente\")" : "Ambos ojos — " + LensDisplayName(leftId);
+                    ? L10n.T("lens.both_eyes_no_lens") : L10n.T("lens.both_eyes_dash", LensDisplayName(leftId));
             }
         }
 
@@ -2079,7 +2456,7 @@ namespace Simulador.Tablet
             {
                 SetStandardSliderHeader(key, null);
                 _stdSliderPanel.SetActive(true);
-                _stdSliderTitle.text = ParamMeta.LabelFor(key) + " — no disponible en esta lente";
+                _stdSliderTitle.text = L10n.T("standard.param_unavailable", ParamMeta.LabelFor(key));
                 return;
             }
 
@@ -2163,16 +2540,16 @@ namespace Simulador.Tablet
             card.pivot = new Vector2(0.5f, 0.5f);
             card.sizeDelta = new Vector2(560, 560);
 
-            _kit.Label(card, "Elegí una lente", LabelKind.Title, TextAlignmentOptions.Center);
+            _kit.Label(card, L10n.T("standard.choose_lens_title"), LabelKind.Title, TextAlignmentOptions.Center);
             var scroll = _kit.ScrollColumn(card, out _stdLensListBox);
             _kit.Size(scroll.GetComponent<RectTransform>(), flexH: 1);
 
             _stdEyePickRow = _kit.Box(card, "StdEyePick", true, 6, null, expandW: true).gameObject;
-            _kit.Label(_stdEyePickRow.transform, "¿A qué ojo se aplica?", LabelKind.Section, TextAlignmentOptions.Center);
+            _kit.Label(_stdEyePickRow.transform, L10n.T("standard.which_eye_title"), LabelKind.Section, TextAlignmentOptions.Center);
             var eyeRow = _kit.Box(_stdEyePickRow.transform, "StdEyeButtons", false, 8, null, expandW: true);
-            var bBoth = _kit.Button(eyeRow, "Ambos", BtnStyle.Segment, false, 46, 15);
-            var bOd = _kit.Button(eyeRow, "OD (derecho)", BtnStyle.Segment, false, 46, 15);
-            var bOi = _kit.Button(eyeRow, "OI (izquierdo)", BtnStyle.Segment, false, 46, 15);
+            var bBoth = _kit.Button(eyeRow, L10n.T("common.both"), BtnStyle.Segment, false, 46, 15);
+            var bOd = _kit.Button(eyeRow, L10n.T("standard.eye_od_paren"), BtnStyle.Segment, false, 46, 15);
+            var bOi = _kit.Button(eyeRow, L10n.T("standard.eye_os_paren"), BtnStyle.Segment, false, 46, 15);
             _kit.Size(bBoth.GetComponent<RectTransform>(), flexW: 1);
             _kit.Size(bOd.GetComponent<RectTransform>(), flexW: 1);
             _kit.Size(bOi.GetComponent<RectTransform>(), flexW: 1);
@@ -2181,7 +2558,7 @@ namespace Simulador.Tablet
             bOi.OnClick = () => OnStandardEyePicked("left");
             _stdEyePickRow.SetActive(false);
 
-            var closeBtn = _kit.Button(card, "Cerrar", BtnStyle.Ghost, false, 42, 14);
+            var closeBtn = _kit.Button(card, L10n.T("common.close"), BtnStyle.Ghost, false, 42, 14);
             closeBtn.OnClick = CloseStandardLensOverlay;
         }
 
@@ -2242,16 +2619,16 @@ namespace Simulador.Tablet
             var fit = card.gameObject.AddComponent<ContentSizeFitter>();
             fit.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
-            _updateTitleLabel = _kit.Label(card, "Actualización disponible", LabelKind.Title, TextAlignmentOptions.Center);
+            _updateTitleLabel = _kit.Label(card, L10n.T("update.available_title"), LabelKind.Title, TextAlignmentOptions.Center);
             _updateVersionLabel = _kit.Label(card, "", LabelKind.Subtitle, TextAlignmentOptions.Center);
             _updateChangelogLabel = _kit.Label(card, "", LabelKind.Hint, TextAlignmentOptions.Left);
             _updateStatusLabel = _kit.Label(card, "", LabelKind.Hint, TextAlignmentOptions.Center);
             _kit.Spacer(card, 4, false);
 
             var row = _kit.Box(card, "UpdateButtons", false, 8, null, expandW: true);
-            _updateSecondaryBtn = _kit.Button(row, "Ahora no", BtnStyle.Ghost, false, 48, 16);
+            _updateSecondaryBtn = _kit.Button(row, L10n.T("update.button_postpone"), BtnStyle.Ghost, false, 48, 16);
             _kit.Size(_updateSecondaryBtn.GetComponent<RectTransform>(), flexW: 1);
-            _updatePrimaryBtn = _kit.Button(row, "Actualizar", BtnStyle.Accent, false, 48, 16);
+            _updatePrimaryBtn = _kit.Button(row, L10n.T("update.button_update"), BtnStyle.Accent, false, 48, 16);
             _kit.Size(_updatePrimaryBtn.GetComponent<RectTransform>(), flexW: 1);
         }
 
@@ -2287,15 +2664,27 @@ namespace Simulador.Tablet
         {
             _updateManifest = manifest;
             _updateForced = forced;
-            _updateTitleLabel.text = "Actualización disponible";
-            _updateVersionLabel.text = $"v{Application.version} → v{manifest.ApkVersion}";
+
+            // Fase C (kiosco, ver docs/updates.md): nadie va a tocar la tablet para
+            // aceptar el cartel -- auto-aceptar la descarga en background, sin UI. La
+            // decision de CUANDO instalar (ahora vs. al quedar ociosa) se toma en
+            // OnUpdateReadyToInstall, cuando la descarga+verificacion ya terminaron.
+            if (KioskManager.IsDeviceOwner)
+            {
+                Debug.Log("[Tablet] update auto-aceptado (kiosco)");
+                UpdateManager.Instance?.AcceptUpdate();
+                return;
+            }
+
+            _updateTitleLabel.text = L10n.T("update.available_title");
+            _updateVersionLabel.text = L10n.T("update.version_arrow", Application.version, manifest.ApkVersion);
             _updateChangelogLabel.text = manifest.Changelog ?? "";
             _updateStatusLabel.text = "";
             _updatePrimaryBtn.gameObject.SetActive(true);
-            _updatePrimaryBtn.Label.text = "Actualizar";
+            _updatePrimaryBtn.Label.text = L10n.T("update.button_update");
             _updatePrimaryBtn.OnClick = OnUpdateAcceptPressed;
             _updateSecondaryBtn.gameObject.SetActive(!forced); // "Ahora no" oculto si es forzada
-            _updateSecondaryBtn.Label.text = "Ahora no";
+            _updateSecondaryBtn.Label.text = L10n.T("update.button_postpone");
             _updateSecondaryBtn.OnClick = OnUpdatePostponePressed;
             _updateScreen.SetActive(true);
         }
@@ -2308,18 +2697,18 @@ namespace Simulador.Tablet
 
         private void ShowUpdateDownloading()
         {
-            _updateTitleLabel.text = "Descargando actualización";
-            _updateStatusLabel.text = "Descargando… 0 %";
+            _updateTitleLabel.text = L10n.T("update.downloading_title");
+            _updateStatusLabel.text = L10n.T("update.downloading_progress", 0);
             _updatePrimaryBtn.gameObject.SetActive(false);
             _updateSecondaryBtn.gameObject.SetActive(true); // Cancelar siempre disponible, incluso si es forzada
-            _updateSecondaryBtn.Label.text = "Cancelar";
+            _updateSecondaryBtn.Label.text = L10n.T("common.cancel");
             _updateSecondaryBtn.OnClick = OnUpdateCancelPressed;
         }
 
         private void OnUpdateDownloadProgress(float progress)
         {
             if (_updateStatusLabel == null) return;
-            _updateStatusLabel.text = $"Descargando… {Mathf.RoundToInt(progress * 100f)} %";
+            _updateStatusLabel.text = L10n.T("update.downloading_progress", Mathf.RoundToInt(progress * 100f));
         }
 
         // Sin API de cancelacion previa en UpdateManager (F3/F4 no la necesitaban,
@@ -2334,10 +2723,28 @@ namespace Simulador.Tablet
 
         private void OnUpdateReadyToInstall(string path)
         {
-            _updateTitleLabel.text = "Descarga verificada";
-            _updateStatusLabel.text = "Descarga verificada";
+            // Fase C (kiosco): instalar YA si el update es forzado o si la tablet ya
+            // esta ociosa (sin sesion con el visor); si el clinico esta en consulta,
+            // diferir hasta que vuelva a quedar ociosa (ShowConnectScreen) -- un
+            // paciente nunca ve reiniciarse la tablet a mitad de una consulta.
+            if (KioskManager.IsDeviceOwner)
+            {
+                if (_updateForced || !_session.IsSessionActive)
+                {
+                    LaunchSilentInstall();
+                }
+                else
+                {
+                    _installWhenIdle = true;
+                    Debug.Log("[Tablet] update listo, se instala al quedar ociosa (kiosco, sesion activa con el visor)");
+                }
+                return;
+            }
+
+            _updateTitleLabel.text = L10n.T("update.verified");
+            _updateStatusLabel.text = L10n.T("update.verified");
             _updatePrimaryBtn.gameObject.SetActive(true);
-            _updatePrimaryBtn.Label.text = "Instalar";
+            _updatePrimaryBtn.Label.text = L10n.T("update.button_install");
             _updatePrimaryBtn.OnClick = OnUpdateInstallPressed;
             _updateSecondaryBtn.gameObject.SetActive(false);
             _updateScreen.SetActive(true);
@@ -2349,15 +2756,125 @@ namespace Simulador.Tablet
             HideUpdateScreen();
         }
 
+        // Fase C (kiosco): estado sin botones mientras PackageInstaller instala en
+        // background -- no hay nada que el clinico deba tocar, solo informar que la
+        // tablet se va a reiniciar sola (el proceso muere al instalar; la HOME
+        // persistente la relanza, ver KioskManager.ApplyPolicies).
+        private void ShowUpdateInstalling()
+        {
+            _updateTitleLabel.text = L10n.T("update.installing_title");
+            _updateStatusLabel.text = L10n.T("update.installing_body_tablet");
+            _updatePrimaryBtn.gameObject.SetActive(false);
+            _updateSecondaryBtn.gameObject.SetActive(false);
+            _updateScreen.SetActive(true);
+        }
+
+        // CRITICO #2a (correcciones, ver docs/updates.md): llama LaunchInstall()
+        // PRIMERO y recien DESPUES decide si mostrar el modal "Instalando..." --
+        // antes se mostraba a ciegas ANTES de saber si la instalacion silenciosa
+        // arranco de verdad (un fallo sincrono de SilentInstaller.install() dejaba
+        // el modal puesto para siempre, ver OnUpdateFailed). Arma tambien el
+        // watchdog de 120s (CRITICO #2c) para el caso en que ni el commit
+        // silencioso ni ningun fallo lleguen nunca a un resultado.
+        private void LaunchSilentInstall()
+        {
+            _silentInstallResolved = false;
+            UpdateManager.Instance?.LaunchInstall();
+            if (UpdateManager.Instance?.LastInstallLaunchResult == UpdateInstaller.InstallLaunchResult.StartedSilent)
+            {
+                ShowUpdateInstalling();
+                if (_silentInstallWatchdogCo != null) StopCoroutine(_silentInstallWatchdogCo);
+                _silentInstallWatchdogCo = StartCoroutine(SilentInstallWatchdogCo());
+            }
+        }
+
+        private IEnumerator SilentInstallWatchdogCo()
+        {
+            yield return new WaitForSecondsRealtime(SilentInstallWatchdogSeconds);
+            _silentInstallWatchdogCo = null;
+            Debug.LogWarning($"[Tablet] instalacion silenciosa sin resultado tras {SilentInstallWatchdogSeconds:F0}s.");
+            HandleSilentInstallFailure("timeout");
+        }
+
+        // CRITICO #2c (correcciones): resultado ASINCRONICO del commit de
+        // PackageInstaller -- InstallResultReceiver.java llama esto via
+        // UnitySendMessage("TabletApp", "OnSilentInstallResult", ...) para
+        // cualquier status distinto de STATUS_SUCCESS/STATUS_PENDING_USER_ACTION
+        // (payload "<status>|<message o vacio>"). Es el caso REAL de campo: un
+        // INSTALL_FAILED_* (firma distinta, downgrade, sin espacio) que hoy dejaba
+        // el modal "Instalando..." puesto para siempre, sin telemetria.
+        public void OnSilentInstallResult(string payload)
+        {
+            string detail = payload ?? "";
+            int sep = detail.IndexOf('|');
+            if (sep >= 0)
+                detail = "status=" + detail.Substring(0, sep) + " message=" + detail.Substring(sep + 1);
+            HandleSilentInstallFailure(detail);
+        }
+
+        private void HandleSilentInstallFailure(string detail)
+        {
+            // MENOR (correcciones): no-op si ya se resolvio (watchdog y
+            // OnSilentInstallResult pueden dispararse los dos para el MISMO intento
+            // -- ver el comentario de _silentInstallResolved).
+            if (_silentInstallResolved) return;
+            _silentInstallResolved = true;
+
+            if (_silentInstallWatchdogCo != null)
+            {
+                StopCoroutine(_silentInstallWatchdogCo);
+                _silentInstallWatchdogCo = null;
+            }
+            HideUpdateScreen();
+            Debug.Log("[Tablet] instalacion silenciosa fallo (" + detail + "), reintenta en el proximo chequeo de manifest.");
+            UpdateManager.Instance?.ReportInstallFailure(detail);
+            DeletePendingUpdateMarker();
+        }
+
+        // Borra el marker que UpdateInstaller ya escribio ANTES del commit -- sin
+        // esto, el proximo arranque lo leeria en CheckPendingUpdateMarker y
+        // reportaria update_incomplete por un fallo que ya reportamos aca
+        // (update_install_failed); borrarlo es lo coherente (ver docs/updates.md).
+        private void DeletePendingUpdateMarker()
+        {
+            try
+            {
+                string path = System.IO.Path.Combine(Application.persistentDataPath, UpdateLogic.PendingMarkerFileName);
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Tablet] no se pudo borrar update_pending.json tras fallo silencioso (" + e.GetType().Name + ").");
+            }
+        }
+
         private void OnUpdateFailed(string message)
         {
-            _updateTitleLabel.text = "Error al actualizar";
+            // Fase C (kiosco): nadie va a cerrar un cartel de error en una tablet sin
+            // supervision -- solo log. El proximo arranque re-chequea el manifest y
+            // reintenta solo; la telemetria update_download_failed ya sale de
+            // UpdateManager (no hace falta duplicarla aca).
+            if (KioskManager.IsDeviceOwner)
+            {
+                // CRITICO #2b (correcciones): antes hacia return ACA sin ocultar el
+                // modal -- si LaunchInstall() fallaba SINCRONICAMENTE (ver
+                // LaunchSilentInstall) el scrim de "Instalando..." podia quedar
+                // puesto para siempre (si ya se habia mostrado por un intento
+                // previo) o directamente no importaba porque nunca se llego a
+                // mostrar (el orden nuevo evita eso) -- de cualquier forma, un
+                // fallo de update NUNCA debe dejar un overlay bloqueando la UI.
+                HideUpdateScreen();
+                Debug.Log("[Tablet] update fallo en kiosco, sin cartel (reintenta en el proximo arranque): " + message);
+                return;
+            }
+
+            _updateTitleLabel.text = L10n.T("update.error_title");
             _updateStatusLabel.text = FriendlyUpdateError(message);
             _updatePrimaryBtn.gameObject.SetActive(true);
-            _updatePrimaryBtn.Label.text = "Reintentar";
+            _updatePrimaryBtn.Label.text = L10n.T("common.retry");
             _updatePrimaryBtn.OnClick = OnUpdateRetryPressed;
             _updateSecondaryBtn.gameObject.SetActive(!_updateForced); // "Cerrar" oculto si es forzada
-            _updateSecondaryBtn.Label.text = "Cerrar";
+            _updateSecondaryBtn.Label.text = L10n.T("common.close");
             _updateSecondaryBtn.OnClick = OnUpdateClosePressed;
             _updateScreen.SetActive(true);
         }
@@ -2379,7 +2896,7 @@ namespace Simulador.Tablet
         private void HideUpdateScreen() => _updateScreen?.SetActive(false);
 
         private static string FriendlyUpdateError(string raw) =>
-            raw == "sha_mismatch" ? "La descarga no pasó la verificación de integridad." : raw;
+            raw == "sha_mismatch" ? L10n.T("update.error_sha_mismatch") : raw;
 
         // Vista de stream por ojo: contenedor flexible (lo dimensiona la columna) con
         // un RawImage que se ajusta dentro preservando el aspecto 4:3 del visor (sin

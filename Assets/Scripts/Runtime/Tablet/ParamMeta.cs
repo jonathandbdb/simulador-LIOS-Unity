@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Globalization;
+using Simulador.Localization;
 
 namespace Simulador.Tablet
 {
@@ -7,14 +8,26 @@ namespace Simulador.Tablet
     /// Metadata clinica de los parametros de lente que llegan en el catalogo.
     /// Port VERBATIM de features/tablet/ui/param_meta.gd. Las claves son las del
     /// catalogo/shader (no afecta al protocolo).
+    ///
+    /// Localizacion (D1, ver docs/localizacion.md): <see cref="Entry"/> guarda
+    /// CLAVES de L10n (<c>LabelKey</c>/<c>HintKey</c>), no texto resuelto -- si
+    /// guardara el texto ya traducido en el inicializador estatico de
+    /// <see cref="META"/>, quedaria fijado en el idioma que estuviera activo la
+    /// PRIMERA vez que algo toque el tipo <c>ParamMeta</c> (orden de
+    /// inicializacion estatica de C#, fragil: podria correr antes de que
+    /// TabletController.Start() llame L10n.Initialize(override)). Resolver la
+    /// clave recien en <see cref="LabelFor"/>/<see cref="HintFor"/>/
+    /// <see cref="FormatValue"/> (llamados en cada RefreshParamsPanel/
+    /// ParamRowView.Create, no en el cctor) evita ese problema por completo: el
+    /// texto se calcula con el idioma YA resuelto en ese momento.
     /// </summary>
     public static class ParamMeta
     {
         public class Entry
         {
-            public string Label;
-            public string Hint;
-            public string Unit; // "m", "rayos", ""
+            public string LabelKey;
+            public string HintKey;
+            public string Unit; // "m", "mm", "°", "rayos", ""
             public string Fmt;  // "F2" (%.2f) o "F0" (%.0f)
         }
 
@@ -22,71 +35,71 @@ namespace Simulador.Tablet
         {
             ["foco_lejos_m"] = new Entry
             {
-                Label = "Foco lejano",
-                Hint = "Distancia donde el paciente ve nitido a lejos. 6 m ≈ infinito optico. 0 = desactivado.",
+                LabelKey = "param.foco_lejos_m.label",
+                HintKey = "param.foco_lejos_m.hint",
                 Unit = "m", Fmt = "F2",
             },
             ["foco_intermedio_m"] = new Entry
             {
-                Label = "Foco intermedio",
-                Hint = "Distancia del segundo plano nitido (PC, tablero del auto). 0 = sin foco intermedio.",
+                LabelKey = "param.foco_intermedio_m.label",
+                HintKey = "param.foco_intermedio_m.hint",
                 Unit = "m", Fmt = "F2",
             },
             ["foco_cerca_m"] = new Entry
             {
-                Label = "Foco cercano",
-                Hint = "Distancia de lectura nitida (libro, celular). Tipico 35-45 cm. 0 = sin foco cercano.",
+                LabelKey = "param.foco_cerca_m.label",
+                HintKey = "param.foco_cerca_m.hint",
                 Unit = "m", Fmt = "F2",
             },
             ["profundidad_foco_m"] = new Entry
             {
-                Label = "Profundidad de foco",
-                Hint = "Ancho de la zona nitida alrededor de cada foco. Bajo = pico estrecho (trifocal). Alto = plateau ancho (EDOF).",
+                LabelKey = "param.profundidad_foco_m.label",
+                HintKey = "param.profundidad_foco_m.hint",
                 Unit = "m", Fmt = "F2",
             },
             ["desenfoque_max"] = new Entry
             {
-                Label = "Desenfoque maximo",
                 // Etapa B (v0.8.0) cambia la semantica: de cap 0..1 a MULTIPLICADOR del radio
                 // fisico del circulo de desenfoque. 1 = optica real; >1 exagera para que un
                 // desenfoque sub-pixel (invisible en el visor) se vea; 0 = nunca borroso.
-                Hint = "Multiplicador del desenfoque fuera de foco. 1 = optica real; mayor exagera para hacer visible un desenfoque sub-pixel; 0 = nunca borroso.",
+                LabelKey = "param.desenfoque_max.label",
+                HintKey = "param.desenfoque_max.hint",
                 Unit = "", Fmt = "F2",
             },
             ["halo_intensity"] = new Entry
             {
-                Label = "Intensidad de halos",
-                Hint = "Tamano e intensidad del halo difractivo alrededor de fuentes brillantes. Trifocal alto, monofocal casi nulo.",
+                LabelKey = "param.halo_intensity.label",
+                HintKey = "param.halo_intensity.hint",
                 Unit = "", Fmt = "F2",
             },
             ["halo_extra_rings"] = new Entry
             {
-                Label = "Dilatacion pupilar (noche)",
-                Hint = "Diametro pupilar en mm (1 = miosis, 6 = midriasis mesopica/escotopica). Agranda el halo y agrega tinte azulado (efecto Purkinje). Subir en escena nocturna.",
+                LabelKey = "param.halo_extra_rings.label",
+                HintKey = "param.halo_extra_rings.hint",
                 Unit = "mm", Fmt = "F1",
             },
             ["contrast_loss"] = new Entry
             {
-                Label = "Perdida de contraste",
-                Hint = "Reduccion de sensibilidad al contraste (imagen mas lavada). Trifocal pierde mas que EDOF, EDOF mas que monofocal.",
+                LabelKey = "param.contrast_loss.label",
+                HintKey = "param.contrast_loss.hint",
                 Unit = "", Fmt = "F2",
             },
             ["destello_intensity"] = new Entry
             {
-                Label = "Intensidad de starburst",
-                Hint = "Rayos radiales desde fuentes brillantes (disfotopsia difractiva). 0 = sin destello.",
+                LabelKey = "param.destello_intensity.label",
+                HintKey = "param.destello_intensity.hint",
                 Unit = "", Fmt = "F2",
             },
             ["destello_rayos"] = new Entry
             {
-                Label = "Cantidad de rayos",
-                Hint = "Cantidad de spokes del starburst. Pacientes con trifocal reportan 8-12 rayos visibles.",
+                LabelKey = "param.destello_rayos.label",
+                HintKey = "param.destello_rayos.hint",
                 Unit = "rayos", Fmt = "F0",
             },
             ["straylight"] = new Entry
             {
-                Label = "Encandilamiento (straylight)",
-                Hint = "Luz parasita intraocular: ante una fuente brillante (sol/faros) vela la imagen y baja el contraste (disability glare). Trifocal alto, EDOF medio, monofocal bajo.",
+                LabelKey = "param.straylight.label",
+                HintKey = "param.straylight.hint",
                 Unit = "", Fmt = "F2",
             },
             // P4.4: astigmatismo residual PERSISTENTE por lente (vive en el catalogo,
@@ -95,14 +108,14 @@ namespace Simulador.Tablet
             // card sobre la precedencia entre ambos).
             ["astig_magnitude"] = new Entry
             {
-                Label = "Astigmatismo residual",
-                Hint = "Astigmatismo NO corregido por la lente: borronea la imagen en un eje. 0 = sin astigmatismo residual.",
+                LabelKey = "param.astig_magnitude.label",
+                HintKey = "param.astig_magnitude.hint",
                 Unit = "", Fmt = "F2",
             },
             ["astig_axis_deg"] = new Entry
             {
-                Label = "Eje del astigmatismo",
-                Hint = "Orientacion del eje de mayor borrosidad (0-180°). Solo relevante si hay astigmatismo residual (>0).",
+                LabelKey = "param.astig_axis_deg.label",
+                HintKey = "param.astig_axis_deg.hint",
                 Unit = "°", Fmt = "F0",
             },
             // v0.7.0: tinte de catarata del cristalino NATIVO (no un artefacto de la
@@ -111,8 +124,8 @@ namespace Simulador.Tablet
             // @vision-optics (_CataractL/R). Ver docs/catalogo-lentes.md.
             ["cataract_yellow"] = new Entry
             {
-                Label = "Catarata (tinte amarillo)",
-                Hint = "Amarilleo del cristalino catarático: filtra la luz azul y lava los colores. 0 = medio transparente, 1 = catarata brunescente avanzada.",
+                LabelKey = "param.cataract_yellow.label",
+                HintKey = "param.cataract_yellow.hint",
                 Unit = "", Fmt = "F2",
             },
             // v0.8.0: dispersion intraocular del cristalino cataratoso -- separado del tinte
@@ -121,8 +134,8 @@ namespace Simulador.Tablet
             // necesidad de una fuente de luz en el campo. Ver docs/catalogo-lentes.md.
             ["cataract_scatter"] = new Entry
             {
-                Label = "Catarata (dispersion)",
-                Hint = "Dispersion intraocular del cristalino cataratoso: baja la nitidez a toda distancia y agrega un velo difuso sin necesidad de una luz en el campo. 0 = medio claro, 0.6 = nuclear moderada (~20/70), 1 = avanzada (~20/200).",
+                LabelKey = "param.cataract_scatter.label",
+                HintKey = "param.cataract_scatter.hint",
                 Unit = "", Fmt = "F2",
             },
         };
@@ -163,17 +176,23 @@ namespace Simulador.Tablet
             "cataract_scatter",
         };
 
-        public static string LabelFor(string p) => META.TryGetValue(p, out var m) ? m.Label : p;
-        public static string HintFor(string p) => META.TryGetValue(p, out var m) ? m.Hint : "";
+        public static string LabelFor(string p) => META.TryGetValue(p, out var m) ? L10n.T(m.LabelKey) : p;
+        public static string HintFor(string p) => META.TryGetValue(p, out var m) ? L10n.T(m.HintKey) : "";
         public static bool IsInteger(string p) => META.TryGetValue(p, out var m) && m.Fmt == "F0";
+
+        /// <summary>Texto del codigo de unidad ("m"/"mm"/"°" son iguales en ambos idiomas; "rayos" se traduce).</summary>
+        private static string UnitText(string unitCode) =>
+            unitCode == "rayos" ? L10n.T("param.unit.rayos") : (unitCode ?? "");
 
         public static string FormatValue(string p, float value)
         {
             META.TryGetValue(p, out var m);
-            string unit = m?.Unit ?? "";
+            string unit = UnitText(m?.Unit);
             string fmt = m?.Fmt ?? "F2";
-            // Distancias en metros: 0 = foco desactivado.
-            if (unit == "m" && value <= 0.001f) return "off";
+            // Distancias en metros: 0 = foco desactivado. MENOR (correcciones):
+            // el literal salia sin pasar por L10n -- reusa common.off, misma
+            // semantica que el "Off" de CheckToggle (ver docs/localizacion.md).
+            if (m?.Unit == "m" && value <= 0.001f) return L10n.T("common.off");
             string num = value.ToString(fmt, CultureInfo.InvariantCulture);
             if (unit == "") return num;
             return (num + " " + unit).Trim();

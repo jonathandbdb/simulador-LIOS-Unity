@@ -29,9 +29,13 @@ se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica. Lo
 | `Assets/Scripts/Runtime/Tablet/ScrollFriendlySlider.cs` (nuevo, usabilidad táctil) | Subclase de `Slider` que le cede el drag vertical al `ScrollRect` padre en vez de consumirlo (ver Decisiones "Usabilidad táctil"). Usada por `TabletUiKit.Slider()` en vez del `Slider` estándar. |
 | `Assets/Scripts/Runtime/Tablet/KeyboardAvoider.cs` (nuevo, usabilidad táctil) | Componente hermano de todo `TMP_InputField` (`TabletUiKit.LineEdit()` lo agrega solo): evita que el teclado nativo de Android tape el campo dentro de una columna scrolleable, agrandando el `Content` del `ScrollRect` con un espaciador y scrolleando al enfocar (ver Decisiones "Teclado nativo tapa los campos fuera del PIN"). Inerte si no hay `ScrollRect` ancestro. |
 | `Assets/Scripts/Runtime/Tablet/ParamMeta.cs` | Metadata clínica estática de los parámetros del catálogo (ver abajo). |
+| `Assets/Scripts/Runtime/Tablet/KioskManager.cs` (nuevo, Fase A kiosco) | Plain C# estático (no MonoBehaviour): envuelve el JNI de `DevicePolicyManager` para una tablet provisionada como Android Device Owner. `IsDeviceOwner` (cacheado), `ApplyPolicies()` (lock task packages/features, HOME persistente, keyguard/status bar off, restricciones de usuario, permiso de ubicación otorgado — no-op si no es Device Owner), `EnterLockTask()`/`IsLockTaskActive`, `OpenWifiSettings()` (Fase B, NO gateado por Device Owner), y (correcciones, MAYOR #12) `EnterServiceMode()`/`LeaveServiceMode()`/`IsInServiceMode` (modo servicio real — ver Decisiones "Modo servicio reemplaza ExitLockTask+Quit" y "Salida de servicio del kiosco" en Pantallas). Todo `#if UNITY_ANDROID && !UNITY_EDITOR` con gemelos no-op, mismo patrón JNI que `TabletController.TryGetWifiSsid`/`UpdateInstaller`. Todas las llamadas JNI que resuelven un método Java no-`void` usan `Call<T>`/`Call<AndroidJavaObject>` (correcciones: `setKeyguardDisabled`/`setStatusBarDisabled` devuelven `boolean`, `Intent.setFlags` devuelve `Intent` — sin el genérico, `Call(...)` solo resuelve métodos `void` y el `try/catch` de cada policy tragaba el `NoSuchMethodError` en silencio). Lo llama `TabletController` (`Start`, `OnApplicationPause`, botón "Red Wi-Fi", gesto de salida de servicio). Detalle completo del modo kiosco (provisión, manifest, Java) en `docs/builds-deploy.md` §"Provisión de tablets (Device Owner)". |
+| `Assets/Plugins/Android/com/simulador/kiosk/SimuladorDeviceAdminReceiver.java` (nuevo, Fase A) | Subclase de `DeviceAdminReceiver`, componente admin activo del Device Owner (`adb shell dpm set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver`, ver `scripts/provision-tablet.sh`). `onProfileProvisioningComplete` lanza la Activity principal del propio paquete — deja listo el camino de QR/NFC provisioning de la Fase C sin volver a tocar Java. Se compila también en el visor (Unity compila todo `.java` suelto bajo `Plugins/Android/` en ambos targets) pero queda INERTE ahí: su manifest nunca declara el `<receiver>` (lo inyecta `TabletManifestPatcher.cs` solo durante el build de tablet, ver `docs/builds-deploy.md`). |
+| `Assets/Plugins/Android/SimuladorUpdate.androidlib/res/xml/device_admin.xml` (nuevo, Fase A) | `<device-admin>` sin policies legacy (Device Owner las administra directo vía `DevicePolicyManager`, no vía este XML) — metadata que referencia el `<receiver>` inyectado por `TabletManifestPatcher.cs`. Mismo androidlib que `file_paths.xml` (F4 updates), evita crear un módulo nuevo solo para un recurso más; sin `.meta` propio, igual que sus hermanos (Unity trata el contenido de un `.androidlib` como opaco). |
 | `Assets/Scenes/Tablet.unity` | Escena mínima: raíces `TabletApp` (con `TabletController`), `Directional Light` y `Main Camera`. Nada de UI serializada. |
 | `Assets/Resources/TabletFonts/` | `Inter-Regular SDF` e `Inter-SemiBold SDF` (TMP_FontAsset), cargados con `Resources.Load` en `Start()`. |
 | `Assets/Scripts/Editor/TabletBuild.cs` | Menú **Simulador → Build Tablet (Android)**: buildea solo `Tablet.unity` con el loader de OpenXR apagado y lo restaura al terminar. Detalle en `docs/builds-deploy.md`. |
+| `Assets/Scripts/Runtime/Localization/L10n.cs` / `L10nTable.cs` (D1, D2) | Localización es/en de toda la UI de la app (ver `docs/localizacion.md`, doc viva del sistema). **D2 completa**: todos los literales visibles de `TabletController` cableados con `L10n.T(...)`, `L10n.Initialize(LoadLangPref())` en `Start()` ANTES de `BuildUI()`, y el toggle de idioma del header (ver "MainScreen / Header" y Decisiones "Idioma fijo al arrancar, cambio por reinicio" más abajo). |
 
 ```
 TabletController.Start()
@@ -77,7 +81,31 @@ TabletController.Start()
   descubrimiento automático"), estado de búsqueda, label de red Wi-Fi actual (`RefreshNetworkInfo`
   + permiso de ubicación pedido una vez por sesión — ver Decisiones "Info de red Wi-Fi"), mensaje
   de ayuda fijo ("El visor Quest y la tablet deben estar conectados a la misma red Wi-Fi.") y
-  botón **Salir** (`Application.Quit()`).
+  botones **"Red Wi-Fi"** (Fase A/B, ver Decisiones "Kiosco vía Android Device Owner" — abre el
+  panel/pantalla de ajustes de WiFi de Android vía `KioskManager.OpenWifiSettings()`, funciona
+  con o sin Device Owner), **toggle de idioma** (correcciones, mismo botón/handler que el del
+  header de MainScreen — `OnLangTogglePressed`, ver "MainScreen / Header" más abajo — agregado
+  ACÁ porque el header es inalcanzable hasta emparejar con un visor; una clínica nueva necesita
+  poder fijar el idioma ANTES de conectar) y **Salir** (`Application.Quit()`). **Salida de
+  servicio del kiosco** (invisible en tablets de desarrollo, solo activa si
+  `KioskManager.IsDeviceOwner`): 7 taps en el título "Simulador IOL" dentro de 3 segundos abren
+  un popup modal (`ServiceExitConfirm`, mismo patrón scrim + card centrada que `UnpairConfirm`)
+  con un campo numérico de PIN y botones Cancelar/"Salir del kiosco"; PIN correcto →
+  `KioskManager.EnterServiceMode()` (correcciones — ver Decisiones "Modo servicio reemplaza
+  ExitLockTask+Quit"): sale de lock task de verdad, libera la HOME persistente
+  (`clearPackagePersistentPreferredActivities`) y reactiva keyguard/barra de estado, sin cerrar
+  la app — queda un **banner discreto** (`kiosk.service_mode_banner`, arriba de TODA la UI, por
+  encima incluso del `UpdateScreen`) con un botón "Volver al kiosco"
+  (`kiosk.service_mode_exit` → `KioskManager.LeaveServiceMode()`, que reaplica `ApplyPolicies()` +
+  `EnterLockTask()`) para que el operador vuelva al kiosco cuando termine. Un flag persistido
+  (`persistentDataPath/kiosk_service_mode`, archivo vacío) sobrevive a que Android relance la
+  app mientras el operador está en Ajustes/Home: `TabletController.Start()` lo consulta
+  (`KioskManager.IsInServiceMode`) y, si está puesto, NO reaplica el kiosco — solo muestra el
+  banner; `OnApplicationPause(false)` tampoco reentra a lock task mientras el flag exista. PIN
+  incorrecto → mensaje de error, el popup queda abierto. **MENOR aceptado**: al estar anclado
+  arriba de TODA la UI, el banner tapa la franja superior del header de `MainScreen` (selector
+  de escenarios/toggles) mientras el modo servicio está activo — se acepta como estado de
+  operador (solo visible durante soporte técnico, nunca en uso clínico normal); no rediseñar.
 - **PinScreen:** se intercala entre ConnectScreen y MainScreen cuando hace falta el PIN de
   emparejamiento (host SIN un token persistente válido en `pairing.json` -- primer enlace,
   Desvincular previo, o el token quedó revocado/inválido; o reintento tras `auth_fail`/
@@ -99,14 +127,21 @@ TabletController.Start()
 - **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), botón
   **"Recentrar"** (junto al selector de escenarios — manda `{"cmd":"recenter"}`, ver
   `docs/networking.md`; recalibra la posición del paciente en el escenario actual, sin gating de
-  admin), toggle de tema claro/oscuro, botón "Actualizar" (P5.4 — refresh en caliente, ver
-  Decisiones), botón **"Ocultar HUD"/"Mostrar HUD"** (toggle del HUD de diagnóstico del visor vía
-  comando `set_hud`, ver Decisiones "Toggle del HUD del visor"), botón Desconectar y botón
-  **Desvincular**, que ahora abre un popup de confirmación (`UnpairConfirm`, ver Decisiones "Popup
-  de confirmación de Desvincular") antes de revocar el token de esta tablet en el visor y olvidar
-  el emparejamiento local con el host actual (ver Decisiones "Emparejamiento persistente por
-  token"). **Sin badge de estado** (ver Decisiones "Header sin badge de estado"): llegar a esta
-  pantalla ya implica sesión conectada y autenticada.
+  admin), toggle de tema claro/oscuro, **toggle de idioma** (D2, nuevo, mismo estilo Ghost que el
+  de tema, justo al lado — texto = código ISO del idioma AL QUE CAMBIARÍA, `"EN"` si
+  `L10n.Lang == "es"` o `"ES"` si no; toca abrir un popup de confirmación `LangConfirm`, mismo
+  patrón scrim + card que `UnpairConfirm`, con título/cuerpo `lang.change_title`/`lang.change_body`
+  y botones Cancelar/Cambiar — confirmar persiste `lang=` en `ui_prefs.cfg` y llama
+  `Application.Quit()`, ver Decisiones "Idioma fijo al arrancar, cambio por reinicio"; correcciones:
+  el MISMO botón/popup (`OnLangTogglePressed`/`LangConfirm`) se agregó también a la ConnectScreen,
+  ver Pantallas arriba, porque el header es inalcanzable hasta emparejar), botón
+  "Actualizar" (P5.4 — refresh en caliente, ver Decisiones), botón **"Ocultar HUD"/"Mostrar HUD"**
+  (toggle del HUD de diagnóstico del visor vía comando `set_hud`, ver Decisiones "Toggle del HUD
+  del visor"), botón Desconectar y botón **Desvincular**, que ahora abre un popup de confirmación
+  (`UnpairConfirm`, ver Decisiones "Popup de confirmación de Desvincular") antes de revocar el
+  token de esta tablet en el visor y olvidar el emparejamiento local con el host actual (ver
+  Decisiones "Emparejamiento persistente por token"). **Sin badge de estado** (ver Decisiones
+  "Header sin badge de estado"): llegar a esta pantalla ya implica sesión conectada y autenticada.
 - **Panel de stream (izquierda):** uno o dos panes con `RawImage` dentro de un `AspectRatioFitter`
   4:3 (768/576). El split lo decide `blend_active` del `vision_state` (P2.1 — fuente única de
   verdad, ver `docs/networking.md`): en blend los panes se apilan verticalmente, **OD arriba /
@@ -142,13 +177,81 @@ TabletController.Start()
   construcción" en `docs/updates.md`). Scrim semi-opaco + card centrada con título/versión/
   changelog/estado y 2 botones cuyo texto/handler/visibilidad cambia según el estado
   (Available → Actualizar/Ahora no; Downloading → progreso %/Cancelar; Ready → Instalar; Failed
-  → Reintentar/Cerrar). Detalle completo del estado/eventos/API en `docs/updates.md` §"UI del
-  cartel (F5)" — esa es la doc viva del sistema de updates, esta sección solo ubica la pantalla
-  dentro del mapa de `TabletController`.
+  → Reintentar/Cerrar). **Estado nuevo (F8, kiosco) — `ShowUpdateInstalling()`, sin botones**:
+  "Instalando actualización… La tablet se reiniciará sola." — se usa SOLO en una tablet Device
+  Owner, cuando la instalación silenciosa arranca (ver `docs/updates.md` §"Auto-update silencioso
+  en kiosco"); no hay nada que el clínico deba tocar, el proceso muere solo y la HOME persistente
+  relanza la app. Detalle completo del estado/eventos/API en `docs/updates.md` §"UI del cartel
+  (F5)" y §"Instalación silenciosa en kiosco (F8)" — esa es la doc viva del sistema de updates,
+  esta sección solo ubica la pantalla dentro del mapa de `TabletController`.
 - **Footer:** `N fps · X.X MB recibidos`, actualizado cada segundo. En blend (P5.5), el fps
   mostrado se divide entre 2 (ver Decisiones): representa la tasa REAL por pane, no la suma L+R.
 
 ## Decisiones y porqués
+- **Kiosco vía Android Device Owner (Fase A, vendemos bundles Quest + tablet a clínicas sin volver
+  a tocar el dispositivo)** → la tablet sale del taller provisionada por cable
+  (`adb shell dpm set-device-owner`, `scripts/provision-tablet.sh`, requiere una tablet de fábrica
+  SIN cuentas — ver ese script) con `com.simulador.tablet` como Device Owner y
+  `SimuladorDeviceAdminReceiver` (`Assets/Plugins/Android/com/simulador/kiosk/`) como admin activo.
+  Se eligió Device Owner (no "device admin" simple, no un launcher custom, no un MDM de terceros)
+  porque es el ÚNICO mecanismo nativo de Android que permite las 3 propiedades que pide el
+  producto sin intervención humana repetida: (1) arrancar SIEMPRE en la app
+  (`addPersistentPreferredActivity` + un segundo intent-filter HOME en la Activity de Unity,
+  inyectado post-Gradle por `TabletManifestPatcher.cs` — ver `docs/builds-deploy.md`), (2) no poder
+  salir (`startLockTask`, `KioskManager.EnterLockTask()`, re-entrado en `OnApplicationPause(false)`
+  porque Android puede soltar el lock task tras ciertas transiciones), y (3) resistir manipulación
+  básica del cliente (`no_factory_reset`/`no_safe_boot`/`no_add_user`, `setKeyguardDisabled`,
+  `setStatusBarDisabled`) — todo sin pedirle una cuenta Google/EMM a la clínica. El costo: solo se
+  puede provisionar en una tablet de fábrica (o factory-reseteada) sin cuentas, y quitar el Device
+  Owner exige `clearDeviceOwnerApp()` desde la app o un factory reset (ver "Salida de servicio"
+  abajo y `docs/builds-deploy.md`).
+- **`com.android.settings` en el allowlist de `setLockTaskPackages`** → el botón "Red Wi-Fi"
+  (Fase B, `KioskManager.OpenWifiSettings()`) abre el panel/pantalla de ajustes de WiFi de Android;
+  bajo lock task, CUALQUIER Activity fuera del allowlist se bloquea al abrir (vuelve
+  inmediatamente a la app) — sin `com.android.settings` en `setLockTaskPackages`, el clínico no
+  podría cambiar de red Wi-Fi sin salir del kiosco. `OpenWifiSettings()` en sí NO está gateado por
+  `IsDeviceOwner` (funciona igual en una tablet de desarrollo sin Device Owner) porque el
+  allowlist solo importa cuando SÍ hay lock task activo.
+- **`LOCK_TASK_FEATURE_GLOBAL_ACTIONS` obligatorio en `setLockTaskFeatures`** → sin esta feature,
+  lock task bloquea también el menú de apagado (long-press del botón de power), dejando a la
+  clínica sin forma de apagar la tablet salvo agotar la batería o usar el gesto de servicio. Se
+  agrega junto a `LOCK_TASK_FEATURE_SYSTEM_INFO` (reloj/batería visibles en la barra de estado,
+  aunque `setStatusBarDisabled` la oculte igual — inocuo, se deja por si algún día se revierte ese
+  disable). `no_debugging_features` y `no_install_apps` se dejaron AFUERA de
+  `addUserRestriction` a propósito: el primero cortaría el `adb` de soporte remoto, el segundo
+  puede interferir con el instalador de la Fase C (OTA) — ver `KioskManager.ApplyPolicies`.
+- **Modo servicio reemplaza `ExitLockTask()` + `Application.Quit()` (correcciones, MAYOR #12)** →
+  la implementación original de la salida de servicio hacía `KioskManager.ExitLockTask()`
+  (`runOnUiThread`, **asincrónico**) seguido INMEDIATAMENTE de `Application.Quit()`: una carrera
+  donde `Quit()` casi siempre ganaba antes de que `stopLockTask()` corriera de verdad, y aunque
+  perdiera la carrera, la HOME persistente (`addPersistentPreferredActivity`, seguía puesta)
+  relanzaba la app cuyo `Start()` volvía a llamar `EnterLockTask()` — la "salida de servicio" no
+  abría NADA, la tablet volvía al kiosco sola. El fix es un **modo servicio** real: `EnterServiceMode()`
+  sale de lock task, libera la HOME persistente (`clearPackagePersistentPreferredActivities`, así
+  Home vuelve al launcher del sistema) y reactiva keyguard/barra de estado — la app se queda
+  ABIERTA (nunca hace `Quit()`) mostrando un banner con un botón para volver
+  (`LeaveServiceMode()`, que reaplica `ApplyPolicies()` + `EnterLockTask()`). Un flag persistido
+  en disco (`kiosk_service_mode`, no un booleano en memoria) sobrevive a que Android relance la
+  app mientras el operador está en Ajustes — sin él, `Start()`/`OnApplicationPause(false)`
+  volverían a fijar el kiosco apenas la app pierde y recupera foco, cerrándole la ventana al
+  operador a mitad de la sesión de soporte.
+- **PIN de servicio hardcodeado (`TabletController.ServicePin = "4127"`, marcado `// SIM: atajo
+  deliberado`)** → la salida de servicio (7 taps + PIN) necesita ALGÚN secreto compartido entre el
+  operador de soporte y la app para no ser un gesto público; construir un canal de distribución de
+  PIN por dispositivo/clínico (rotación, `BackendConfig`, etc.) es trabajo real que esta tarea NO
+  pidió — un PIN fijo conocido solo por el equipo de soporte cubre el caso de uso de la Fase A
+  (todavía sin flota grande de tablets en campo). Migrar a un PIN por dispositivo o rotable es
+  pendiente explícito para cuando exista el canal de configuración remota (`BackendConfig`).
+  Riesgo aceptado: cualquiera que conozca el PIN puede sacar CUALQUIER tablet del kiosco -- no es
+  un secreto por dispositivo.
+- **Auto-update silencioso en kiosco (Fase C, lado Unity)** → una tablet Device Owner nunca
+  muestra el cartel de actualización (`UpdateScreen`): auto-acepta la descarga, instala vía
+  `PackageInstaller` sin diálogo (`SilentInstaller.java`) apenas queda ociosa o el update es
+  forzado, y nunca muestra un cartel de error (nadie lo va a cerrar). Detalle completo
+  (arquitectura, gotcha de `FLAG_MUTABLE`, por qué no cae al intent visible, checklist de
+  validación en dispositivo real) en `docs/updates.md` §"Instalación silenciosa en kiosco (F8)"
+  — esa es la doc viva de updates, esta entrada solo ubica la decisión dentro del mapa de
+  kiosco.
 - **Convención OD-primero en toda la UI (orden de presentación, no de protocolo)** → el ojo
   derecho (OD) se muestra siempre antes/arriba/a la izquierda que el izquierdo (OI), siguiendo la
   convención clínica habitual. Esto es puramente visual: los ids de protocolo (`"left"`/`"right"`
@@ -202,7 +305,32 @@ TabletController.Start()
   el Editor hasta darle Play.
 - **Theming por "repaint" registrado** → cada widget registra `Action<TabletPalette>` en el kit;
   `ApplyTheme` solo hace `kit.Apply(paleta)` y toda la jerarquía se repinta sin reconstruirse.
-  La preferencia se persiste en `Application.persistentDataPath/ui_prefs.cfg` (`dark_mode=`).
+  La preferencia se persiste en `Application.persistentDataPath/ui_prefs.cfg` (`dark_mode=`, y desde
+  D2 también `lang=es|en` — ver el punto siguiente para el porqué de un mini lector/escritor
+  compartido).
+- **Prefs compartidas (`dark_mode=`/`lang=`) via un mini lector/escritor INI, no dos escrituras
+  independientes (D2)** → antes de esta tarea `SaveThemePref` sobreescribía el archivo ENTERO con
+  solo la línea `dark_mode=`; agregar `SaveLangPref` con el mismo patrón hubiera hecho que guardar
+  el idioma borre la preferencia de tema guardada (y viceversa). `TabletController.ReadPrefsFile`/
+  `WritePrefsFile` (≤25 líneas) leen/escriben TODAS las claves conocidas del archivo antes de
+  escribir, preservando el formato (`[ui]` + una línea `clave=valor` por preferencia) — un
+  `ui_prefs.cfg` viejo con solo `dark_mode=` (sin `lang=`) sigue leyéndose igual (`LoadLangPref`
+  devuelve `null`, `L10n.Initialize(null)` cae al idioma del sistema). `LoadThemePref`/
+  `SaveThemePref` no cambiaron de firma, solo delegan en el lector/escritor compartido.
+- **Idioma fijo al arrancar, cambio por reinicio de la app (D2, por qué)** → toda la UI de
+  `TabletController` se construye UNA vez en `Start()` (`BuildUI()`, ver "UI 100% construida por
+  código" más abajo); soportar un cambio de idioma en caliente hubiera exigido reconstruir TODA
+  la jerarquía de widgets y volver a suscribir `TabletSession`/eventos de `UpdateManager` sin perder
+  el estado de la sesión de red en curso — complejidad real sin caso de uso clínico (el clínico no
+  cambia el idioma de la tablet a mitad de una consulta, mismo criterio que "sin cambio en caliente"
+  de `docs/localizacion.md`). El toggle del header (ver "MainScreen / Header" arriba) persiste el
+  código nuevo en `ui_prefs.cfg` y llama `Application.Quit()`: en una tablet **kiosco** (Device
+  Owner, Fase A) la HOME persistente relanza la app al instante, ya en el idioma nuevo — el clínico
+  ni lo nota; en una tablet de **desarrollo** (sin Device Owner) la app simplemente se cierra y hay
+  que reabrirla a mano; en el **Editor**, `Application.Quit()` es un no-op documentado de Unity (no
+  sale de Play Mode) — para validar un cambio de idioma en el Editor hay que forzar el override
+  escribiendo `ui_prefs.cfg` a mano (`lang=es|en` en `Application.persistentDataPath`) y volver a
+  entrar a Play Mode, no alcanza con tocar el toggle desde adentro.
 - **`TabletButton` en vez de `Button` de uGUI** → los StyleBox de Godot cambian fill, borde y texto
   por estado y por modo toggle; el `ColorBlock` de uGUI no puede, así que se pinta a mano en `Repaint()`.
 - **Sprites redondeados generados en runtime** → `TabletUiKit.Rounded(radius)` fabrica la textura
@@ -913,7 +1041,14 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
   activo comparando la CLAVE del diccionario, no el texto del label. `hello.scenarios` manda
   `{id,label}` por escenario (la LISTA de ids viene de `ScenarioManager.ScenarioOrder`, ya no hay
   duplicación) y `load_scenario` viaja con `{"cmd":"load_scenario","id":...}`. Detalle de
-  protocolo en `docs/networking.md`.
+  protocolo en `docs/networking.md`. **D2, traducción por id sin tocar el protocolo:**
+  `ScenarioLabel(sid)` (usado por `RebuildScenarioList`/`RebuildStandardScenarioList`) prueba
+  primero `L10n.Has("scenario." + sid) ? L10n.T(...) : label` — si hay una clave de traducción para
+  ese id gana sobre el `label` crudo que manda el visor (`hello.scenarios`); si no (escenario nuevo
+  sin entrada todavía en `L10nTable`, o un visor viejo con un id no contemplado) cae al `label` del
+  hello tal cual, y en último caso al id capitalizado. El id sigue siendo la única clave de
+  protocolo (`ScenarioManager.ScenarioOrder`, `load_scenario`); el `label` del hello queda como
+  fallback de compatibilidad, nunca como fuente de la traducción.
 - **La actualización optimista descarta params:** `OnLensSelected` reemplaza el estado del ojo por
   `new JObject { lens_id }`; hasta que llega el `vision_state` real, `CurrentParamValue` cae a los
   defaults del catálogo. Ventana corta, pero visible si el visor tarda en confirmar. Nota P2.1: esa

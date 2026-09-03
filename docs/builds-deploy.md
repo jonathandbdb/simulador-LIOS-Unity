@@ -10,6 +10,7 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 |---------|-----|
 | `Assets/Scripts/Editor/TabletBuild.cs` | Build script dedicado de la tablet: apaga el loader OpenXR, buildea `Tablet.unity` y restaura el loader al terminar. Expone `IsTabletBuildInProgress` (gate para `TabletBootConfigPatcher`, ver fila siguiente). |
 | `Assets/Scripts/Editor/TabletBootConfigPatcher.cs` | `IPostGenerateGradleAndroidProject` (`callbackOrder = 9999`, corre último): borra del `boot.config` ya generado toda línea `xr-*` que el hook de OpenXR haya escrito, SOLO si `TabletBuild.IsTabletBuildInProgress` — fix determinista del gotcha del teclado (ver Gotchas). |
+| `Assets/Scripts/Editor/TabletManifestPatcher.cs` (nuevo, Fase A kiosco) | `IPostGenerateGradleAndroidProject` (`callbackOrder = 9998`, sin relación de orden real con `TabletBootConfigPatcher` — editan archivos distintos del proyecto Gradle generado), gateado igual por `TabletBuild.IsTabletBuildInProgress`. Edita `unityLibrary/src/main/AndroidManifest.xml` YA GENERADO (con `System.Xml.Linq`, idempotente) con TRES inyecciones: (1) un segundo `<intent-filter>` MAIN+HOME+DEFAULT a la Activity de Unity (sin tocar el LAUNCHER existente); (2) un `<receiver>` `SimuladorDeviceAdminReceiver` con su `<meta-data>` (`@xml/device_admin`) e intent-filter de `DEVICE_ADMIN_ENABLED`/`PROFILE_PROVISIONING_COMPLETE`; (3) un `<receiver>` `InstallResultReceiver` (Fase C, updates silenciosos — `android:exported="false"`, sin permiso especial, recibe el `PendingIntent` del commit de `PackageInstaller` que lanza `SilentInstaller.java`, ver `docs/updates.md` §"Instalación silenciosa en kiosco (F8)"). Detalle completo de (1)/(2) en §"Provisión de tablets (Device Owner)" más abajo. |
 | `Assets/XR/XRGeneralSettingsPerBuildTarget.asset` | Config XR por build target. El bloque "Android Providers" tiene `m_Loaders` apuntando al loader OpenXR (guid `0613ddada2fe14947a9b75e90912b7ba`). |
 | `Assets/XR/Loaders/OpenXRLoader.asset` | El loader OpenXR que se activa/desactiva. |
 | `Assets/XR/Settings/OpenXR Package Settings.asset` | Configuración del paquete OpenXR (features, interaction profiles). |
@@ -33,6 +34,7 @@ Pipeline de compilación e instalación de las tres piezas del simulador: el APK
 | Product name | `Simulador` (Project Settings) | `Simulador Tablet` (seteado/restaurado solo durante el build, igual que el package) |
 | Icono | `icon_visor.png` (es el default del proyecto, target `Unknown`; Android lo hereda si no tiene override) | `icon_tablet.png` (seteado en los slots de Android SOLO durante `TabletBuild`, restaurado al terminar — mismo patrón try/finally que package/nombre) |
 | Scripting backend | IL2CPP / arm64-v8a, min SDK 29 (según `README.md`) | Idéntico (mismo target compartido) |
+| Manifest: kiosco (HOME + DeviceAdminReceiver) | Ausente (el `.java`/`.xml` compilan igual pero el manifest del visor no los declara — inertes) | Inyectado post-Gradle por `TabletManifestPatcher.cs`, gateado por `IsTabletBuildInProgress` (Fase A, ver `docs/tablet.md`) |
 
 ### Flujo del build de tablet (`TabletBuild.BuildTablet()`)
 
@@ -54,6 +56,9 @@ try:
     BuildPipeline.BuildPlayer(Tablet.unity → Builds/Android/Simulador.apk)
         └─ durante la generación del proyecto Gradle, Unity llama a TODOS los
            IPostGenerateGradleAndroidProject registrados, en orden de callbackOrder;
+           TabletManifestPatcher (callbackOrder 9998) inyecta en el AndroidManifest.xml
+           ya generado el intent-filter HOME + el <receiver> SimuladorDeviceAdminReceiver
+           del kiosco (Fase A, ver docs/tablet.md) — sin relación de orden con el siguiente;
            TabletBootConfigPatcher (callbackOrder 9999, corre último) borra del
            boot.config ya escrito toda línea "xr-*" — ver Gotchas del teclado
 finally:
@@ -85,6 +90,135 @@ adb logcat -s Unity
 Con visor y tablet conectados a la vez, usar `adb -s <serial>` (los seriales salen de `adb devices`).
 Con packages distintos (P6.7), ambos APKs también pueden convivir instalados en el MISMO
 dispositivo si hiciera falta probarlos juntos (antes, instalar uno reemplazaba al otro).
+
+### Provisión de tablets (Device Owner)
+
+Procedimiento de taller para dejar una tablet lista para salir a una clínica sin volver a
+tocarla: modo kiosco vía **Android Device Owner** (Fase A del pedido de "vender bundles Quest +
+tablet sin volver a tocar los dispositivos"; el porqué de elegir Device Owner en vez de otro
+mecanismo vive en `docs/tablet.md` Decisiones "Kiosco vía Android Device Owner"). Fase B (WiFi
+desde la propia app) y Fase C (updates silenciosos, QR provisioning) son requisitos posteriores
+que ya dejan el terreno preparado (`SimuladorDeviceAdminReceiver.onProfileProvisioningComplete`,
+ver `docs/tablet.md`) pero NO son parte de este procedimiento.
+
+**Requisitos:**
+- Tablet recién salida de fábrica (o factory-reseteada), con **CERO cuentas** agregadas —
+  `dpm set-device-owner` falla si hay alguna.
+- Opciones de desarrollador + Depuración USB activadas, y esta PC autorizada (`adb devices` debe
+  listarla como `device`, no `unauthorized`).
+- APK de la tablet ya buildeado (`Simulador → Build Tablet (Android)`, ver arriba) — el manifest
+  del kiosco (intent-filter HOME + `<receiver>` de `SimuladorDeviceAdminReceiver`) tiene que estar
+  inyectado, cosa que hace `TabletManifestPatcher.cs` automáticamente en CUALQUIER build de
+  tablet (no es un flag opcional).
+
+**Procedimiento (`scripts/provision-tablet.sh`):**
+
+```bash
+scripts/provision-tablet.sh                      # usa Builds/Android/Simulador.apk
+scripts/provision-tablet.sh --apk otra/ruta.apk --serial <serial>   # con más de un dispositivo
+```
+
+El script (por defecto): `adb wait-for-device` → verifica que la tablet no tenga cuentas
+(`dumpsys account`, aborta con instrucciones si encuentra alguna) → `adb install -r <apk>` →
+`adb shell dpm set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver`
+→ `adb shell appops set com.simulador.tablet REQUEST_INSTALL_PACKAGES allow` (red de seguridad,
+ver nota abajo) → lanza la app (`monkey`) → verifica
+`dumpsys device_policy` (debe listar `com.simulador.tablet` como Device Owner) y
+`dumpsys package com.simulador.tablet | grep versionName`. Cada paso corta con `exit 1` y un
+mensaje claro ante el primer fallo.
+
+**Con el Device Owner puesto, el OTA es silencioso (Fase C, lado Unity — `docs/updates.md`
+§"Instalación silenciosa en kiosco (F8)"):** `UpdateInstaller` instala el APK descargado vía
+`PackageInstaller` (`SilentInstaller.java`) sin ningún diálogo ni intervención humana — el
+`appops set ... REQUEST_INSTALL_PACKAGES allow` de arriba queda como **red de seguridad**, no
+como el mecanismo real de instalación: cubre el caso borde de que `KioskManager.IsDeviceOwner`
+de `false` por algún motivo (p. ej. el registro de Device Owner se perdió) y el flujo caiga de
+vuelta al intent `ACTION_VIEW` visible de `UpdateInstaller`, que sí necesita ese permiso
+concedido para no pedir confirmación manual.
+
+**Gotcha "already provisioned":** `dpm set-device-owner` falla con *"Trying to set the device
+owner, but device is already provisioned"* en cualquier tablet que ya pasó por el asistente de
+configuración inicial de Android — lo hacen la mayoría de fábrica al primer boot, aunque no se
+haya agregado ninguna cuenta. `scripts/provision-tablet.sh --fix-setup` aplica el truco **sin
+root** (`adb shell settings put global device_provisioned 0` + insertar
+`user_setup_complete=0` en `Settings.Secure` vía `content insert`) para volver la tablet a un
+estado "no provisionado" y reintentar `set-device-owner` sin un factory reset.
+
+**Verificación post-provisión:**
+1. Reiniciar la tablet (o `adb reboot`) y confirmar que arranca DIRECTO en la app (sin launcher
+   de Android visible) — la HOME persistente (`KioskManager.ApplyPolicies`,
+   `addPersistentPreferredActivity`) hace que la app sea la única pantalla de inicio.
+2. Confirmar que no se puede salir con los gestos normales (recientes/atrás/home del sistema no
+   están disponibles bajo `startLockTask`, `KioskManager.EnterLockTask()` en `Start()`).
+3. Confirmar que el botón físico de power SÍ abre el menú de apagado
+   (`LOCK_TASK_FEATURE_GLOBAL_ACTIONS`, ver `docs/tablet.md` Decisiones — si no aparece, revisar
+   que `setLockTaskFeatures` se haya aplicado).
+4. Confirmar que el botón "Red Wi-Fi" de la `ConnectScreen` abre el panel de WiFi de Android
+   (bajo lock task, gracias a `com.android.settings` en el allowlist — ver `docs/tablet.md`).
+
+**Cómo se sale (soporte real):** `dpm remove-active-admin` **NO sirve** para un Device Owner
+(solo aplica a "device admins" comunes, no al owner) — Android exige `clearDeviceOwnerApp()`
+llamado DESDE la propia app, o un factory reset completo. El camino normal de soporte es el gesto
+de la app: 7 taps en el título del `ConnectScreen` (`app.title` — "Simulador IOL" en es, **"IOL
+Simulator" en en**, ver `docs/localizacion.md`) dentro de 3 segundos + PIN de servicio (ver
+`docs/tablet.md` "Pantallas" y Decisiones). **Correcciones (MAYOR #12)**: el PIN correcto YA NO
+cierra la app — antes hacía `ExitLockTask()` + `Application.Quit()`, una carrera que además no
+servía de nada (la HOME persistente relanzaba la app, que volvía a entrar a lock task en su
+`Start()`). Ahora entra a un **modo servicio** real (`KioskManager.EnterServiceMode()`): sale del
+lock task de verdad, libera la HOME persistente y deja la app ABIERTA con un banner y un botón
+"Volver al kiosco" — el operador tiene una ventana real (sin carrera, sin relanzamiento) para ir a
+Home/Ajustes y conectar adb, y decide cuándo volver al kiosco (o reinstalar) en vez de una ventana
+de segundos. `scripts/provision-tablet.sh --unprovision` es más limitado: SOLO desinstala la app
+(el registro de Device Owner queda a nivel de sistema); para limpiarlo del todo hace falta
+`clearDeviceOwnerApp()` desde la app o un factory reset.
+
+#### Recuperación remota por QR
+
+Para cuando la tablet NO está en el taller: una clínica en el exterior sufre un **factory
+reset** (batería agotada durante una actualización de Android, restablecimiento accidental,
+etc.) y el procedimiento de arriba (`scripts/provision-tablet.sh` por USB/adb) no es viable a
+distancia. La alternativa es **Android Enterprise QR provisioning**: el propio asistente de
+configuración de Android sabe leer un QR con las extras `PROVISIONING_*` y hacer todo el
+`dpm set-device-owner` + descarga del APK solo, sin adb ni PC de por medio del lado del
+cliente. El backend genera ese QR en `/admin/provisioning` (detalle del payload, los dos
+checksums posibles y por qué se prefiere el de firma en `docs/backend.md` > "Auth y panel
+admin" > Provisioning).
+
+**Pasos del cliente (instrucciones que se le mandan por mail/teléfono junto con el QR):**
+1. Encender la tablet recién factory-reseteada y llegar a la pantalla de bienvenida del
+   asistente de configuración (el primer paso, antes de elegir idioma/WiFi).
+2. Tocar 6 veces seguidas en un punto vacío de esa pantalla — Android abre el lector de QR de
+   provisioning.
+3. Escanear el QR (impreso o desde la pantalla de otro dispositivo).
+4. Esperar sin tocar nada: la tablet descarga el APK desde `PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION`
+   (el `/files/apk/tablet/...` público del backend), verifica el checksum, se registra como
+   Device Owner y la app se abre sola al terminar (`SimuladorDeviceAdminReceiver.onProfileProvisioningComplete`,
+   ver `docs/tablet.md`).
+5. **No crear ninguna cuenta Google** en ningún momento del proceso — igual que en la provisión
+   de taller, cualquier cuenta agregada antes de terminar el provisioning lo hace fallar.
+
+**Pasos del operador (backend):**
+1. Confirmar que la versión ACTIVA del canal `tablet` en `/admin/versions` es la que se quiere
+   mandar (el QR apunta a esa `apk_url`/checksum en el momento de generarlo).
+2. Entrar a `/admin/provisioning`. Si el cliente dio datos de su WiFi/idioma/zona horaria,
+   cargarlos en el form (opcionales; no se guardan en el servidor, solo viajan dentro del QR de
+   esa respuesta) para que la tablet salga configurada sin pasos manuales adicionales.
+3. Mandar el QR resultante (captura de pantalla o impresión) al cliente junto con los pasos de
+   arriba.
+
+**Requisito para que el QR mandado por mail no caduque:** la versión activa del canal `tablet`
+tiene que estar firmada con el **keystore del proyecto** (el mismo `keystore/simulador.keystore`
+de la sección Firma más abajo) y `PROVISIONING_SIGNATURE_CHECKSUM` tiene que estar configurado en
+el `.env` del backend — si no, `/admin/provisioning` cae al checksum del PAQUETE (derivado del
+APK activo), que queda inválido en cuanto se publica una versión nueva de la tablet (un QR viejo
+en la bandeja de entrada de un cliente dejaría de servir). El checksum de firma es **configuración
+única por proyecto** (no cambia entre releases, se configura una sola vez):
+
+```bash
+<Editor Unity>/Data/PlaybackEngines/AndroidPlayer/OpenJDK/bin/keytool \
+  -exportcert -alias simulador -keystore keystore/simulador.keystore \
+  | openssl dgst -sha256 -binary | openssl base64 | tr -d '=' | tr -- '+/' '-_'
+```
 
 ### Deploy del backend (resumen)
 
@@ -322,7 +456,14 @@ producción, el activo más irreemplazable del proyecto.
   OpenXR y el `applicationIdentifier`/`productName` SÍ se restauran igual (el `finally` de
   `TabletBuild` corre aunque `BuildPlayer` falle). **Fix:** sacar las dos ocurrencias de `--` del
   comentario (reemplazar por `-` simple, `—` em dash, o reformular la frase). **Regla:** ningún
-  comentario XML en este manifest puede contener `--`.
+  comentario XML en este manifest puede contener `--`. La regla del `--` en comentarios XML
+  aplica a **todo XML de Android**, no solo a este manifest — mismo bug apareció en
+  `SimuladorUpdate.androidlib/res/xml/device_admin.xml` (incidente real, 2026-09-02) y tardó
+  varios minutos de IL2CPP en manifestarse porque el Editor y el compile-gate no validan
+  recursos de un `.androidlib` (solo Gradle/`aapt2` en build, vía `XMLStreamException`/
+  `aapt2 error: not well-formed`). **Regla:** tras crear/editar cualquier `res/**/*.xml` del
+  androidlib, correr `aapt2 compile <archivo> -o <dir>` (mismo parser que Gradle, toma
+  milisegundos) antes de buildear.
 - **`keytool -printcert -jarfile <apk>` dice "No es un archivo jar firmado" en APKs firmados por
   Unity 6, aunque SÍ estén firmados — falso negativo, verificado en vivo (2026-07-09) con las
   primeras builds firmadas con el keystore del proyecto.** El Gradle/Unity moderno firma con

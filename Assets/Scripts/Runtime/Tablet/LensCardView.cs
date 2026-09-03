@@ -1,4 +1,5 @@
 using System;
+using Simulador.Localization;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
@@ -64,12 +65,12 @@ namespace Simulador.Tablet
             // hint, sin pildora: no compite con los chips OD/OI de estado.
             if (origen == "custom" || origen == "generic")
             {
-                var badge = kit.Label(top, origen == "custom" ? "Propia" : "Genérica",
+                var badge = kit.Label(top, L10n.T(origen == "custom" ? "lens.badge_custom" : "lens.badge_generic"),
                     LabelKind.Hint, TextAlignmentOptions.Right);
                 badge.raycastTarget = false;
             }
-            view._chipOd = Chip(kit, top, "OD", LabelKind.ChipOD);
-            view._chipOi = Chip(kit, top, "OI", LabelKind.ChipOI);
+            view._chipOd = Chip(kit, top, L10n.T("common.od"), LabelKind.ChipOD);
+            view._chipOi = Chip(kit, top, L10n.T("common.os"), LabelKind.ChipOI);
 
             // Descripcion clinica (oculta si vacia).
             if (!string.IsNullOrEmpty(descripcion))

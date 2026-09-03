@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Simulador.Localization;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
@@ -395,10 +396,10 @@ namespace Simulador.Tablet
             Size(row, minH: 48);
             var lbl = Label(row, labelText, LabelKind.Body, TextAlignmentOptions.Left);
             Size(lbl.rectTransform, flexW: 1);
-            sw = Button(row, "Off", BtnStyle.Segment, toggle: true, minHeight: 40, fontSize: 14);
+            sw = Button(row, L10n.T("common.off"), BtnStyle.Segment, toggle: true, minHeight: 40, fontSize: 14);
             Size(RT(sw.gameObject), minW: 72, prefW: 72, flexW: 0);
             var swRef = sw;
-            sw.OnToggled += on => swRef.Label.text = on ? "On" : "Off";
+            sw.OnToggled += on => swRef.Label.text = L10n.T(on ? "common.on" : "common.off");
             return sw;
         }
 

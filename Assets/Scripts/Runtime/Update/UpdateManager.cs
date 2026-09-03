@@ -5,6 +5,7 @@ using System.Security.Cryptography;
 using UnityEngine;
 using UnityEngine.Networking;
 using Simulador.Data;
+using Simulador.Localization;
 using Simulador.Tablet;
 
 namespace Simulador.Update
@@ -66,6 +67,14 @@ namespace Simulador.Update
         /// pendiente de verificar). Formato simple pensado para telemetria (F6), no UI.
         /// </summary>
         public string LastUpdateOutcome { get; private set; } = "";
+
+        // Correcciones (CRITICO #2a, ver docs/updates.md): resultado del ultimo
+        // LaunchInstall(), para que el caller (TabletController, en kiosco) pueda
+        // decidir DESPUES de llamarlo si corresponde mostrar el modal "Instalando..."
+        // -- antes se mostraba a ciegas ANTES de saber si la instalacion silenciosa
+        // arranco de verdad. Default Started (valor 0 del enum) es inofensivo: solo
+        // se lee inmediatamente despues de un LaunchInstall(), nunca antes.
+        public UpdateInstaller.InstallLaunchResult LastInstallLaunchResult { get; private set; }
 
         // Evento update_success/update_incomplete calculado en CheckPendingUpdateMarker
         // (Awake, antes de que DataManager haya resuelto el backend) pero recien enviado
@@ -324,6 +333,7 @@ namespace Simulador.Update
             }
             string targetVersion = _lastManifest?.ApkVersion ?? "";
             var result = UpdateInstaller.LaunchInstall(ApkPath, targetVersion, msg => UpdateFailed?.Invoke(msg));
+            LastInstallLaunchResult = result;
             _permissionPendingRetry = result == UpdateInstaller.InstallLaunchResult.PermissionRequested;
             SendTelemetry(new UpdateLogic.LogEvent("update_install_launched", $"version={targetVersion} result={result}"));
         }
@@ -364,7 +374,7 @@ namespace Simulador.Update
             try { Directory.CreateDirectory(UpdatesDir); }
             catch (Exception e)
             {
-                UpdateFailed?.Invoke($"No se pudo crear la carpeta de updates ({e.GetType().Name}).");
+                UpdateFailed?.Invoke(L10n.T("update.err_create_folder", e.GetType().Name));
                 SendTelemetry(new UpdateLogic.LogEvent("update_download_failed", e.GetType().Name));
                 yield break;
             }
@@ -380,7 +390,7 @@ namespace Simulador.Update
             catch (Exception e)
             {
                 CleanupPartialFile(path);
-                UpdateFailed?.Invoke($"No se pudo iniciar la descarga ({e.GetType().Name}).");
+                UpdateFailed?.Invoke(L10n.T("update.err_start_download", e.GetType().Name));
                 SendTelemetry(new UpdateLogic.LogEvent("update_download_failed", e.GetType().Name));
                 yield break;
             }
@@ -397,14 +407,14 @@ namespace Simulador.Update
             if (req.result != UnityWebRequest.Result.Success)
             {
                 CleanupPartialFile(path);
-                UpdateFailed?.Invoke($"Descarga fallida ({req.result}).");
+                UpdateFailed?.Invoke(L10n.T("update.err_download_failed", req.result));
                 SendTelemetry(new UpdateLogic.LogEvent("update_download_failed", req.result.ToString()));
                 yield break;
             }
             if (req.responseCode != 200)
             {
                 CleanupPartialFile(path);
-                UpdateFailed?.Invoke($"El servidor respondio {req.responseCode} al descargar el APK.");
+                UpdateFailed?.Invoke(L10n.T("update.err_server_response", req.responseCode));
                 SendTelemetry(new UpdateLogic.LogEvent("update_download_failed", $"http_{req.responseCode}"));
                 yield break;
             }
@@ -478,7 +488,7 @@ namespace Simulador.Update
             if (ioError || actualHex == null)
             {
                 CleanupPartialFile(path);
-                UpdateFailed?.Invoke("No se pudo verificar la integridad del APK descargado.");
+                UpdateFailed?.Invoke(L10n.T("update.err_verify_integrity"));
                 SendTelemetry(new UpdateLogic.LogEvent("update_download_failed", "verify_io_error"));
                 yield break;
             }
@@ -495,6 +505,18 @@ namespace Simulador.Update
             _readyToInstall = true;
             ReadyToInstall?.Invoke(path);
         }
+
+        /// <summary>
+        /// CRITICO #2c (correcciones, ver docs/updates.md): reporta un fallo de
+        /// instalacion silenciosa detectado FUERA del flujo sincrono de
+        /// <see cref="LaunchInstall"/> -- el resultado async del commit de
+        /// PackageInstaller (<c>InstallResultReceiver.java</c> vía
+        /// <c>TabletController.OnSilentInstallResult</c>) o el watchdog de timeout.
+        /// Mismo evento <c>update_install_failed</c> que usa el resto del sistema
+        /// de telemetria, expuesto publico porque <c>SendTelemetry</c> es privado.
+        /// </summary>
+        public void ReportInstallFailure(string detail) =>
+            SendTelemetry(new UpdateLogic.LogEvent("update_install_failed", detail));
 
         // ---------------- Telemetria (F6) ----------------
         private const string LogEndpoint = "/api/log";

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json.Linq;
+using Simulador.Localization;
 using Simulador.Net;
 using UnityEngine;
 
@@ -57,7 +58,7 @@ namespace Simulador.Tablet
         private string _authFailReason; // "pin" | "token", valido solo junto con _authFailed
         private bool _authLocked;
         private int _authLockRetrySeconds;
-        private string _manualDisconnectMessage = "Sesión finalizada.";
+        private string _manualDisconnectMessage = L10n.T("connect.session_ended");
 
         private static string PairingPath => Path.Combine(Application.persistentDataPath, PairingFileName);
 
@@ -247,10 +248,12 @@ namespace Simulador.Tablet
         public void ConnectWithToken(string host, string token) => ConnectInternal(host, null, token);
 
         /// <summary>Desconexion manual (boton "Desconectar" de la UI, o Unpair). "message" es lo que ve el ConnectScreen al volver.</summary>
-        public void Disconnect(string message = "Sesión finalizada.")
+        public void Disconnect(string message = null)
         {
             _manualDisconnect = true;
-            _manualDisconnectMessage = message;
+            // "message" no puede ser un default de parametro (L10n.T no es constante de
+            // compilacion) -- se resuelve aca, mismo texto que antes (connect.session_ended).
+            _manualDisconnectMessage = message ?? L10n.T("connect.session_ended");
             _reconnecting = false; // defensivo: no hay Reconectar visible en MainScreen, pero por si acaso
             _ws.Close();
         }
@@ -268,7 +271,7 @@ namespace Simulador.Tablet
             SendCommand(new JObject { ["cmd"] = "unpair" });
             if (!string.IsNullOrEmpty(_currentHost) && _tokenByHost.Remove(_currentHost))
                 SavePairing();
-            Disconnect("Desvinculado. Ingresá el PIN si querés volver a conectarte.");
+            Disconnect(L10n.T("connect.unpaired"));
         }
 
         public bool SendCommand(JObject cmd)
@@ -298,8 +301,8 @@ namespace Simulador.Tablet
                 _authLocked = false;
                 _connecting = false;
                 string msg = _authLockRetrySeconds > 0
-                    ? "Demasiados intentos. Esperá " + _authLockRetrySeconds + "s y volvé a intentarlo."
-                    : "Demasiados intentos. Esperá un momento y volvé a intentarlo.";
+                    ? L10n.T("pin.locked_retry", _authLockRetrySeconds)
+                    : L10n.T("pin.locked_retry_unknown");
                 if (_reconnecting)
                 {
                     // P2.5: durante una reconexion automatica NO se abandona el loop -- el
@@ -324,8 +327,8 @@ namespace Simulador.Tablet
                 _connecting = false;
                 _reconnecting = false;
                 string msg = _authFailReason == "token"
-                    ? "El emparejamiento con este visor ya no es válido. Ingresá el PIN nuevamente."
-                    : "PIN incorrecto. Volvé a intentarlo.";
+                    ? L10n.T("pin.token_invalid")
+                    : L10n.T("pin.incorrect");
                 _authFailReason = null;
                 PinScreenRequested?.Invoke(msg);
                 return;
@@ -337,11 +340,11 @@ namespace Simulador.Tablet
                 {
                     _reconnecting = false;
                     _manualDisconnect = false;
-                    ShowConnectScreenRequested?.Invoke("Tocá un visor para conectarte.", false);
+                    ShowConnectScreenRequested?.Invoke(L10n.T("connect.tap_to_connect"), false);
                     return;
                 }
-                if (_reconnecting) { ScheduleNextReconnectAttempt("No se pudo conectar."); return; }
-                ShowConnectScreenRequested?.Invoke("No se pudo conectar con " + _currentHost + ".", true);
+                if (_reconnecting) { ScheduleNextReconnectAttempt(L10n.T("reconnect.could_not_connect")); return; }
+                ShowConnectScreenRequested?.Invoke(L10n.T("connect.failed_to_host", _currentHost), true);
             }
             else if (_sessionActive)
             {
@@ -368,22 +371,22 @@ namespace Simulador.Tablet
                 // _sessionActive era true -- llegar a una sesion activa ya implica que
                 // hubo un auth_ok con token, ver OnText -- pero por las dudas se degrada
                 // al flujo manual).
-                ShowConnectScreenRequested?.Invoke("Se perdió la conexión con el visor.", true);
+                ShowConnectScreenRequested?.Invoke(L10n.T("reconnect.lost_connection"), true);
                 return;
             }
             _pendingAuthToken = token;
             _pendingAuthPin = null;
             _reconnecting = true;
             _reconnectAttempt = 0;
-            ReconnectStarted?.Invoke("Se perdió la conexión con el visor.");
-            ScheduleNextReconnectAttempt("Se perdió la conexión con el visor.");
+            ReconnectStarted?.Invoke(L10n.T("reconnect.lost_connection"));
+            ScheduleNextReconnectAttempt(L10n.T("reconnect.lost_connection"));
         }
 
         private void ScheduleNextReconnectAttempt(string reasonMessage)
         {
             float delay = DelayForAttempt(_reconnectAttempt + 1);
             _reconnectCountdown = delay;
-            ReconnectStatusChanged?.Invoke($"{reasonMessage} Reintentando en {Mathf.CeilToInt(delay)}s…");
+            ReconnectStatusChanged?.Invoke(L10n.T("reconnect.retrying_in", reasonMessage, Mathf.CeilToInt(delay)));
         }
 
         private void DoReconnectAttempt()
@@ -403,7 +406,7 @@ namespace Simulador.Tablet
             // ScheduleNextReconnectAttempt (fallo de conexion) o la rama auth_locked
             // de OnWsDisconnected (espera explicita del retry_in_s).
             _reconnectCountdown = float.PositiveInfinity;
-            ReconnectStatusChanged?.Invoke($"Reconectando… (intento {_reconnectAttempt})");
+            ReconnectStatusChanged?.Invoke(L10n.T("reconnect.attempt", _reconnectAttempt));
             _connecting = true;
             _ws.Connect(_currentHost, WsPort);
         }

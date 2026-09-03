@@ -10,18 +10,23 @@ por USB. Igual que el catálogo de lentes (`docs/catalogo-lentes.md`, patrón ca
 lógica de negocio (parseo de semver, del manifest, decisión de actualizar) vive separada en
 una clase PURA testeable en EditMode; el `MonoBehaviour` orquesta IO/red/corrutinas.
 
-**Estado actual: F5 completa + F6 completa (telemetría + keystore propio).** Existe la lógica
-pura, el manager con check de manifest, descarga con progreso, verificación SHA256, el
-`UpdateInstaller` que lanza el intent de instalación Android (manifest/permisos/`FileProvider`
-incluidos), las DOS UIs del cartel de update (tablet y visor VR) — ver "UI del cartel (F5)" más
-abajo —, el envío de telemetría `update_*` al backend (`POST /api/log`) — ver "Telemetría (F6)"
-más abajo — y el keystore propio del proyecto que firma los APKs (2026-07-09, detalle en
-`docs/builds-deploy.md` §Firma (keystore) del proyecto; primeras builds update-capable
-`visor-0.1.0-updatecap.apk`/`tablet-0.1.0-updatecap.apk` ya firmadas y verificadas con
-`apksigner`, gate F4 de manifest/FileProvider pasado en ambas).
+**Estado actual: F5 completa + F6 completa (telemetría + keystore propio) + F8 completa (lado
+Unity de la instalación silenciosa Device Owner).** Existe la lógica pura, el manager con check
+de manifest, descarga con progreso, verificación SHA256, el `UpdateInstaller` que lanza el
+intent de instalación Android (manifest/permisos/`FileProvider` incluidos) o, en una tablet
+Device Owner, la instalación TOTALMENTE silenciosa vía `PackageInstaller` (F8, ver
+"Instalación silenciosa en kiosco (F8)" más abajo), las DOS UIs del cartel de update (tablet y
+visor VR) — ver "UI del cartel (F5)" más abajo —, el envío de telemetría `update_*` al backend
+(`POST /api/log`) — ver "Telemetría (F6)" más abajo — y el keystore propio del proyecto que
+firma los APKs (2026-07-09, detalle en `docs/builds-deploy.md` §Firma (keystore) del proyecto;
+primeras builds update-capable `visor-0.1.0-updatecap.apk`/`tablet-0.1.0-updatecap.apk` ya
+firmadas y verificadas con `apksigner`, gate F4 de manifest/FileProvider pasado en ambas).
 **Pendiente (fuera de esta tarea):**
 - **F7** — validación E2E en dispositivos reales + primer release publicado por el panel
   (subir estos mismos APKs 0.1.0/vc1 al panel, `apk_sha256` real recién existirá ahí).
+- **F8 (resto)** — el lado backend (QR de provisioning) queda fuera de esta tarea, lo hace otro
+  agente después; y la validación en dispositivo real de la instalación silenciosa de punta a
+  punta (checklist completo en Riesgos/Pendientes de la entrega de esta tarea).
 
 ## Arquitectura actual
 
@@ -58,6 +63,19 @@ UpdateManager.AcceptUpdate() → DownloadApk (UnityWebRequest + DownloadHandlerF
 UpdateManager.LaunchInstall() → UpdateInstaller.LaunchInstall(apkPath, targetVersion, onFailed)
         │  no-op si _readyToInstall es false (no hay descarga verificada vigente)
         ▼
+¿KioskManager.IsDeviceOwner? (F8 — tablet provisionada como Device Owner)
+   sí  → escribe persistentDataPath/update_pending.json (mismo marker, MISMO helper,
+         ANTES del commit)
+         → com.simulador.kiosk.SilentInstaller.install(activity, apkPath) (JNI)
+           PackageInstaller: createSession(MODE_FULL_INSTALL) [+ setRequireUserAction
+           (USER_ACTION_NOT_REQUIRED) si SDK_INT>=31] → openSession → copia el APK
+           (buffer 64 KB) → commit(PendingIntent → InstallResultReceiver)
+         → InstallLaunchResult.StartedSilent — SIN dialogo, SIN intervencion humana
+         → excepcion (cualquier paso) → InstallLaunchResult.Failed +
+           onFailed("silent_install_failed: <tipo>") — NUNCA cae al ACTION_VIEW de
+           abajo (ver Decisiones "Por que no caer a ACTION_VIEW en kiosco")
+   no  → sigue el flujo de abajo sin cambios (visor, o tablet SIN Device Owner)
+        ▼
 ¿packageManager.canRequestPackageInstalls()?
    no  → abre ajuste ACTION_MANAGE_UNKNOWN_APP_SOURCES (package:<identifier>)
          → InstallLaunchResult.PermissionRequested
@@ -69,6 +87,17 @@ UpdateManager.LaunchInstall() → UpdateInstaller.LaunchInstall(apkPath, targetV
            FLAG_ACTIVITY_NEW_TASK) + startActivity
          → InstallLaunchResult.Started (el instalador de Android toma el control)
 ```
+
+En la rama silenciosa (F8), `com.simulador.kiosk.InstallResultReceiver` (BroadcastReceiver propio,
+`Assets/Plugins/Android/com/simulador/kiosk/`) recibe el resultado del `commit`:
+`STATUS_SUCCESS` solo se loguea (`SimuladorKiosk`, tag Java) — el proceso muere ahí mismo porque
+Android reemplaza el APK en caliente, y es la HOME persistente (`KioskManager.ApplyPolicies`,
+Fase A) la que relanza la app sola; `STATUS_PENDING_USER_ACTION` (red de seguridad, no debería
+pasar siendo Device Owner) reenvía el `Intent` de `EXTRA_INTENT` con `FLAG_ACTIVITY_NEW_TASK`;
+cualquier otro estado es un log de error con `EXTRA_STATUS_MESSAGE`. **No inventa un marker
+nuevo**: `update_pending.json` ya lo escribió `UpdateInstaller` (mismo helper que la rama
+`ACTION_VIEW`) ANTES del commit, así que `update_success`/`update_incomplete` en el próximo
+arranque salen exactamente igual que en la rama visible, sin ningún cambio en `UpdateManager`.
 
 En el próximo arranque de la app (post-instalación real, un proceso nuevo), `UpdateManager.Awake`
 lee `update_pending.json` (si existe), compara `Application.version` contra `target_version`, loguea
@@ -195,6 +224,12 @@ el marcador.
   inválido, vacío/null, claves faltantes), `Decide` (paridad, optional, forced, `apk_version`
   inválido, downgrade, manifest null, `min_apk_version` inválido no fuerza) y (F4)
   `SerializePendingMarker`/`TryParsePendingMarker` (roundtrip, JSON inválido, vacío/null).
+- **Localización (D1/D2, ver `docs/localizacion.md`)** — los textos de `UpdatePromptVR.cs` y los
+  mensajes que `UpdateManager.cs` manda por `UpdateFailed` (salvo el código de contrato
+  `"sha_mismatch"`, que NO se traduce) salen de `Simulador.Localization.L10n`
+  (`Assets/Scripts/Runtime/Localization/`). El cartel de la tablet (`TabletController.cs`,
+  `UpdateScreen`) también está cableado con `L10n.T(...)` (D2 completa, corrección de un drift
+  de esta doc: decía "pendiente de cablear" — ya no lo está desde D2, ver `docs/localizacion.md`).
 
 ### UI del cartel (F5)
 
@@ -316,7 +351,8 @@ descarta, igual que el resto de las llamadas de red de esta clase.
 | `update_download_ok` | Descarga completada con éxito (antes de la verificación SHA256; el dummy no tiene sha real y esto es "descarga OK" per se). | `bytes=<downloadedBytes> seconds=<elapsed:F1>` |
 | `update_download_failed` | Cualquier fallo de la descarga: excepción al crear la carpeta/iniciar la request, `result != Success`, `responseCode != 200`, o error de IO al verificar el SHA256 (`verify_io_error`). | la razón corta (nombre de excepción, `req.result`, `http_<code>` o `verify_io_error`) |
 | `update_sha_mismatch` | El hash calculado no matchea `manifest.ApkSha256` (`Sha256Matches` devuelve `false`). | `expected=<hex> actual=<hex>` |
-| `update_install_launched` | Al llamar `LaunchInstall()` con `_readyToInstall == true` (pasa el guard), sea cual sea el resultado (`Started`/`PermissionRequested`/`Failed`). | `version=<targetVersion> result=<InstallLaunchResult>` |
+| `update_install_launched` | Al llamar `LaunchInstall()` con `_readyToInstall == true` (pasa el guard), sea cual sea el resultado (`Started`/`PermissionRequested`/`Failed`/`StartedSilent`). | `version=<targetVersion> result=<InstallLaunchResult>` |
+| `update_install_failed` (correcciones, CRÍTICO #2c) | Fallo de instalación silenciosa detectado FUERA del flujo síncrono de `LaunchInstall()` — commit asíncrono de `PackageInstaller` con status distinto de éxito (`TabletController.OnSilentInstallResult`, vía `InstallResultReceiver.java`/`UnitySendMessage`) o el watchdog de 120s sin resultado. Enviado por `UpdateManager.ReportInstallFailure(detail)`. | `status=<n> message=<...>` (async) o `timeout` (watchdog) |
 | `update_success` / `update_incomplete` | Al arranque siguiente, calculado en `CheckPendingUpdateMarker` (Awake) a partir de `update_pending.json`, pero **enviado recién en `InitializeAsync`** tras el `WaitUntil(BackendConfigReady)` — mandarlo antes reventaría contra el `BackendUrl` default sin resolver. | `expected=<target_version> actual=<Application.version>` |
 
 **Contrato de `POST /api/log`** (backend, ya desplegado): `{"device_id": "<str≤128>", "events":
@@ -334,6 +370,125 @@ verdad (la única mención previa en `DataLogicTests.cs` era un comentario). Fix
 agregar `"Newtonsoft.Json.dll"` a `"precompiledReferences"` — necesario para que
 `UpdateLogicTests.SerializeLogBatch_*` (que parsea el JSON de vuelta con `JObject.Parse`)
 compile.
+
+### Instalación silenciosa en kiosco (F8)
+
+Lado Unity de "las tablets se venden a clínicas de otros países y nadie las vuelve a tocar": en
+una tablet provisionada como Android Device Owner (Fase A, `docs/tablet.md` Decisiones "Kiosco
+vía Android Device Owner") todo el flujo de update se vuelve silencioso de punta a punta — sin
+cartel, sin diálogo de Android. El lado backend (QR de provisioning) queda para una tarea
+aparte.
+
+- **`Assets/Plugins/Android/com/simulador/kiosk/SilentInstaller.java`** (mismo paquete que
+  `SimuladorDeviceAdminReceiver`, Fase A) — `install(Context, String apkPath)` estático: abre
+  una sesión de `PackageInstaller` (`SessionParams(MODE_FULL_INSTALL)`, con
+  `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` si `SDK_INT >= 31` — en 29/30 el Device
+  Owner ya instala sin confirmación por defecto, ese flag recién existe desde Android 12),
+  copia el APK adentro por bloques de 64 KB (`openWrite`/`fsync`) y commitea con un
+  `PendingIntent` explícito (`Intent(context, InstallResultReceiver.class)`) que Android
+  invoca con el resultado. Tira `IOException` ante cualquier fallo — no la atrapa, la propaga
+  para que `UpdateInstaller` (C#) la capture y reporte. **Correcciones (MAYOR #5)**: el camino
+  de fallo hace `catch (Throwable t) { session.abandon(); throw t; }` ADEMÁS del `session.close()`
+  del `finally` — sin el `abandon()` explícito, una sesión fallida con el APK ya copiado adentro
+  queda "staged" en el sistema para siempre (`close()` solo suelta el handle, no abandona la
+  sesión), y en una tablet Device Owner que nadie toca eso se acumula sesión tras sesión en cada
+  intento de update fallido.
+- **`Assets/Plugins/Android/com/simulador/kiosk/InstallResultReceiver.java`** (mismo paquete) —
+  `BroadcastReceiver` que recibe el commit: `STATUS_SUCCESS` solo loguea (el proceso muere ahí,
+  la HOME persistente relanza la app); `STATUS_PENDING_USER_ACTION` (red de seguridad, no
+  debería pasar siendo Device Owner) reenvía el `Intent` de `EXTRA_INTENT`; cualquier OTRO
+  estado (`default`, los `INSTALL_FAILED_*` reales de campo — firma distinta, downgrade, sin
+  espacio) es un log de error Y (**correcciones, CRÍTICO #2c**) avisa al lado C# con
+  `com.unity3d.player.UnityPlayer.UnitySendMessage("TabletApp", "OnSilentInstallResult", status +
+  "|" + mensaje)` — `TabletApp` es el GameObject raíz de `Tablet.unity` que lleva
+  `TabletController` (ver `docs/tablet.md`). Antes de esta corrección, este `default` SOLO
+  logueaba: el commit fallido nunca llegaba al lado Unity, y el modal "Instalando…" (mostrado a
+  ciegas ANTES de saber si el commit arrancó, ver más abajo) quedaba puesto para siempre — el
+  caso REAL de campo que motivó esta pasada de correcciones. **Por qué un receiver propio y no
+  `SimuladorDeviceAdminReceiver`**:
+  ese receiver declara `android:permission="BIND_DEVICE_ADMIN"` — permiso que Android exige del
+  EMISOR del broadcast, y el `commit` de `PackageInstaller` lo emite con la identidad de esta
+  app (que no tiene ese permiso), así que el broadcast se descartaría en silencio.
+  `InstallResultReceiver` no tiene permiso especial, solo `android:exported="false"` (nunca
+  cruza procesos: el `PendingIntent` es explícito y solo el sistema lo dispara de vuelta hacia
+  esta misma app).
+- **`Assets/Scripts/Editor/TabletManifestPatcher.cs`** — inyecta `<receiver
+  android:name="com.simulador.kiosk.InstallResultReceiver" android:exported="false"/>` como
+  hijo de `<application>` (mismo helper idempotente que el `<receiver>` del Device Admin de
+  Fase A), solo en build de tablet.
+- **`Assets/Scripts/Runtime/Update/UpdateInstaller.cs`** — nuevo valor de enum
+  `InstallLaunchResult.StartedSilent`; rama nueva en `LaunchInstall` justo después de obtener
+  `activity` (antes de tocar `packageManager`/permiso de fuentes desconocidas): si
+  `Simulador.Tablet.KioskManager.IsDeviceOwner`, escribe el marker (`WritePendingMarker`, MISMO
+  helper y MISMO archivo que la rama visible) y llama
+  `com.simulador.kiosk.SilentInstaller.install(activity, apkPath)` vía JNI
+  (`AndroidJavaClass.CallStatic`, nunca reflection de .NET). Éxito → `StartedSilent`; excepción →
+  `Failed` + `onFailed("silent_install_failed: <tipo>")`.
+- **`Assets/Scripts/Runtime/Net/TabletController.cs`** — política de auto-update en kiosco,
+  activa SOLO si `KioskManager.IsDeviceOwner` (comportamiento actual intacto en tablets de
+  desarrollo/visor, donde da `false`):
+  - `OnUpdateAvailable` NO muestra el cartel — llama `UpdateManager.Instance.AcceptUpdate()`
+    directo (descarga en background, sin UI) y loguea `[Tablet] update auto-aceptado (kiosco)`.
+  - `OnUpdateReadyToInstall` decide CUÁNDO instalar: si el update es `forced` (guardado del
+    `OnUpdateAvailable` anterior, mismo campo `_updateForced` que ya usaba F5 para el cartel) o
+    la tablet está ociosa (`!_session.IsSessionActive`) → instala YA vía `LaunchSilentInstall()`
+    (correcciones, ver abajo); si hay una sesión activa con el visor (el clínico está en
+    consulta) → `_installWhenIdle = true` y no interrumpe nada. Un paciente en consulta nunca ve
+    reiniciarse la tablet.
+  - `ShowConnectScreen(...)` (el punto por el que pasa TODA vuelta a ocioso — fin de sesión, PIN
+    cancelado, reconexión agotada) consume `_installWhenIdle`: si estaba pendiente, recién ahí
+    llama `LaunchSilentInstall()`.
+  - `OnUpdateFailed` NO muestra cartel de error en kiosco (nadie lo va a cerrar) — solo log; el
+    próximo arranque re-chequea el manifest y reintenta solo (la telemetría
+    `update_download_failed` ya sale de `UpdateManager`, sin cambios).
+  - **Correcciones a esta política (CRÍTICO #2, revisión posterior a F8) — el modal
+    "Instalando…" podía quedar puesto PARA SIEMPRE tras un fallo de instalación silenciosa; tres
+    fixes, los tres necesarios:**
+    - **(a) Orden**: `LaunchSilentInstall()` (nuevo, reemplaza las dos llamadas sueltas a
+      `ShowUpdateInstalling()` + `LaunchInstall()`) llama `UpdateManager.Instance.LaunchInstall()`
+      PRIMERO y recién DESPUÉS mira `UpdateManager.Instance.LastInstallLaunchResult` (propiedad
+      nueva, seteada al final de `LaunchInstall()`) — solo si dio `StartedSilent` muestra
+      `ShowUpdateInstalling()`. Antes se mostraba el modal a ciegas ANTES de llamar
+      `LaunchInstall()`, así que un fallo SÍNCRONO (`SilentInstaller.install()` tirando
+      excepción) dejaba el modal puesto sin que nada lo sacara.
+    - **(b) Fallo síncrono**: `OnUpdateFailed`, en la rama kiosco, ahora llama `HideUpdateScreen()`
+      ANTES del `return` (antes solo logueaba y retornaba, dejando el scrim puesto si ya se había
+      mostrado). Sigue sin mostrar la card de error — nadie la cerraría en una tablet sin
+      supervisión.
+    - **(c) Fallo asíncrono (el caso REAL de campo)**: un `INSTALL_FAILED_*` de
+      `PackageInstaller` (firma distinta del APK, downgrade, sin espacio) llega DESPUÉS de que
+      `LaunchInstall()` ya retornó `StartedSilent` — nada en el flujo síncrono se entera.
+      `InstallResultReceiver.java` ahora avisa via `UnitySendMessage` (ver arriba) al método
+      nuevo `TabletController.OnSilentInstallResult(string payload)`
+      (`"<status>|<mensaje>"` → `"status=<n> message=<...>"`), que delega en
+      `HandleSilentInstallFailure(detail)`: `HideUpdateScreen()`, log `[Tablet]`, telemetría
+      `update_install_failed` (vía `UpdateManager.ReportInstallFailure(detail)`, nuevo método
+      público — `SendTelemetry` es privado) y borra `update_pending.json`
+      (`DeletePendingUpdateMarker()` — si no, el próximo arranque leería el marker en
+      `CheckPendingUpdateMarker` y reportaría `update_incomplete` por un fallo que YA reportamos
+      acá; borrarlo es lo coherente). Además un **watchdog** (`SilentInstallWatchdogCo`,
+      `SilentInstallWatchdogSeconds = 120f`, armado por `LaunchSilentInstall` junto con el modal):
+      si nadie llama `OnSilentInstallResult` en ese plazo (ni éxito — mata el proceso — ni
+      fallo), reporta `detail="timeout"` por el mismo camino. **Idempotencia (MENOR, correcciones
+      revisión final)**: `_silentInstallResolved` (bool, reseteado en `LaunchSilentInstall()` al
+      arrancar cada intento) hace que `HandleSilentInstallFailure` sea no-op la segunda vez que se
+      lo llama para el MISMO intento — necesario porque, antes de este fix, si el watchdog disparaba
+      primero (120s) y DESPUÉS llegaba el `INSTALL_FAILED_*` real vía `OnSilentInstallResult` (o
+      viceversa), se emitía un `update_install_failed` duplicado. Ambas direcciones (watchdog→
+      receiver y receiver→watchdog) quedan cubiertas por el mismo flag.
+- **`Assets/Scripts/Runtime/Update/UpdateManager.cs`** — SIN cambios de lógica más allá de lo
+  que exige `StartedSilent` (nuevo valor de enum, no rompe nada: no había ningún `switch`
+  exhaustivo sobre `InstallLaunchResult`). `_permissionPendingRetry` NO se setea en la rama
+  silenciosa (no aplica, no hay permiso que pedir) y la telemetría existente
+  `update_install_launched` (`version=... result=...`) ya reporta `result=StartedSilent` sin
+  tocar el método. No hizo falta exponer `forced` como propiedad nueva: `TabletController` ya
+  lo recibe como parámetro del evento `UpdateAvailable` y lo guarda en su propio campo
+  (`_updateForced`, reusado de F5) para consultarlo después en `OnUpdateReadyToInstall`.
+  **Correcciones (CRÍTICO #2)**: agrega `LastInstallLaunchResult` (propiedad pública, get-only,
+  seteada en `LaunchInstall()` con el mismo `result` que ya se usaba para la telemetría — permite
+  a `TabletController` decidir DESPUÉS de llamar `LaunchInstall()` si corresponde mostrar el modal
+  silencioso) y `ReportInstallFailure(string detail)` (público, wrapea `SendTelemetry` con el
+  evento nuevo `update_install_failed` — tabla de telemetría más abajo).
 
 ### Contrato del manifest (backend, F1/F2 ya desplegadas)
 
@@ -455,9 +610,46 @@ actual) — en ese caso no se verifica nada.
   GameObject del otro (son independientes, cada uno limpia solo el suyo en su propio
   `Close()`/`OnDestroy()`) ni interfiere con el guard anti-restore de
   `LicenseBlockScreenVR.Update()` (sin cambios ahí — ver `docs/licenciamiento.md`).
+- **Por qué NO caer al intent `ACTION_VIEW` como fallback si la instalación silenciosa falla
+  (F8)** → cuando `UpdateInstaller.LaunchInstall` toma la rama `KioskManager.IsDeviceOwner` y
+  `SilentInstaller.install` tira una excepción, la tentación obvia es "probar igual con el
+  intent visible, algo es mejor que nada". Se decidió explícitamente NO hacerlo: el intent
+  `ACTION_VIEW` abre el instalador de paquetes de Android, una UI que exige que alguien la toque
+  para confirmar — exactamente lo que el modo kiosco existe para evitar. Una tablet en una
+  clínica de otro país que de repente muestra un diálogo de instalación de Android sin que nadie
+  lo vea es peor que no actualizar: queda con la UI del sistema tapando la app hasta que alguien
+  la note. La rama falla limpio (`InstallLaunchResult.Failed` + telemetría
+  `update_install_launched result=Failed`) y el próximo arranque de la app vuelve a chequear el
+  manifest y reintenta solo — mismo mecanismo de auto-recuperación que ya existe para cualquier
+  otro fallo de red/descarga de este sistema.
+- **`InstallResultReceiver` propio en vez de reusar `SimuladorDeviceAdminReceiver` (F8)** → el
+  candidato obvio para recibir el `PendingIntent` del commit de `PackageInstaller` sería el
+  receiver que YA existe (Fase A). No sirve: `SimuladorDeviceAdminReceiver` declara
+  `android:permission="BIND_DEVICE_ADMIN"` en el manifest, que es un permiso que Android exige
+  del **emisor** de un broadcast dirigido a ese receiver — el sistema emite el resultado del
+  commit con la identidad de esta misma app (`com.simulador.tablet`), que no tiene
+  `BIND_DEVICE_ADMIN` (es un permiso de sistema, no algo que una app se auto-otorgue), así que
+  el broadcast se descartaría en silencio y el flujo se colgaría esperando un callback que nunca
+  llega. `InstallResultReceiver` es un receiver nuevo sin permiso especial, solo
+  `android:exported="false"` (de sobra: el `PendingIntent` es explícito, nunca lo dispara nadie
+  más que el propio sistema Android en nombre de esta app).
 
 ## Gotchas
 
+- **`PendingIntent` del commit de `PackageInstaller` DEBE ser `FLAG_MUTABLE` desde Android 12
+  (API 31), F8** — `SilentInstaller.java` arma el `PendingIntent` que Android dispara con el
+  resultado de la instalación silenciosa. Con `PendingIntent.FLAG_IMMUTABLE` (el default
+  "seguro" recomendado para casi todo lo demás desde que Android 12 lo exige para la mayoría de
+  los `PendingIntent`), la instalación **falla en silencio**: el sistema necesita agregarle al
+  `Intent` original los extras de resultado (`PackageInstaller.EXTRA_STATUS`,
+  `EXTRA_STATUS_MESSAGE`, etc.) antes de entregarlo, y un `PendingIntent` inmutable no permite
+  que nadie —ni el propio sistema— le modifique el `Intent` de base. `SilentInstaller` usa
+  `FLAG_MUTABLE` (con `FLAG_UPDATE_CURRENT`) SOLO desde `SDK_INT >= 31` (en versiones anteriores
+  ese flag no existe/no hace falta). Es seguro porque el `Intent` es explícito (`new
+  Intent(context, InstallResultReceiver.class)`, apunta a una clase concreta del propio
+  paquete) — nada externo puede secuestrarlo aunque sea mutable, a diferencia de un `Intent`
+  implícito (por acción) donde `FLAG_MUTABLE` sí sería un riesgo real de otra app interceptando
+  el relleno de extras.
 - **NUNCA un panel de UI world-space opaco a menos de `~0.5 m` de la cámara en VR — causa
   diplopia real, NO detectable en el Editor (bug reportado en dispositivo real, esta tarea)**:
   un canvas world-space muy cerca del ojo (`0.15-0.2 m`, el mecanismo que tenían
@@ -670,3 +862,15 @@ actual) — en ese caso no se verifica nada.
   mientras cualquiera de los dos esté visible (sin fugas de geometría por los bordes del FOV,
   que con el mecanismo de cámara no deberían poder existir, a diferencia del canvas-plano
   anterior que dependía de cubrir el FOV con tamaño).
+- **F8 (instalación silenciosa Device Owner) — SOLO lado Unity, NO validado en dispositivo
+  real todavía**: `SilentInstaller.java`/`InstallResultReceiver.java` no los compila el Editor
+  (solo Gradle en build de tablet), así que la única verificación hecha en esta tarea es
+  compile-gate C#, revisión a ojo de los `.java` e idempotencia del `<receiver>` inyectado por
+  `TabletManifestPatcher.cs`. Pendiente en un build real de tablet Device Owner: `aapt dump
+  xmltree` confirmando el `<receiver>` de `InstallResultReceiver` en el manifest final; subir
+  una versión nueva al panel, activarla, y seguir en logcat (`adb logcat -s SimuladorKiosk
+  Unity`) la secuencia completa: auto-accept sin cartel → descarga → `StartedSilent` → muerte
+  del proceso → relanzamiento solo por la HOME persistente → `update_success` visible en
+  `/admin/logs`; y probar el diferimiento (`_installWhenIdle`) con una sesión activa con el
+  visor en curso al momento de terminar la descarga. El lado backend (QR de provisioning) de
+  F8 es una tarea aparte, no incluida acá.
