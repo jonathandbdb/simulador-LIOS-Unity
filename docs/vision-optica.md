@@ -390,6 +390,21 @@ VisionRendererFeature, cadena de passes (etapa C):
     el rango opaco y el post-proceso SÍ los alcanza (no arrastran el bug del optotipo).
 - `Assets/Scripts/Runtime/Vision/SimuladorInput.cs` — mandos Quest (acciones creadas en código):
   A = cicla lente ojo izquierdo, B = ojo derecho, X = toggle halos, Y = cambia de escenario.
+  **Los CUATRO atajos exigen dispositivo ADMINISTRADOR** (helper privado `AdminGate`): en sesión
+  clínica ni el paciente ni el médico deben poder cambiar lente, halos o escenario por accidente
+  con el mando. La fuente es el flag `is_admin` del `POST /api/verify`, que
+  `LicenseManager.IsAdmin` ya expone (ver `docs/licenciamiento.md` §P7) — no se agregó ningún
+  dato nuevo al contrato. **Falla CERRADO a propósito**: sin cache, sin red, con cache pre-P7 o
+  contra un backend viejo, `IsAdmin` es `false` y los atajos quedan inhibidos.
+  - **Gotcha — por qué el gate va DENTRO de los handlers y no en `enabled`:**
+    `LicenseBlockScreenVR` y `UpdatePromptVR` ya se disputan `SimuladorInput.enabled` con guards
+    anti-restore cruzados (ver sus docstrings); una tercera mano sobre ese flag rompe los
+    carteles de licencia/update. Los botones propios de esos carteles son `InputAction`
+    independientes, no pasan por este gate y siguen funcionando siempre.
+  - **El control por TABLET no está afectado**: entra por `NetworkController.OnTextReceived`
+    (`apply_lens`/`load_scenario`/`recenter`), un camino de código separado que no comparte
+    origen con `SimuladorInput` — solo el destino (`DataManager`/`GlareController`/
+    `ScenarioManager`). Ver `docs/networking.md`.
 - `Assets/Scripts/Runtime/Vision/HudController.cs` — HUD world-space anclado a la cámara: FPS,
   escenario, lente por ojo (**convención clínica: `OD (B)` primero, `OI (A)` después** — solo orden
   de presentación; el mapeo de botones no cambia: A cicla OI, B cicla OD), estado de halos (UI

@@ -1,4 +1,5 @@
 using Simulador.Data;
+using Simulador.License;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -11,6 +12,10 @@ namespace Simulador.Vision
     ///   - X (mano izquierda): toggle halos.
     ///   - Y (mano izquierda): cambia de escenario.
     /// Acciones creadas en codigo y bindeadas a los perfiles OpenXR de Quest.
+    /// Los CUATRO atajos exigen que el dispositivo sea ADMINISTRADOR (ver AdminGate):
+    /// en una sesion clinica ni el paciente ni el medico deben poder cambiar lente,
+    /// halos o escenario por accidente con el mando. El control por TABLET no pasa por
+    /// aca (Net/NetworkController) y sigue funcionando siempre.
     /// </summary>
     public class SimuladorInput : MonoBehaviour
     {
@@ -26,10 +31,10 @@ namespace Simulador.Vision
             _x = new InputAction("X", InputActionType.Button, "<XRController>{LeftHand}/primaryButton");
             _y = new InputAction("Y", InputActionType.Button, "<XRController>{LeftHand}/secondaryButton");
 
-            _a.performed += _ => CycleLens("left");
-            _b.performed += _ => CycleLens("right");
-            _x.performed += _ => { if (glare) { glare.halosEnabled = !glare.halosEnabled; glare.Refresh(); Debug.Log($"halos={glare.halosEnabled}"); } };
-            _y.performed += _ => { if (scenarios) scenarios.CycleScenario(); };
+            _a.performed += _ => { if (!AdminGate("A: lente OI")) return; CycleLens("left"); };
+            _b.performed += _ => { if (!AdminGate("B: lente OD")) return; CycleLens("right"); };
+            _x.performed += _ => { if (!AdminGate("X: halos")) return; if (glare) { glare.halosEnabled = !glare.halosEnabled; glare.Refresh(); Debug.Log($"halos={glare.halosEnabled}"); } };
+            _y.performed += _ => { if (!AdminGate("Y: escenario")) return; if (scenarios) scenarios.CycleScenario(); };
 
             _a.Enable(); _b.Enable(); _x.Enable(); _y.Enable();
         }
@@ -37,6 +42,25 @@ namespace Simulador.Vision
         private void OnDisable()
         {
             _a?.Disable(); _b?.Disable(); _x?.Disable(); _y?.Disable();
+        }
+
+        /// <summary>
+        /// Gate de los atajos del mando: solo un dispositivo marcado como administrador en
+        /// el backend puede cambiar estado desde el joystick. La fuente es el flag
+        /// "is_admin" del POST /api/verify, que <see cref="LicenseManager.IsAdmin"/> ya
+        /// expone (ver docs/licenciamiento.md §P7) -- no se agrega ningun dato nuevo.
+        /// Falla CERRADO a proposito: sin cache, sin red, con cache pre-P7 o contra un
+        /// backend viejo, IsAdmin es false y los atajos quedan inhibidos.
+        /// Se filtra ACA y no con `enabled` porque LicenseBlockScreenVR y UpdatePromptVR
+        /// ya se disputan ese flag con guards anti-restore cruzados: una tercera mano
+        /// romperia los carteles de licencia/update. Los botones propios de esos carteles
+        /// son InputActions independientes y no pasan por este gate.
+        /// </summary>
+        private bool AdminGate(string action)
+        {
+            if (LicenseManager.IsAdmin) return true;
+            Debug.Log($"[Vision] Atajo del mando ignorado ({action}): el dispositivo no es administrador.");
+            return false;
         }
 
         private void CycleLens(string eye)
