@@ -493,7 +493,7 @@ aparte.
 ### Contrato del manifest (backend, F1/F2 ya desplegadas)
 
 ```
-GET {backend}/api/manifest.json?app=visor|tablet     (sin ?app → visor)
+GET {backend}/api/manifest.json?app=visor|tablet&device_id=<opcional>     (sin ?app → visor)
 ```
 
 Respuesta `200`:
@@ -512,6 +512,27 @@ Respuesta `200`:
 `503` si no hay versión activa publicada para ese canal (respuesta **esperada**, no un error
 del backend). Semver estricto `major.minor.patch`. `apk_sha256` puede venir `""` (dummy
 actual) — en ese caso no se verifica nada.
+
+**`device_id` (query param opcional, backend, detalle completo en `docs/backend.md` §OTA
+por-dispositivo)**: gate por-dispositivo del OTA del backend — la mayoría de la flota corre en
+modo kiosco gestionado por Meta Horizon Managed Services (se actualiza por el Admin Center de
+Meta, no por acá) y NO debe recibir el OTA propio; `Device.ota_enabled` (default `False`) decide
+por dispositivo. Tabla de decisión:
+
+| Caso | Respuesta |
+|---|---|
+| `app == "tablet"` | **200** siempre (la tablet no tiene gate de licencia, siempre se actualiza por backend) |
+| `device_id` ausente o vacío | **200** (compat retro — ver gotcha abajo) |
+| `device_id` existe y `ota_enabled == True` | **200** |
+| `device_id` existe y `ota_enabled == False`, o no existe | **503** (mismo status code que el 503 de "sin versión activa"; `UpdateManager` ya trata cualquier 503 como "no hay update", en silencio — nada que cambiar del lado Unity para la SUPRESIÓN en sí) |
+
+**El `device_id` en esta URL lo agrega `UpdateManager.CheckManifest`** (`Assets/Scripts/Runtime/Update/UpdateManager.cs`),
+mismo valor que usa `LicenseManager`/telemetría (`SystemInfo.deviceUniqueIdentifier`) —
+parámetro opcional aditivo, así que un backend viejo sin este gate lo ignora sin romper nada.
+**Gotcha: la fila "`device_id` ausente → 200" es la compatibilidad hacia atrás con el APK 0.6.1
+ya instalado en campo**, que todavía no manda este parámetro — si esa fila devolviera 503, esos
+visores nunca se enterarían del release que agrega el `device_id`, autobloqueando el mecanismo
+que se supone habilita esta feature.
 
 ## Decisiones y porqués
 

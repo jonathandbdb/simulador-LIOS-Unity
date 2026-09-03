@@ -24,6 +24,10 @@
       <input type="checkbox" name="is_admin" />
       <span>{{ t('dev.is_admin') }}</span>
     </label>
+    <label class="field row" style="align-items:center; gap:6px;">
+      <input type="checkbox" name="ota_enabled" />
+      <span>{{ t('dev.ota_enabled') }}</span>
+    </label>
     <input class="input span-full" name="notes" placeholder="{{ t('dev.notes') }}" />
   </form>
   <p class="muted xs" style="margin-top: 8px;">{{ t('dev.disable_hint') }}</p>
@@ -59,6 +63,7 @@
         {% if d.status == 'suspended' %}<span class="badge">{{ t('dev.status.suspended') }}</span>{% endif %}
         {% if d.app_mode == 'pro' %}<span class="badge badge-ok">{{ t('dev.app_mode.pro') }}</span>{% endif %}
         {% if d.is_admin and d.app_mode == 'pro' %}<span class="badge badge-warn">{{ t('dev.is_admin') }}</span>{% endif %}
+        {% if d.ota_enabled %}<span class="badge badge-ok">{{ t('dev.ota_enabled') }}</span>{% endif %}
         {% if lens_counts.get(d.id) %}<span class="badge">{{ lens_counts.get(d.id) }} {{ t('dev.custom_lens_count') }}</span>{% endif %}
       </div>
       <div class="device-summary-meta hint xs">
@@ -110,7 +115,12 @@
           <input form="edit-{{ d.id }}" type="checkbox" name="is_admin" {% if d.is_admin %}checked{% endif %} />
           <span>{{ t('dev.is_admin') }}</span>
         </label>
+        <label class="field row" style="align-items:center; gap:6px;">
+          <input form="edit-{{ d.id }}" type="checkbox" name="ota_enabled" {% if d.ota_enabled %}checked{% endif %} />
+          <span>{{ t('dev.ota_enabled') }}</span>
+        </label>
       </div>
+      <p class="muted xs" style="margin-top: 4px;">{{ t('dev.ota_enabled_hint') }}</p>
       <div class="row justify-end mt-4">
         <button form="edit-{{ d.id }}" class="btn btn-primary btn-sm" type="submit">{{ t('dev.save') }}</button>
       </div>
