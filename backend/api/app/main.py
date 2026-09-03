@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Simulador VR — Backend",
+    title="IOLSIMULATOR — Backend",
     description="API publica + panel admin del simulador oftalmologico.",
     version="0.1.0",
     lifespan=lifespan,
@@ -121,7 +121,7 @@ def healthz() -> dict:
 @app.get("/")
 def root() -> dict:
     return {
-        "name": "Simulador VR Backend",
+        "name": "IOLSIMULATOR Backend",
         "version": app.version,
         "docs": "/docs",
         "admin": "/admin/login",

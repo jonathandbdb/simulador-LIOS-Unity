@@ -16,7 +16,7 @@ SUPPORTED_LANGS = ("es", "en")
 # Diccionario de traducciones. Espanol primero (fuente de verdad).
 TRANSLATIONS: dict[str, dict[Lang, str]] = {
     # Layout / navbar
-    "app.title":           {"es": "Simulador VR — Admin",        "en": "Simulador VR — Admin"},
+    "app.title":           {"es": "IOLSIMULATOR — Admin",        "en": "IOLSIMULATOR — Admin"},
     "nav.dashboard":       {"es": "Inicio",                       "en": "Home"},
     "nav.devices":         {"es": "Dispositivos",                 "en": "Devices"},
     "nav.lenses":          {"es": "Lentes",                       "en": "Lenses"},
