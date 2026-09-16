@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IOLSIMULATOR — Presentación comercial</title>
+<style>
+  :root{
+    --bg:#0e1218; --panel:#161c25; --panel2:#1d2531; --line:#2a3342;
+    --text:#e9eef5; --muted:#8d9aab; --dim:#5f6d7f;
+    --accent:#2ea3f2; --accent2:#7fcbff; --steel:#5b6b7d;
+    --ok:#5fb87a; --warn:#e0a458;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--bg); color:var(--text); overflow:hidden;
+    font-family:"Segoe UI",system-ui,-apple-system,"Noto Sans SC","Microsoft YaHei","PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  body[data-lang="zh"]{
+    font-family:"Noto Sans SC","Microsoft YaHei","PingFang SC","Hiragino Sans GB",system-ui,sans-serif;
+  }
+
+  /* ---------- chrome ---------- */
+  #bar{
+    position:fixed; top:0; left:0; right:0; height:46px; z-index:50;
+    display:flex; align-items:center; gap:14px; padding:0 20px;
+    background:linear-gradient(180deg,rgba(14,18,24,.95),rgba(14,18,24,0));
+  }
+  #bar .brand{font-size:15px; letter-spacing:.06em; color:var(--muted)}
+  #bar .brand b{color:var(--text); font-weight:600}
+  #bar .sp{flex:1}
+  .langs{display:flex; gap:6px}
+  .langs button{
+    background:var(--panel2); color:var(--muted); border:1px solid var(--line);
+    border-radius:6px; padding:5px 13px; cursor:pointer; font-size:13px; font-family:inherit;
+    transition:all .15s;
+  }
+  .langs button:hover{color:var(--text); border-color:var(--steel)}
+  .langs button.active{background:var(--accent); color:#06121c; font-weight:600; border-color:var(--accent)}
+  #count{color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; min-width:52px; text-align:right}
+
+  #nav{position:fixed; bottom:0; left:0; right:0; height:52px; z-index:50;
+       display:flex; align-items:center; justify-content:center; gap:10px; pointer-events:none}
+  #nav button{
+    pointer-events:auto; background:var(--panel2); color:var(--muted); border:1px solid var(--line);
+    border-radius:6px; width:38px; height:30px; cursor:pointer; font-size:14px; font-family:inherit;
+  }
+  #nav button:hover{color:var(--text); border-color:var(--steel)}
+
+  /* ---------- slide shell ---------- */
+  #deck{position:relative; width:100%; height:100%}
+  .slide{
+    position:absolute; inset:0; display:none;
+    padding:72px 7vw 64px; flex-direction:column; justify-content:center;
+    font-size:calc(9px + 0.62vw);
+  }
+  .slide.active{display:flex}
+  .slide .foot{
+    position:absolute; left:7vw; right:7vw; bottom:20px;
+    font-size:.72em; color:var(--dim); display:flex; justify-content:space-between; gap:20px;
+  }
+  .kicker{
+    color:var(--accent); font-size:.85em; letter-spacing:.14em; text-transform:uppercase;
+    font-weight:600; margin-bottom:.7em;
+  }
+  h1{font-size:2.9em; line-height:1.12; font-weight:600; letter-spacing:-.01em}
+  h2{font-size:2.05em; line-height:1.18; font-weight:600; letter-spacing:-.01em; margin-bottom:.5em}
+  .lead{font-size:1.18em; color:var(--muted); line-height:1.55; max-width:44em; margin-bottom:1.1em}
+  p{line-height:1.6}
+  .wordmark{font-size:3.5em; letter-spacing:.01em; line-height:1}
+  .wordmark b{font-weight:700} .wordmark span{font-weight:300; color:var(--accent2)}
+
+  ul{list-style:none}
+  li{position:relative; padding-left:1.25em; margin:.55em 0; line-height:1.55; color:var(--muted)}
+  li::before{content:""; position:absolute; left:0; top:.62em; width:.42em; height:.42em;
+             border-radius:50%; background:var(--accent)}
+  li b,li strong{color:var(--text); font-weight:600}
+
+  .note{
+    margin-top:1.2em; padding:.75em 1.1em; border-left:3px solid var(--accent);
+    background:var(--panel); border-radius:0 6px 6px 0; font-size:.92em; color:var(--muted); line-height:1.55;
+  }
+  .note.warn{border-left-color:var(--warn)}
+  .note b{color:var(--text)}
+
+  .cards{display:grid; gap:1.1em; margin-top:.4em}
+  .cards.c2{grid-template-columns:repeat(2,1fr)}
+  .cards.c3{grid-template-columns:repeat(3,1fr)}
+  .card{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1.1em 1.2em}
+  .card h3{font-size:1.02em; font-weight:600; margin-bottom:.45em; color:var(--text)}
+  .card p{font-size:.9em; color:var(--muted); line-height:1.55}
+  .card .n{color:var(--accent); font-size:.8em; font-weight:700; letter-spacing:.1em; display:block; margin-bottom:.35em}
+
+  .steps{display:grid; grid-template-columns:auto 1fr; gap:1.4em 1.4em; align-items:start; margin-top:.6em}
+  .stepnum{
+    font-size:2.6em; font-weight:700; color:var(--accent); line-height:.9;
+    font-variant-numeric:tabular-nums; opacity:.85;
+  }
+  .stepbody h3{font-size:1.35em; font-weight:600; margin-bottom:.3em}
+  .stepbody p{color:var(--muted); font-size:.98em}
+
+  .adv{display:grid; grid-template-columns:repeat(3,1fr); gap:1em; margin-top:.5em}
+  .adv div{background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:1em 1.05em}
+  .adv .n{color:var(--accent); font-weight:700; font-size:.8em; letter-spacing:.1em; display:block; margin-bottom:.3em}
+  .adv h3{font-size:.98em; font-weight:600; line-height:1.35}
+
+  .logo{width:7.5em; height:auto; display:block; margin-bottom:1.4em}
+  .rule{height:2px; background:linear-gradient(90deg,var(--accent),transparent); margin:1.3em 0 1.1em; max-width:22em}
+  .tagline{color:var(--muted); font-size:1.15em; line-height:1.55; max-width:32em}
+  .badge{
+    display:inline-block; margin-top:1.6em; padding:.5em 1.05em; border:1px solid var(--line);
+    border-radius:20px; font-size:.86em; color:var(--muted); background:var(--panel);
+  }
+  .badge b{color:var(--accent2); font-weight:600}
+
+  .legal{background:var(--panel); border:1px solid var(--line); border-radius:10px;
+         padding:1.3em 1.5em; font-size:1.02em; line-height:1.62; color:var(--muted)}
+  .legal b{color:var(--text)}
+  .limits{margin-top:1.1em}
+  .limits li::before{background:var(--steel)}
+  .limits li{font-size:.9em}
+
+  .close-title{font-size:2.4em; font-weight:600; line-height:1.2; max-width:16em}
+
+  /* ---------- print / PDF ---------- */
+  /* 338 x 190 mm ≈ 16:9 — una diapositiva por página */
+  @page{size:338mm 190mm; margin:0}
+  @media print{
+    html,body{overflow:visible; height:auto; background:var(--bg)}
+    #bar,#nav{display:none !important}
+    #deck{height:auto}
+    .slide{
+      display:flex !important; position:relative; inset:auto;
+      width:100%; height:100vh; page-break-after:always; break-after:page;
+      background:var(--bg); font-size:17px; padding:56px 60px 48px;
+      -webkit-print-color-adjust:exact; print-color-adjust:exact;
+    }
+    .slide .foot{left:60px; right:60px}
+    .slide:last-child{page-break-after:auto; break-after:auto}
+  }
+</style>
+</head>
+<body data-lang="es">
+
+<div id="bar">
+  <div class="brand"><b>IOL</b>SIMULATOR</div>
+  <div class="sp"></div>
+  <div class="langs">
+    <button data-lang="es">Español</button>
+    <button data-lang="en">English</button>
+    <button data-lang="zh">中文</button>
+  </div>
+  <div id="count"></div>
+</div>
+
+<div id="deck"></div>
+
+<div id="nav">
+  <button id="prev" title="Anterior">&#8592;</button>
+  <button id="next" title="Siguiente">&#8594;</button>
+</div>
+
+<script>
+/* ============================================================
+   Imágenes embebidas (data URI). Las inyecta build-deck.py
+   desde capturas/ — el HTML final no depende de ningún archivo.
+   ============================================================ */
+const IMG = {
+  logo:       "__IMG_LOGO__",
+};
+
+/* ============================================================
+   Contenido. Un objeto por idioma, mismas claves.
+   ============================================================ */
+const C = {
+
+/* ---------------------------------------------------------- ESPAÑOL */
+es: {
+  footer: "Producto con fines educativos · No es un dispositivo médico",
+  nav: {prev:"Anterior", next:"Siguiente"},
+  cover: {
+    title: "Que el paciente vea su lente<br>antes de elegirla",
+    tagline: "Simulador de visión en realidad virtual para la consulta de catarata. Reproduce, ojo por ojo, cómo verá el paciente con cada lente intraocular.",
+    badge: "Herramienta de <b>demostración y educación del paciente</b>",
+  },
+  problem: {
+    kicker: "El problema",
+    title: "La decisión más importante se explica con palabras",
+    lead: "Monofocal, EDOF, trifocal. Cada lente es un compromiso distinto entre visión de cerca, sensibilidad al contraste y efectos nocturnos. El paciente tiene que elegir entre opciones que nunca vio.",
+    bullets: [
+      "<b>«Va a tener algunos halos de noche»</b> no significa nada hasta que se ven.",
+      "Las expectativas se forman con la <b>imaginación del paciente</b>, no con su lente.",
+      "La insatisfacción postoperatoria aparece cuando <b>lo que ve no es lo que esperaba</b> — y a esa altura la lente ya está implantada.",
+    ],
+  },
+  what: {
+    kicker: "La propuesta",
+    title: "IOLSIMULATOR",
+    lead: "El paciente se coloca un visor y ve, en primera persona y de forma independiente por cada ojo, cómo vería con cada lente intraocular. No mira un video: vive una <b>experiencia inmersiva en la que puede interactuar</b> — acerca o aleja un libro para buscar su punto de lectura, gira la cabeza hacia el sol que entra por la ventana del consultorio o hacia los faros que se aproximan en una ruta de noche.",
+    cards: [
+      {n:"01", h:"Visor de realidad virtual", p:"El paciente vive la simulación en estéreo, con un procesamiento óptico independiente para cada ojo."},
+      {n:"02", h:"Tablet del médico", p:"Usted elige la lente, ajusta los parámetros y ve en vivo, en su propia pantalla, exactamente lo que el paciente está viendo."},
+    ],
+  },
+  usage: {
+    kicker: "Uso diario",
+    title: "Tres pasos en la consulta",
+    lead: "La configuración inicial se hace una sola vez, al instalar. El día a día es esto:",
+    steps: [
+      {h:"Colocar el visor y verificar el calce", p:"Al encender, el paciente ve una pantalla con un texto de tamaños decrecientes. Si lee la línea más chica, el visor está bien colocado. Usted lo confirma desde la tablet y continúa."},
+      {h:"Elegir la lente desde la tablet", p:"Toca la lente y el paciente la ve al instante. Los dos ojos a la vez, o uno solo si quiere mostrar una combinación entre ojos."},
+      {h:"Comparar de día y de noche", p:"Cambie de escenario con un toque y ajuste halos, destellos o contraste con los deslizadores mientras el paciente mira y le comenta."},
+    ],
+    note: "Una sesión completa lleva <b>pocos minutos</b> y se integra en la consulta que usted ya hace.",
+  },
+  advIndex: {
+    kicker: "Ventajas",
+    title: "Seis razones para incorporarlo",
+    items: [
+      {n:"01", h:"El paciente vive la experiencia, en lugar de escuchar una descripción"},
+      {n:"02", h:"Usted ve en su tablet exactamente lo mismo que él"},
+      {n:"03", h:"Elección más certera, con combinación entre ojos"},
+      {n:"04", h:"Catálogo parametrizable: edite lentes o cree las suyas"},
+      {n:"05", h:"Expectativas alineadas y decisión informada"},
+      {n:"06", h:"Listo para desplegar en cualquier consultorio"},
+    ],
+  },
+  scope: {
+    kicker: "Alcance",
+    title: "Uso responsable",
+    legal: "<b>IOLSIMULATOR es una herramienta de demostración y educación del paciente.</b> No es un dispositivo médico: no diagnostica, no mide agudeza visual con valor clínico y no sustituye la biometría, el cálculo de la lente ni el criterio del cirujano. Las simulaciones son <b>representaciones comparativas entre modelos de lente</b>, construidas sobre modelos ópticos publicados. El resultado visual real de cada paciente depende de su anatomía, de la cirugía y de su neuroadaptación.",
+    limitsTitle: "Los límites, declarados:",
+    limits: [
+      "La cartilla de agudeza es un <b>instrumento comparativo entre lentes</b>, no un equivalente exacto de una medición clínica de agudeza absoluta.",
+      "Las magnitudes de encandilamiento son <b>relativas</b>, calibradas entre sí; no son medidas fotométricas absolutas.",
+      "El modelo de desenfoque es <b>paraxial</b>: representa con precisión la visión central y subestima algo la periferia.",
+    ],
+  },
+  closing: {
+    title: "El paciente elige mejor<br>cuando ya vio lo que elige.",
+    lead: "IOLSIMULATOR convierte una explicación en una experiencia — y una expectativa incierta en una decisión informada.",
+    badge: "Herramienta de <b>demostración y educación del paciente</b> · No es un dispositivo médico",
+  },
+},
+
+/* ---------------------------------------------------------- ENGLISH */
+en: {
+  footer: "Educational product · Not a medical device",
+  nav: {prev:"Previous", next:"Next"},
+  cover: {
+    title: "Let patients see their lens<br>before they choose it",
+    tagline: "A virtual-reality vision simulator for the cataract consultation. It reproduces, eye by eye, how a patient will see with each intraocular lens.",
+    badge: "A <b>patient demonstration and education</b> tool",
+  },
+  problem: {
+    kicker: "The problem",
+    title: "The most important decision is explained in words",
+    lead: "Monofocal, EDOF, trifocal. Every lens is a different trade-off between near vision, contrast sensitivity and night-time effects. Patients have to choose between options they have never seen.",
+    bullets: [
+      "<b>“You may see some halos at night”</b> means nothing until you actually see them.",
+      "Expectations are built from the <b>patient's imagination</b>, not from their lens.",
+      "Postoperative dissatisfaction shows up when <b>what they see is not what they expected</b> — and by then the lens is already implanted.",
+    ],
+  },
+  what: {
+    kicker: "The solution",
+    title: "IOLSIMULATOR",
+    lead: "The patient puts on a headset and sees, first-hand and independently for each eye, how they would see with each intraocular lens. It is not a video: it is an <b>immersive experience they can interact with</b> — moving a book closer or further to find their reading point, turning towards the sun coming through the consulting-room window, or towards oncoming headlights on a night road.",
+    cards: [
+      {n:"01", h:"Virtual-reality headset", p:"The patient experiences the simulation in stereo, with optical processing computed independently for each eye."},
+      {n:"02", h:"Clinician's tablet", p:"You pick the lens, adjust the parameters and watch live, on your own screen, exactly what the patient is seeing."},
+    ],
+  },
+  usage: {
+    kicker: "Daily use",
+    title: "Three steps in the consultation",
+    lead: "Initial setup happens once, at installation. Day to day, this is all there is:",
+    steps: [
+      {h:"Fit the headset and check it", p:"On start-up the patient sees a screen with text in decreasing sizes. If they can read the smallest line, the headset is correctly positioned. You confirm from the tablet and move on."},
+      {h:"Pick the lens from the tablet", p:"Tap a lens and the patient sees it instantly. Both eyes at once, or a single eye if you want to show a combination between eyes."},
+      {h:"Compare by day and by night", p:"Switch scenario with one tap, and adjust halos, flare or contrast with the sliders while the patient watches and comments."},
+    ],
+    note: "A full session takes <b>a few minutes</b> and fits inside the consultation you already run.",
+  },
+  advIndex: {
+    kicker: "Advantages",
+    title: "Six reasons to adopt it",
+    items: [
+      {n:"01", h:"Patients live the experience, instead of hearing a description"},
+      {n:"02", h:"You see on your tablet exactly what they see"},
+      {n:"03", h:"A better-founded choice, with combination between eyes"},
+      {n:"04", h:"A parametric catalogue: edit lenses or create your own"},
+      {n:"05", h:"Aligned expectations and an informed decision"},
+      {n:"06", h:"Ready to deploy in any practice"},
+    ],
+  },
+  scope: {
+    kicker: "Scope",
+    title: "Responsible use",
+    legal: "<b>IOLSIMULATOR is a patient demonstration and education tool.</b> It is not a medical device: it does not diagnose, it does not measure visual acuity with clinical validity, and it does not replace biometry, lens power calculation or the surgeon's judgement. The simulations are <b>comparative representations between lens models</b>, built on published optical models. Each patient's real visual outcome depends on their anatomy, on the surgery and on their neuroadaptation.",
+    limitsTitle: "The limits, stated plainly:",
+    limits: [
+      "The acuity chart is a <b>comparative instrument between lenses</b>, not an exact equivalent of a clinical measurement of absolute acuity.",
+      "Glare magnitudes are <b>relative</b> and calibrated against one another; they are not absolute photometric measurements.",
+      "The defocus model is <b>paraxial</b>: it represents central vision accurately and somewhat understates the periphery.",
+    ],
+  },
+  closing: {
+    title: "Patients choose better<br>once they have seen the choice.",
+    lead: "IOLSIMULATOR turns an explanation into an experience — and an uncertain expectation into an informed decision.",
+    badge: "A <b>patient demonstration and education</b> tool · Not a medical device",
+  },
+},
+
+/* ---------------------------------------------------------- 中文（简体） */
+zh: {
+  footer: "教育用途产品 · 非医疗器械",
+  nav: {prev:"上一页", next:"下一页"},
+  cover: {
+    title: "让患者在选择之前<br>先看见自己的人工晶状体",
+    tagline: "面向白内障门诊的虚拟现实视觉模拟系统。逐眼还原患者植入每一款人工晶状体后的真实视觉感受。",
+    badge: "一款<b>患者演示与教育</b>工具",
+  },
+  problem: {
+    kicker: "问题所在",
+    title: "最重要的决定，只能靠语言来解释",
+    lead: "单焦点、EDOF、三焦点。每一款晶状体都是近视力、对比敏感度与夜间视觉干扰之间的不同取舍。而患者必须在从未见过的选项之间做出选择。",
+    bullets: [
+      "<b>“夜里可能会有一些光晕”</b>——在真正看到之前，这句话毫无意义。",
+      "患者的预期来自<b>他自己的想象</b>，而不是来自他的晶状体。",
+      "当<b>看到的与期待的不一致</b>时，术后不满就出现了——而此时晶状体已经植入。",
+    ],
+  },
+  what: {
+    kicker: "解决方案",
+    title: "IOLSIMULATOR",
+    lead: "患者戴上头显，即可以第一人称、且左右眼独立地看到植入每一款人工晶状体后的视觉效果。这不是一段视频，而是一种<b>可以亲身交互的沉浸式体验</b>——患者可以拉近或推远手中的书本，寻找自己的阅读距离；也可以转头望向诊室窗外的阳光，或夜间道路上迎面而来的车灯。",
+    cards: [
+      {n:"01", h:"虚拟现实头显", p:"患者在立体视觉中体验模拟效果，左右眼的光学处理完全独立计算。"},
+      {n:"02", h:"医生平板", p:"由您选择晶状体、调节参数，并在自己的屏幕上实时看到患者正在看到的画面。"},
+    ],
+  },
+  usage: {
+    kicker: "日常使用",
+    title: "问诊中的三个步骤",
+    lead: "初始配置只需在安装时完成一次。日常使用就是以下三步：",
+    steps: [
+      {h:"戴好头显并确认佩戴到位", p:"启动后，患者会看到一屏字号依次缩小的文字。若能读清最小的一行，说明头显佩戴位置正确。您在平板上确认后即可继续。"},
+      {h:"在平板上选择晶状体", p:"轻触晶状体，患者立刻就能看到效果。可同时作用于双眼，也可只作用于单眼，用于演示双眼搭配方案。"},
+      {h:"分别在白天与夜间对比", p:"一键切换场景，并在患者观看和反馈的同时，用滑块调节光晕、星芒或对比度。"},
+    ],
+    note: "一次完整演示仅需<b>几分钟</b>，可自然融入您现有的问诊流程。",
+  },
+  advIndex: {
+    kicker: "核心优势",
+    title: "引入它的六个理由",
+    items: [
+      {n:"01", h:"患者亲身体验，而不是听一段描述"},
+      {n:"02", h:"您在平板上看到的，与患者完全一致"},
+      {n:"03", h:"选择更有依据，并支持双眼搭配"},
+      {n:"04", h:"参数化晶状体库：可编辑，也可自建"},
+      {n:"05", h:"预期一致，决策知情"},
+      {n:"06", h:"可在任何诊室快速部署"},
+    ],
+  },
+  scope: {
+    kicker: "适用范围",
+    title: "负责任地使用",
+    legal: "<b>IOLSIMULATOR 是一款患者演示与教育工具。</b>它不是医疗器械：不用于诊断，不提供具有临床效力的视力测量，也不能替代生物测量、人工晶状体度数计算或术者的临床判断。所有模拟均为<b>不同晶状体型号之间的对比性呈现</b>，基于已发表的光学模型构建。每位患者的真实视觉结果取决于其眼部解剖结构、手术过程以及神经适应情况。",
+    limitsTitle: "明确声明的局限：",
+    limits: [
+      "视力表是<b>晶状体之间的对比工具</b>，并不等同于绝对视力的临床测量。",
+      "眩光强度为<b>相对量值</b>，彼此之间经过校准，并非绝对光度学测量结果。",
+      "离焦模型为<b>近轴模型</b>：中心视野还原准确，周边视野的影响略有低估。",
+    ],
+  },
+  closing: {
+    title: "当患者看见了选项，<br>他的选择才真正成立。",
+    lead: "IOLSIMULATOR 把一段解释变成一次体验——把不确定的预期变成知情的决定。",
+    badge: "一款<b>患者演示与教育</b>工具 · 非医疗器械",
+  },
+},
+
+}; /* fin C */
+
+/* ============================================================
+   Plantillas de diapositiva. El layout es compartido;
+   el texto viene del objeto del idioma activo.
+   ============================================================ */
+const bullets = a => `<ul>${a.map(b=>`<li>${b}</li>`).join("")}</ul>`;
+const figs    = a => `<div class="figs">${a.map(f=>
+  `<figure class="fig"><img src="${IMG[f.img]}" alt=""><figcaption>${f.cap}</figcaption></figure>`).join("")}</div>`;
+const cards   = (a,n) => `<div class="cards c${n}">${a.map(c=>
+  `<div class="card">${c.n?`<span class="n">${c.n}</span>`:""}<h3>${c.h}</h3><p>${c.p}</p></div>`).join("")}</div>`;
+
+const SLIDES = [
+  t => `<div>
+      <img class="logo" src="${IMG.logo}" alt="">
+      <div class="wordmark"><b>IOL</b><span>SIMULATOR</span></div>
+      <div class="rule"></div>
+      <h1 style="font-size:2.3em">${t.cover.title}</h1>
+      <p class="tagline" style="margin-top:.9em">${t.cover.tagline}</p>
+      <div class="badge">${t.cover.badge}</div>
+    </div>`,
+
+  t => `<div>
+      <div class="kicker">${t.problem.kicker}</div>
+      <h2>${t.problem.title}</h2>
+      <p class="lead">${t.problem.lead}</p>
+      ${bullets(t.problem.bullets)}
+    </div>`,
+
+  t => `<div>
+      <div class="kicker">${t.what.kicker}</div>
+      <h2>${t.what.title}</h2>
+      <p class="lead">${t.what.lead}</p>
+      ${cards(t.what.cards,2)}
+    </div>`,
+
+  t => `<div>
+      <div class="kicker">${t.usage.kicker}</div>
+      <h2>${t.usage.title}</h2>
+      <p class="lead">${t.usage.lead}</p>
+      <div class="steps">
+        ${t.usage.steps.map((s,i)=>
+          `<div class="stepnum">${i+1}</div>
+           <div class="stepbody"><h3>${s.h}</h3><p>${s.p}</p></div>`).join("")}
+      </div>
+      <div class="note">${t.usage.note}</div>
+    </div>`,
+
+  t => `<div>
+      <div class="kicker">${t.advIndex.kicker}</div>
+      <h2>${t.advIndex.title}</h2>
+      <div class="adv">${t.advIndex.items.map(i=>
+        `<div><span class="n">${i.n}</span><h3>${i.h}</h3></div>`).join("")}</div>
+    </div>`,
+
+  t => `<div>
+      <div class="kicker">${t.scope.kicker}</div>
+      <h2>${t.scope.title}</h2>
+      <div class="legal">${t.scope.legal}</div>
+      <div class="limits">
+        <p style="color:var(--text);font-weight:600;margin-bottom:.3em">${t.scope.limitsTitle}</p>
+        ${bullets(t.scope.limits)}
+      </div>
+    </div>`,
+
+  t => `<div>
+      <img class="logo" src="${IMG.logo}" alt="" style="width:5.5em">
+      <h2 class="close-title">${t.closing.title}</h2>
+      <div class="rule"></div>
+      <p class="tagline">${t.closing.lead}</p>
+      <div class="badge">${t.closing.badge}</div>
+    </div>`,
+];
+
+/* ============================================================ runtime */
+let lang = "es", idx = 0;
+const deck = document.getElementById("deck");
+const countEl = document.getElementById("count");
+
+function render(){
+  const t = C[lang];
+  document.body.dataset.lang = lang;
+  document.documentElement.lang = lang === "zh" ? "zh-Hans" : lang;
+  deck.innerHTML = SLIDES.map((fn,i)=>
+    `<section class="slide${i===idx?" active":""}">
+       ${fn(t)}
+       <div class="foot"><span>${t.footer}</span><span>${i+1} / ${SLIDES.length}</span></div>
+     </section>`).join("");
+  countEl.textContent = `${idx+1} / ${SLIDES.length}`;
+  document.querySelectorAll(".langs button").forEach(b=>
+    b.classList.toggle("active", b.dataset.lang===lang));
+  document.getElementById("prev").title = t.nav.prev;
+  document.getElementById("next").title = t.nav.next;
+}
+function go(n){ idx = Math.max(0, Math.min(SLIDES.length-1, n)); render(); }
+
+document.getElementById("prev").onclick = () => go(idx-1);
+document.getElementById("next").onclick = () => go(idx+1);
+document.querySelectorAll(".langs button").forEach(b =>
+  b.onclick = () => { lang = b.dataset.lang; render(); });
+
+addEventListener("keydown", e => {
+  if (e.key==="ArrowRight" || e.key==="PageDown" || e.key===" ") { e.preventDefault(); go(idx+1); }
+  else if (e.key==="ArrowLeft" || e.key==="PageUp") { e.preventDefault(); go(idx-1); }
+  else if (e.key==="Home") go(0);
+  else if (e.key==="End") go(SLIDES.length-1);
+});
+deck.onclick = e => { if (!e.target.closest("a")) go(idx+1); };
+
+render();
+</script>
+</body>
+</html>
