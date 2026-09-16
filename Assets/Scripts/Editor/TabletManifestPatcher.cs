@@ -30,6 +30,13 @@ namespace Simulador.EditorTools
     ///      exported="false" (recibe el PendingIntent del commit de
     ///      PackageInstaller que lanza SilentInstaller.java, siempre dentro
     ///      del propio proceso).
+    ///   4. la &lt;activity&gt; DeckActivity (deck comercial embebido, ver
+    ///      Assets/Plugins/Android/com/simulador/deck/DeckActivity.java y
+    ///      TabletDeckLauncher.cs): exported="false" (solo se lanza con un
+    ///      Intent explicito desde la propia app, nunca desde afuera),
+    ///      orientacion landscape fija (el deck es 16:9) y sin permisos
+    ///      nuevos. El visor NO la necesita -- por eso vive aca y no en el
+    ///      manifest compartido.
     ///
     /// SOLO edita el manifest YA MERGEADO por Unity en el proyecto Gradle
     /// generado -- Assets/Plugins/Android/AndroidManifest.xml (la fuente,
@@ -56,6 +63,7 @@ namespace Simulador.EditorTools
         const string UnityActivityName = "com.unity3d.player.UnityPlayerGameActivity";
         const string ReceiverName = "com.simulador.kiosk.SimuladorDeviceAdminReceiver";
         const string InstallResultReceiverName = "com.simulador.kiosk.InstallResultReceiver";
+        const string DeckActivityName = "com.simulador.deck.DeckActivity";
         const string AndroidNs = "http://schemas.android.com/apk/res/android";
 
         public void OnPostGenerateGradleAndroidProject(string path)
@@ -109,6 +117,7 @@ namespace Simulador.EditorTools
             bool changed = InjectHomeIntentFilter(activityEl, android);
             changed |= InjectDeviceAdminReceiver(applicationEl, android);
             changed |= InjectInstallResultReceiver(applicationEl, android);
+            changed |= InjectDeckActivity(applicationEl, android);
 
             if (changed)
             {
@@ -122,7 +131,7 @@ namespace Simulador.EditorTools
                                    "El modo kiosco (Device Owner) va a fallar en esta build.");
                     return;
                 }
-                Debug.Log($"[TabletBuild] Manifest de kiosco inyectado (HOME intent-filter + DeviceAdminReceiver + InstallResultReceiver) en '{manifestPath}'.");
+                Debug.Log($"[TabletBuild] Manifest de kiosco inyectado (HOME intent-filter + DeviceAdminReceiver + InstallResultReceiver + DeckActivity) en '{manifestPath}'.");
             }
             else
             {
@@ -187,6 +196,32 @@ namespace Simulador.EditorTools
             applicationEl.Add(new XElement("receiver",
                 new XAttribute(android + "name", InstallResultReceiverName),
                 new XAttribute(android + "exported", "false")));
+            return true;
+        }
+
+        // <activity> del deck comercial (ver Assets/Plugins/Android/com/
+        // simulador/deck/DeckActivity.java y TabletDeckLauncher.cs), hermana
+        // de la Activity de Unity dentro de <application>. exported="false":
+        // solo se lanza con un Intent explicito desde la propia app (mismo
+        // criterio que InstallResultReceiver). screenOrientation="landscape"
+        // fijo porque el deck es 16:9 -- a diferencia del screenOrientation
+        // de la Activity de Unity (ver el comentario al tope de
+        // AndroidManifest.xml), Unity NO pisa este valor: ese pisado es
+        // especifico del player al mergear SU PROPIA Activity, no aplica a
+        // una Activity nueva declarada por este patcher. Idempotente: si ya
+        // existe una activity con ese android:name, no duplica.
+        static bool InjectDeckActivity(XElement applicationEl, XNamespace android)
+        {
+            bool alreadyPresent = applicationEl.Elements("activity")
+                .Any(a => (string)a.Attribute(android + "name") == DeckActivityName);
+            if (alreadyPresent)
+                return false;
+
+            applicationEl.Add(new XElement("activity",
+                new XAttribute(android + "name", DeckActivityName),
+                new XAttribute(android + "exported", "false"),
+                new XAttribute(android + "screenOrientation", "landscape"),
+                new XAttribute(android + "theme", "@android:style/Theme.Black.NoTitleBar.Fullscreen")));
             return true;
         }
     }

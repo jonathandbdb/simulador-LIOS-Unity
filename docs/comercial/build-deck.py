@@ -27,6 +27,12 @@ ROOT = Path(__file__).resolve().parents[2]
 HERE = Path(__file__).resolve().parent
 TEMPLATE = HERE / "deck.template.html"
 OUTPUT = HERE / "iol-simulator-deck.html"
+# Segunda salida, misma corrida: la tablet la embebe en el APK (DeckActivity.java
+# la abre por file:///android_asset/, ver docs/tablet.md) y la sirve desde
+# StreamingAssets, que en Android termina en assets/ del APK. Nunca se edita a
+# mano ni se genera por otro camino -- si se desincroniza con OUTPUT de arriba,
+# la tablet mostraria un deck viejo sin que nadie lo note.
+STREAMING_ASSETS_OUTPUT = ROOT / "Assets" / "StreamingAssets" / "iol-simulator-deck.html"
 
 # Marcador de la plantilla -> captura de origen.
 # Hoy vacio: el deck quedo sin comparativas (ver README). Para reincorporar una,
@@ -76,6 +82,9 @@ def main() -> int:
 
     OUTPUT.write_text(html, encoding="utf-8")
     print(f"{OUTPUT.relative_to(ROOT)} -> {OUTPUT.stat().st_size / 1024:.0f} KB")
+
+    STREAMING_ASSETS_OUTPUT.write_text(html, encoding="utf-8")
+    print(f"{STREAMING_ASSETS_OUTPUT.relative_to(ROOT)} -> {STREAMING_ASSETS_OUTPUT.stat().st_size / 1024:.0f} KB")
     return 0
 
 

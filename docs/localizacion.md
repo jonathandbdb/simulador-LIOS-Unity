@@ -31,7 +31,9 @@ idioma (arrancó en 199 en D1; D3 no agregó ninguna; +2 en correcciones posteri
 servicio del kiosco"; +7 con la pantalla de chequeo de calce — namespace `focus.*` completo más
 `main.focus_check_show`/`main.focus_check_hide`, ver `docs/pantalla-calce.md`; +1
 `focus.pairing_pin` — PIN de emparejamiento replicado en esa misma pantalla, ver
-`docs/pantalla-calce.md` "PUNTO MUERTO DE EMPAREJAMIENTO").
+`docs/pantalla-calce.md` "PUNTO MUERTO DE EMPAREJAMIENTO"; +1 `connect.deck_button` — botón
+"Presentación" del deck comercial embebido en `ConnectScreen`, ver `docs/tablet.md`
+"Decisiones" → "Deck comercial embebido". **215 claves por idioma.**
 
 ## Arquitectura actual
 

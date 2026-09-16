@@ -35,6 +35,9 @@ se retiró (P6.8, ver Decisiones) — nunca se usó en la práctica clínica. Lo
 | `Assets/Scenes/Tablet.unity` | Escena mínima: raíces `TabletApp` (con `TabletController`), `Directional Light` y `Main Camera`. Nada de UI serializada. |
 | `Assets/Resources/TabletFonts/` | `Inter-Regular SDF` e `Inter-SemiBold SDF` (TMP_FontAsset), cargados con `Resources.Load` en `Start()`. |
 | `Assets/Resources/TabletBrand/` (nuevo, 2026-09-03) | `logo_mark.png` (Sprite, 512×512 con alpha): el símbolo de marca IOLSIMULATOR (esfera + anillos), cargado con `Resources.Load<Sprite>` en `Start()` — mismo patrón que `TabletFonts/`, mismo `Resources.Load` nuevo justificado (UI 100 % por código, sin prefabs donde referenciar el sprite de otra forma). Lo consume `TabletController.EyeGlyph()` (glifo compartido por ConnectScreen/PinScreen/ReconnectScreen/Header). Ver Decisiones "Logo real (2026-09-03)". |
+| `Assets/Scripts/Runtime/Tablet/TabletDeckLauncher.cs` (nuevo) | Plain C# estático (no MonoBehaviour, mismo patrón que `KioskManager`): abre el deck comercial (`docs/comercial/README.md`) con un Intent EXPLICITO (`Intent.setClassName`, `Call<AndroidJavaObject>` por el mismo gotcha de `KioskManager.OpenSettingsIntent`) a `DeckActivity`. Vive en un archivo propio y NO en `KioskManager` porque no es kiosco: no depende de `IsDeviceOwner` (la Activity comparte `applicationId` con la app, así que ya está cubierta por el `setLockTaskPackages` existente sin tocarlo, ver Decisiones "Deck comercial embebido"). `#if UNITY_ANDROID && !UNITY_EDITOR` con gemelo no-op logueado. Lo llama `TabletController` desde el botón "Presentación" de `ConnectScreen`. |
+| `Assets/Plugins/Android/com/simulador/deck/DeckActivity.java` (nuevo) | `Activity` de Android con un `WebView` a pantalla completa (JavaScript habilitado, sin permisos nuevos) que carga `file:///android_asset/iol-simulator-deck.html` — el deck (`docs/comercial/`) embebido en `StreamingAssets`, que en Android termina en `assets/` del APK. Botón atrás = `finish()` (vuelve a la app de Unity, que queda pausada mientras esta Activity está en foreground). Se compila también en el visor (todo `.java` suelto bajo `Plugins/Android/`) pero queda INERTE ahí, igual que `SimuladorDeviceAdminReceiver`: su manifest nunca la declara. |
+| `Assets/Scripts/Editor/TabletManifestPatcher.cs` (extendido) | Además de lo que ya inyectaba (kiosco, updates), declara `<activity android:name="com.simulador.deck.DeckActivity">` SOLO en el build de tablet (`exported="false"`, `screenOrientation="landscape"` fijo porque el deck es 16:9, sin permisos nuevos) — el visor no la necesita. |
 | `Assets/Scripts/Editor/TabletBuild.cs` | Menú **Simulador → Build Tablet (Android)**: buildea solo `Tablet.unity` con el loader de OpenXR apagado y lo restaura al terminar. Detalle en `docs/builds-deploy.md`. |
 | `Assets/Scripts/Runtime/Localization/L10n.cs` / `L10nTable.cs` (D1, D2) | Localización es/en de toda la UI de la app (ver `docs/localizacion.md`, doc viva del sistema). **D2 completa**: todos los literales visibles de `TabletController` cableados con `L10n.T(...)`, `L10n.Initialize(LoadLangPref())` en `Start()` ANTES de `BuildUI()`, y el toggle de idioma del header (ver "MainScreen / Header" y Decisiones "Idioma fijo al arrancar, cambio por reinicio" más abajo). |
 
@@ -87,7 +90,9 @@ TabletController.Start()
   con o sin Device Owner), **toggle de idioma** (correcciones, mismo botón/handler que el del
   header de MainScreen — `OnLangTogglePressed`, ver "MainScreen / Header" más abajo — agregado
   ACÁ porque el header es inalcanzable hasta emparejar con un visor; una clínica nueva necesita
-  poder fijar el idioma ANTES de conectar) y **Salir** (`Application.Quit()`) — **oculto en kiosco**
+  poder fijar el idioma ANTES de conectar), **"Presentación"** (nuevo, `connect.deck_button` —
+  `TabletDeckLauncher.OpenDeck()` abre el deck comercial embebido, ver Decisiones "Deck comercial
+  embebido" para el porqué de esta ubicación) y **Salir** (`Application.Quit()`) — **oculto en kiosco**
   (`KioskManager.IsDeviceOwner`, fix 2026-09-03): bajo lock task no hay adónde "salir"
   (`Application.Quit()` es un no-op ahí, ver Decisiones "`Application.Quit()` es no-op bajo lock
   task"), así que mostrar el botón solo confundía al clínico; sigue visible en una tablet de
@@ -262,6 +267,30 @@ TabletController.Start()
   puede provisionar en una tablet de fábrica (o factory-reseteada) sin cuentas, y quitar el Device
   Owner exige `clearDeviceOwnerApp()` desde la app o un factory reset (ver "Salida de servicio"
   abajo y `docs/builds-deploy.md`).
+- **Deck comercial embebido (Activity propia + WebView, sin backend)** → el vendedor necesita
+  abrir el deck (`docs/comercial/README.md`, HTML autocontenido trilingüe) DESDE la app de la
+  tablet, sin depender de red ni de un navegador externo. Se descartó el navegador externo
+  porque bajo lock task (kiosco) cualquier Activity fuera del allowlist de
+  `setLockTaskPackages` se bloquea al abrir (mismo problema que motivó meter
+  `com.android.settings` en el allowlist, ver el punto de abajo) — un navegador de terceros
+  (Chrome, WebView del sistema) habría exigido agregar SU package al allowlist, más superficie
+  de kiosco que mantener. La solución elegida es una `Activity` **propia**
+  (`com.simulador.deck.DeckActivity`) con un `WebView` que carga
+  `file:///android_asset/iol-simulator-deck.html` — comparte `applicationId` con la app
+  (`com.simulador.tablet`), así que **ya cae dentro del allowlist existente sin tocar
+  `setLockTaskPackages`** (el allowlist de hoy es `{Application.identifier,
+  com.android.settings}`, `KioskManager.cs`). `TabletDeckLauncher.OpenDeck()` (no
+  `KioskManager`: ver la fila de la tabla de arquitectura para el porqué de la ubicación) lanza
+  un Intent EXPLICITO — mismo molde que `KioskManager.OpenSettingsIntent` pero por
+  `setClassName` en vez de action string, porque el destino es propio, no del sistema. El HTML
+  viaja embebido en `StreamingAssets` (ver `docs/comercial/README.md`): CERO llamadas de red,
+  cero permisos nuevos, cero dependencia del backend. **Por qué en `ConnectScreen` y no en el
+  header de `MainScreen`**: (a) es donde está el vendedor ANTES de emparejar con un visor —
+  mostrar el deck es parte de la demo comercial previa a una sesión clínica, no algo que se
+  necesite a mitad de consulta; (b) lanzar una Activity nueva pausa por completo la app de
+  Unity (Android pausa el proceso mientras `DeckActivity` está en foreground) — hacerlo con una
+  sesión WebSocket viva contra el visor (como pasaría desde el header de `MainScreen`) arriesga
+  timeouts/reconexión sin necesidad; en `ConnectScreen` todavía no hay sesión que proteger.
 - **`com.android.settings` en el allowlist de `setLockTaskPackages`** → el botón "Red Wi-Fi"
   (Fase B, `KioskManager.OpenWifiSettings()`) abre el panel/pantalla de ajustes de WiFi de Android;
   bajo lock task, CUALQUIER Activity fuera del allowlist se bloquea al abrir (vuelve

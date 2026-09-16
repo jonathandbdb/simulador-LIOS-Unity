@@ -50,6 +50,8 @@ namespace Simulador.Localization
             ["connect.searching"] = "Buscando visores en la red...",
             ["connect.wifi_help"] = "El visor Quest y la tablet deben estar conectados a la misma red Wi-Fi.",
             ["connect.wifi_button"] = "Red Wi-Fi",
+            // Deck comercial (ver docs/tablet.md "ConnectScreen" y TabletDeckLauncher.cs).
+            ["connect.deck_button"] = "Presentación",
             ["connect.network_unavailable"] = "Red: no disponible",
             ["connect.network_prefix"] = "Red: {0}",
             ["connect.enter_ip_or_tap"] = "Ingresá la IP del visor o tocá uno detectado.",
@@ -312,6 +314,7 @@ namespace Simulador.Localization
             ["connect.searching"] = "Searching for headsets on the network...",
             ["connect.wifi_help"] = "The Quest headset and the tablet must be connected to the same Wi-Fi network.",
             ["connect.wifi_button"] = "Wi-Fi network",
+            ["connect.deck_button"] = "Presentation",
             ["connect.network_unavailable"] = "Network: unavailable",
             ["connect.network_prefix"] = "Network: {0}",
             ["connect.enter_ip_or_tap"] = "Enter the headset's IP or tap a detected one.",

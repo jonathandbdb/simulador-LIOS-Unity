@@ -1334,6 +1334,17 @@ namespace Simulador.Tablet
             var langToggleConnect = _kit.Button(wrap.transform, L10n.Lang == "es" ? "EN" : "ES", BtnStyle.Ghost, false, 48, 16);
             langToggleConnect.OnClick = OnLangTogglePressed;
 
+            // Deck comercial (docs/comercial/README.md), a proposito ACA y no
+            // en el header de MainScreen: (a) es donde esta el vendedor antes
+            // de arrancar una sesion clinica, todavia sin visor emparejado;
+            // (b) TabletDeckLauncher.OpenDeck() lanza otra Activity, que pausa
+            // Unity -- hacerlo con una sesion WebSocket viva contra el visor
+            // (como pasaria desde el header de MainScreen) es pedir problemas
+            // de reconexion sin necesidad. En ConnectScreen todavia no hay
+            // sesion que proteger.
+            var deckBtn = _kit.Button(wrap.transform, L10n.T("connect.deck_button"), BtnStyle.Ghost, false, 48, 16);
+            deckBtn.OnClick = TabletDeckLauncher.OpenDeck;
+
             var exitBtn = _kit.Button(wrap.transform, L10n.T("common.exit"), BtnStyle.Ghost, false, 48, 16);
             exitBtn.OnClick = () => Application.Quit();
             // En kiosco (Device Owner) no hay adonde "salir" -- Application.Quit()
