@@ -187,8 +187,11 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
   {"type":"hello","catalog_version":"...","lenses":[{...catálogo completo...}],
    "vision_state":{"left":{"lens_id":"...", "<param>":0.0},"right":{...},"blend_active":false},
    "scenario":"ruta_noche","scenarios":[{"id":"consultorio","label":"Consultorio"},
-   {"id":"ruta_noche","label":"Ruta nocturna"}]}
+   {"id":"ruta_noche","label":"Ruta nocturna"}],"mode":"pro","is_admin":false,"focus_check":true}
   ```
+  `focus_check` (bool, ver "Tablet → visor" abajo — `set_focus_check`) refleja
+  `FocusCheckScreenVR.IsVisible` en el instante del hello; a diferencia de `blend_active`, no es
+  un valor derivado del estado óptico sino el estado real de una pantalla de UI del visor.
 - Ante cambios: `{"type":"vision_state","vision_state":{"left":{...},"right":{...},"blend_active":bool}}`.
   Cada ojo serializa `lens_id` + todos los params del `EyeState` aplanados en el mismo objeto.
   `blend_active` (P2.1) es hermano de `left`/`right` (no va dentro de cada ojo): `true` solo cuando
@@ -241,6 +244,29 @@ procesan tras autenticar — antes de eso el único mensaje válido es el `auth`
   emparejamiento. Ambos puntos ya corren en el hilo principal (`OnClientDisconnected`/
   `OnTextReceived` se disparan desde `PumpEvents()`), así que tocar la API de Unity ahí no viola el
   patrón thread→cola→Update.
+- `{"cmd":"set_focus_check","visible":bool}` → togglea la pantalla de chequeo de calce del visor
+  (`Onboarding/FocusCheckScreenVR`, texto corto que el paciente debe leer nítido para confirmar
+  que el casco está bien puesto — arquitectura completa, geometría y el gotcha del post-proceso
+  en `docs/pantalla-calce.md`). Llama directo `FocusCheckScreenVR.SetVisible(visible)` (clase
+  estática, sin necesidad de resolver una referencia de escena como `ResolveHud()`). Fire-and-forget
+  como `set_hud` (sin ack propio), **pero a diferencia de `set_hud`, SÍ hay una fuente de verdad
+  consultable**: `FocusCheckScreenVR.IsVisible` se manda como el campo `"focus_check"` (bool) en
+  TODO `hello` (inicial, reconexión o `refresh`) — la pantalla se muestra SOLA al arrancar el
+  visor (antes de que exista ninguna tablet conectada), así que sin este campo el estado optimista
+  de la tablet (patrón `_hudVisible`) arrancaría mintiendo (el botón diría "Mostrar calce" con la
+  pantalla ya visible). `TabletSession.FocusCheckVisible` lee ese campo (default `true` si falta —
+  visor viejo, mismo estado de arranque) y `TabletController.OnSessionHello` resincroniza el label
+  del botón desde ahí en cada hello, en ambos modos (Standard y Pro tienen el botón — es una
+  acción clínica básica, no una herramienta de diagnóstico como el HUD).
+  **Compatibilidad en la dirección que falta (revisión):** lo de arriba cubre "tablet nueva →
+  visor viejo" (el campo `focus_check` simplemente no llega, default `true`). En la dirección
+  contraria — **tablet vieja → visor nuevo** — la tablet vieja ignora el campo `focus_check` del
+  hello (no lo conoce, no rompe nada) pero tampoco tiene el botón "Ocultar calce"/"Mostrar calce":
+  nunca puede mandar `set_focus_check`. Como la pantalla de calce arranca visible sola y NO tiene
+  salida desde el HMD (decisión consciente del usuario, ver `docs/pantalla-calce.md` §Pendientes),
+  una tablet vieja conectada a un visor con este cambio deja al paciente viendo el cartel de calce
+  toda la sesión, sin forma de sacarlo — es la misma limitación que "ninguna tablet conecta",
+  documentada ahí.
 - Cualquier otro `cmd` loguea warning; texto no-JSON se descarta con warning.
 
 **Stream binario:** `[1 byte header B/L/R][JPG]`, 768×576, 20 Hz, calidad JPG 85
@@ -565,6 +591,16 @@ emparejamientos de una — no hay UI para esto en el visor, ver Decisiones y por
     (`consultorio`/`ruta_noche`). Sin `ScenarioManager` en la escena (caso degenerado, no debería
     pasar en producción): el visor debe loguear `[Net] recenter sin ScenarioManager wired.` sin
     excepción.
+15. **`set_focus_check` (2 dispositivos, ver también `docs/pantalla-calce.md`):** al arrancar el
+    visor la pantalla de chequeo de calce debe verse SOLA, sin que la tablet haya hecho nada.
+    Conectar la tablet → el botón ("Ocultar calce"/"Mostrar calce", header Pro o `StdTopBar`
+    Standard) debe arrancar mostrando "Ocultar calce" (confirma que el campo `focus_check:true`
+    del hello llegó y sincronizó el label, no el optimismo puro de `set_hud`). Tocarlo → la
+    pantalla debe desaparecer en el visor/HMD y el botón pasar a "Mostrar calce"; tocar de nuevo →
+    reaparece. Confirmar en consola del visor que NO aparece `comando desconocido`. Repetir en
+    modo Standard y modo Pro (el botón existe en ambos). Mientras la pantalla está visible, el
+    stream de la tablet debe mostrar el texto de calce (el post-proceso de visión NO lo toca, ver
+    `docs/pantalla-calce.md` Gotchas).
 
 ## Pendientes / deuda
 - Sin `MulticastLock` Android en `DiscoveryListener` (documentado como "si hiciera falta se agrega").

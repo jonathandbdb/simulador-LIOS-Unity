@@ -15,6 +15,7 @@ primera fuente de contexto de los agentes del enjambre.
 | [licenciamiento.md](licenciamiento.md) | Licenciamiento por dispositivo | `Assets/Scripts/Runtime/License/` |
 | [updates.md](updates.md) | Updates semi-automáticos (visor/tablet) | `Assets/Scripts/Runtime/Update/` |
 | [localizacion.md](localizacion.md) | Localización es/en (visor + tablet) | `Assets/Scripts/Runtime/Localization/` |
+| [pantalla-calce.md](pantalla-calce.md) | Pantalla de chequeo de calce del visor | `Assets/Scripts/Runtime/Onboarding/` |
 | [builds-deploy.md](builds-deploy.md) | Builds visor/tablet, adb, deploy | `Assets/Scripts/Editor/TabletBuild.cs` |
 | [backend.md](backend.md) | Backend FastAPI/Docker | `backend/`, `defaults/lentes.json` |
 

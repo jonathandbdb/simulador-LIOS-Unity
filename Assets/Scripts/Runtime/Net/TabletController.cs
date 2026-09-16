@@ -79,6 +79,16 @@ namespace Simulador.Tablet
         private TabletButton _hudToggleBtn;
         private bool _hudVisible = true;
 
+        // --- Toggle de la pantalla de chequeo de calce (comando "set_focus_check", ver
+        // docs/networking.md) --- A diferencia del toggle de HUD (Pro/admin only), este boton
+        // vive en AMBOS modos (header Pro y StdTopBar de Standard): es una accion clinica basica
+        // ("el paciente dice que no ve bien, descartemos que sea el casco"), no una herramienta
+        // de diagnostico. El estado SI se sincroniza desde el hello (TabletSession.FocusCheckVisible)
+        // -- a diferencia de _hudVisible, no es puramente optimista, porque la pantalla arranca
+        // visible sola en el visor y el campo del hello evita que el boton mienta al conectar.
+        private TabletButton _focusCheckToggleBtn, _stdFocusCheckToggleBtn;
+        private bool _focusCheckVisible = true;
+
         // --- Confirmacion de "Desvincular" (header Pro, overlay modal) ---
         // Revocar el emparejamiento por token exige volver a pedir el PIN -- un tap
         // accidental en el boton discreto del header ya no dispara _session.Unpair()
@@ -347,6 +357,11 @@ namespace Simulador.Tablet
             RebuildLensList(lenses);
             RebuildScenarioList();
             RefreshVisionUI();
+            // Pantalla de chequeo de calce (Onboarding/): a diferencia del HUD, SI se sincroniza
+            // desde el hello (arranca visible sola en el visor, ver docs/networking.md
+            // "focus_check") -- en TODO hello, standard o pro, ambos modos tienen el boton.
+            _focusCheckVisible = _session.FocusCheckVisible;
+            UpdateFocusCheckLabel();
             // P7: el toggle "generica" del alta de lentes solo aparece si el visor
             // conectado es admin (el modo puede cambiar entre hellos: re-verify).
             if (_createGenericRow != null) _createGenericRow.SetActive(_session.IsAdmin);
@@ -806,6 +821,26 @@ namespace Simulador.Tablet
         {
             if (_hudToggleBtn?.Label != null)
                 _hudToggleBtn.Label.text = _hudVisible ? L10n.T("main.hud_hide") : L10n.T("main.hud_show");
+        }
+
+        // Boton "Ocultar calce" / "Mostrar calce" (header Pro Y StdTopBar de Standard, ver
+        // docs/tablet.md): comando "set_focus_check" (docs/networking.md). Fire-and-forget como
+        // set_hud/recenter -- pero a diferencia de set_hud, el estado SI se resincroniza desde
+        // el campo "focus_check" de cada hello (ver OnSessionHello), asi que _focusCheckVisible
+        // no queda puramente optimista.
+        private void OnFocusCheckTogglePressed()
+        {
+            if (!_session.IsWsOpen) return;
+            _focusCheckVisible = !_focusCheckVisible;
+            UpdateFocusCheckLabel();
+            _session.SendCommand(new JObject { ["cmd"] = "set_focus_check", ["visible"] = _focusCheckVisible });
+        }
+
+        private void UpdateFocusCheckLabel()
+        {
+            string label = _focusCheckVisible ? L10n.T("main.focus_check_hide") : L10n.T("main.focus_check_show");
+            if (_focusCheckToggleBtn?.Label != null) _focusCheckToggleBtn.Label.text = label;
+            if (_stdFocusCheckToggleBtn?.Label != null) _stdFocusCheckToggleBtn.Label.text = label;
         }
 
         private void OnReconnectCancelPressed()
@@ -1758,6 +1793,11 @@ namespace Simulador.Tablet
             _scenarioList.GetComponent<HorizontalLayoutGroup>().childAlignment = TextAnchor.MiddleLeft;
             var recenterBtn = _kit.Button(header, L10n.T("main.recenter"), BtnStyle.Ghost, false, 44, 14);
             recenterBtn.OnClick = OnRecenterPressed;
+            // Boton de chequeo de calce (junto a Recentrar, ver docs/tablet.md): accion clinica
+            // basica, en AMBOS modos (a diferencia del toggle de HUD, mas abajo, que es Pro/admin
+            // only).
+            _focusCheckToggleBtn = _kit.Button(header, L10n.T("main.focus_check_hide"), BtnStyle.Ghost, false, 44, 14);
+            _focusCheckToggleBtn.OnClick = OnFocusCheckTogglePressed;
             _kit.Spacer(header, 0, true);
             _themeToggle = _kit.Button(header, L10n.T("main.theme_toggle_light"), BtnStyle.Ghost, false, 44, 14);
             _themeToggle.OnClick = () => ApplyTheme(!_isDark);
@@ -2315,6 +2355,19 @@ namespace Simulador.Tablet
             var recenterStdBtn = _kit.Button(topBar, L10n.T("main.recenter"), BtnStyle.Neutral, false, 48, 15);
             _kit.Size(recenterStdBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
             recenterStdBtn.OnClick = OnRecenterPressed;
+            // Mismo boton que el header Pro (ver BuildHeader): accion clinica basica, tambien
+            // presente en Standard (a diferencia del toggle de HUD, que no tiene equivalente aca).
+            // Ancho 135 (revision, MAYOR -- NO bajar): medido, el peor caso real de las 4 cadenas
+            // (main.focus_check_hide/show, es/en) a fontSize 15 es "Show fit check" @ 105.02px de
+            // ancho preferido TMP; con 110 de ancho de boton (90px utiles tras el inset de 10px
+            // por lado) el texto desbordaba en UNA linea (enableWordWrapping=false en
+            // LabelKind.Body, no wrapea) hacia "Recentrar"/"Salir" vecinos. 135 deja margen real
+            // sobre ese peor caso. No bajar el fontSize en su lugar: a 13 sigue sin entrar
+            // (91.01px > 90px) y desalinearia tipograficamente con "Recentrar"/"Salir" (fontSize 15
+            // en la misma barra).
+            _stdFocusCheckToggleBtn = _kit.Button(topBar, L10n.T("main.focus_check_hide"), BtnStyle.Neutral, false, 48, 15);
+            _kit.Size(_stdFocusCheckToggleBtn.GetComponent<RectTransform>(), minW: 135, prefW: 135, flexW: 0);
+            _stdFocusCheckToggleBtn.OnClick = OnFocusCheckTogglePressed;
             var exitBtn = _kit.Button(topBar, L10n.T("common.exit"), BtnStyle.Neutral, false, 48, 15);
             _kit.Size(exitBtn.GetComponent<RectTransform>(), minW: 110, prefW: 110, flexW: 0);
             // "Salir" en Standard desconecta y vuelve al discovery (ConnectScreen),

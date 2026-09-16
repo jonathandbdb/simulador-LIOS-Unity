@@ -134,7 +134,13 @@ TabletController.Start()
 - **MainScreen / Header:** glifo + título, selector de escenarios (segment buttons), botón
   **"Recentrar"** (junto al selector de escenarios — manda `{"cmd":"recenter"}`, ver
   `docs/networking.md`; recalibra la posición del paciente en el escenario actual, sin gating de
-  admin), toggle de tema claro/oscuro, **toggle de idioma** (D2, nuevo, mismo estilo Ghost que el
+  admin), botón **"Ocultar calce"/"Mostrar calce"** (junto a Recentrar — comando `set_focus_check`,
+  ver `docs/networking.md` y `docs/pantalla-calce.md`: togglea la pantalla de chequeo de calce del
+  visor, texto que el paciente lee para confirmar que el casco está bien puesto; a diferencia del
+  toggle de HUD más abajo, este botón también existe en Standard, ver "P7: modos Standard/Pro" —
+  es una acción clínica básica, no una herramienta de diagnóstico; el label SÍ se sincroniza
+  desde el campo `focus_check` de cada hello, no es puramente optimista como `_hudVisible`),
+  toggle de tema claro/oscuro, **toggle de idioma** (D2, nuevo, mismo estilo Ghost que el
   de tema, justo al lado — texto = código ISO del idioma AL QUE CAMBIARÍA, `"EN"` si
   `L10n.Lang == "es"` o `"ES"` si no; toca abrir un popup de confirmación `LangConfirm`, mismo
   patrón scrim + card que `UnpairConfirm`, con título/cuerpo `lang.change_title`/`lang.change_body`
@@ -866,8 +872,16 @@ TabletController.Start()
   vive en `OnSessionHello`: standard ⇒ `ShowStandardScreen()`, resto ⇒ `ShowMainScreen()`.
 - **Pantalla Standard** (`BuildStandardScreen`): stream a pantalla completa (panes OD-primero,
   mismas Texture2D del stream normal), barra superior (escenarios + botón **Recentrar** + botón
-  **Lente** + **Salir** — "Recentrar" manda el mismo `{"cmd":"recenter"}` que el header Pro, sin
-  gating de admin, ver `docs/networking.md`) y **carrusel de 5 íconos circulares** (`TabletUiKit.CircleIcon` + glifos por código:
+  **"Ocultar calce"/"Mostrar calce"** + botón **Lente** + **Salir** — "Recentrar" manda el mismo
+  `{"cmd":"recenter"}` que el header Pro, sin gating de admin; el botón de calce manda el mismo
+  `{"cmd":"set_focus_check"}` que el header Pro y comparte el handler (`OnFocusCheckTogglePressed`)
+  y el label (`UpdateFocusCheckLabel` actualiza los dos botones — Pro y Standard — a la vez), ver
+  `docs/networking.md` y `docs/pantalla-calce.md`. **Ancho fijo en 135 px (revisión, no 110 como
+  Recentrar/Salir)** — medido: el peor caso real de las 4 cadenas ("Hide/Show fit check" en inglés
+  a `fontSize` 15) desborda 90 px útiles con un ancho de 110 (`LabelKind.Body` no wrapea,
+  `enableWordWrapping = false`, así que el texto salía en una sola línea por fuera del pill hacia
+  los botones vecinos); 135 px deja margen real. No es arbitrario, no lo bajes "porque se ve
+  grande" — ver el comentario en `BuildStandardScreen`.) y **carrusel de 5 íconos circulares** (`TabletUiKit.CircleIcon` + glifos por código:
   astigmatismo, halos, dilatación, destellos, rayos — `ParamMeta.STANDARD_PARAMS`). Tocar un
   ícono abre UN slider grande (astigmatismo suma el slider del eje); los sliders emiten
   `override_params` (misma vía persistente que "Ajuste fino": sobreviven updates). El botón
@@ -1477,6 +1491,13 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
     `StdTopBar` (junto a "Lente"/"Salir") → mismo efecto. Sin `vision_state` ni ack de por medio
     (fire-and-forget): no hay feedback visual en la tablet más allá de que el botón responda al
     tap.
+20b. **Botón "Ocultar calce"/"Mostrar calce" (nuevo, 2 dispositivos, ver `docs/pantalla-calce.md`):**
+    al conectar la tablet (Pro o Standard) el botón debe arrancar en "Ocultar calce" (la pantalla
+    de calce se muestra sola al arrancar el visor — confirma que el campo `focus_check` del hello
+    sincronizó el label, no el optimismo puro de `set_hud`). Tocarlo → la pantalla debe
+    desaparecer en el visor/HMD y el botón pasar a "Mostrar calce"; el stream de la tablet debe
+    dejar de mostrar el texto de calce. Tocar de nuevo → reaparece en ambos lados. Repetir en el
+    otro modo (Pro↔Standard, reconectando) → mismo comportamiento, mismo label sincronizado.
 21. **Renombrado de lente en edición (nuevo, `_lensNameEdit`):** en modo Pro, aplicar una lente
     propia (`origen == "custom"`) → en "Ajuste fino" debe aparecer el campo "Nombre de la lente"
     precargado con el nombre actual. Borrarlo y tocar "Guardar en la lente" → debe rechazar con

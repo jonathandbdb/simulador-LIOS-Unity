@@ -11,7 +11,10 @@ idioma fuente" sin reescribir ningún flujo de negocio — es una capa de PRESEN
 protocolo visor↔tablet (`docs/networking.md`) y el contrato del backend no cambian en absoluto.
 
 **Estado actual: Fases D1, D2 y D3 completas** (infraestructura + tabla + tests + TODA la UI de
-visor y tablet; no queda ningún literal de UI sin cablear). Cableado en D1: `TabletSession.cs`,
+visor y tablet; no queda ningún literal de UI sin cablear). **+7 claves** (namespace nuevo
+`focus.*` + `main.focus_check_show`/`main.focus_check_hide`) para la pantalla de chequeo de calce
+del visor (`Onboarding/FocusCheckScreenVR`, ver `docs/pantalla-calce.md` y `docs/networking.md`
+"focus_check"). Cableado en D1: `TabletSession.cs`,
 `ParamMeta.cs`, `LensCardView.cs`, `TabletUiKit.cs` (tablet), `UpdatePromptVR.cs` +
 `UpdateManager.cs` (updates), `LicenseBlockScreenVR.cs` + `LicenseManager.cs` (licenciamiento).
 Cableado en D2: **todos** los literales visibles de `Assets/Scripts/Runtime/Net/TabletController.cs`
@@ -22,17 +25,18 @@ toggle de idioma del header + su popup de confirmación (ver `docs/tablet.md` "M
 Header" y Decisiones "Idioma fijo al arrancar, cambio por reinicio"). Cableado en D3:
 `Vision/HudController.cs` (HUD de diagnóstico del visor) con las claves `hud.*` que D1 ya había
 reservado — **cero claves nuevas**, y el escenario traducido por id con las mismas
-`scenario.<id>` que usa la tablet (ver `docs/vision-optica.md` §HudController). 206 claves por
+`scenario.<id>` que usa la tablet (ver `docs/vision-optica.md` §HudController). 213 claves por
 idioma (arrancó en 199 en D1; D3 no agregó ninguna; +2 en correcciones posteriores —
 `kiosk.service_mode_banner`/`kiosk.service_mode_exit`, ver `docs/tablet.md` "Salida de
-servicio del kiosco").
+servicio del kiosco"; +7 con la pantalla de chequeo de calce — namespace `focus.*` completo más
+`main.focus_check_show`/`main.focus_check_hide`, ver `docs/pantalla-calce.md`).
 
 ## Arquitectura actual
 
 | Archivo | Rol |
 |---|---|
 | `Assets/Scripts/Runtime/Localization/L10n.cs` | Motor estático (namespace `Simulador.Localization`), sin `MonoBehaviour` — usable desde plain C# (`TabletSession`) además de `MonoBehaviour`s. Resuelve y fija el idioma UNA vez (`Initialize`), y expone `T(key)`/`T(key, args)`/`Has(key)` (D2). |
-| `Assets/Scripts/Runtime/Localization/L10nTable.cs` | Las dos tablas (`Dictionary<string,string> Es`, `En`), separadas del motor para no enterrar la lógica bajo el volumen de strings. Namespaces de clave por sistema (`connect.*`, `pin.*`, `reconnect.*`, `main.*`, `lens.*`, `standard.*`, `kiosk.*`, `unpair.*`, `lang.*`, `param.<clave>.label\|hint`, `scenario.*`, `update.*`, `license.*`, `hud.*`, `common.*`). El bloque `// D2: claves pendientes...` (referencia literal→clave para `TabletController.cs`) ya cumplió su función y se borró al cerrar D2 — dejarlo hubiera sido drift. |
+| `Assets/Scripts/Runtime/Localization/L10nTable.cs` | Las dos tablas (`Dictionary<string,string> Es`, `En`), separadas del motor para no enterrar la lógica bajo el volumen de strings. Namespaces de clave por sistema (`connect.*`, `pin.*`, `reconnect.*`, `main.*`, `lens.*`, `standard.*`, `kiosk.*`, `unpair.*`, `lang.*`, `param.<clave>.label\|hint`, `scenario.*`, `update.*`, `license.*`, `hud.*`, `focus.*`, `common.*`). El bloque `// D2: claves pendientes...` (referencia literal→clave para `TabletController.cs`) ya cumplió su función y se borró al cerrar D2 — dejarlo hubiera sido drift. |
 
 ```
 L10n.Lang (getter)
@@ -154,6 +158,7 @@ Fuente única para toda clave nueva — no traducir literal, usar estos término
 | Emparejar / desvincular | Pair / unpair |
 | Visor | Headset |
 | Recentrar | Recenter |
+| Calce (del visor) / chequeo de calce | Fit / fit check |
 | Pantalla completa | Full screen |
 | Actualizar (refresco de catálogo) | Refresh |
 | Actualizar (update de la app) | Update |

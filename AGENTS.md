@@ -125,6 +125,7 @@ Resumen (el detalle y el porqué viven en la skill `il2cpp-networking-gotchas`):
 | Backend | `backend/` | `docs/backend.md` |
 | Updates | `Assets/Scripts/Runtime/Update/` | `docs/updates.md` |
 | Localización (es/en) | `Assets/Scripts/Runtime/Localization/` | `docs/localizacion.md` |
+| Pantalla de chequeo de calce | `Assets/Scripts/Runtime/Onboarding/` | `docs/pantalla-calce.md` |
 
 **Regla (loop anti-drift)**: la doc viva se **lee ANTES de grepear el código** (es el resumen
 curado) y se **actualiza EN SITIO en la misma tarea** si el cambio altera arquitectura,

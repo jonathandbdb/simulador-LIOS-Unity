@@ -115,6 +115,13 @@ namespace Simulador.Tablet
         /// <summary>True si el visor conectado es administrador (puede crear lentes genericas, P7).</summary>
         public bool IsAdmin { get; private set; }
 
+        /// <summary>Estado de la pantalla de chequeo de calce (Onboarding/FocusCheckScreenVR) del
+        /// hello -- a diferencia de "set_hud" (fire-and-forget puro), este SI se confirma en cada
+        /// hello para que el boton de la tablet no arranque mintiendo (la pantalla se muestra
+        /// sola al arrancar el visor). Default true para un visor viejo sin el campo (mismo
+        /// estado de arranque).</summary>
+        public bool FocusCheckVisible { get; private set; } = true;
+
         // ============================================================
         // Eventos hacia la UI
         // ============================================================
@@ -513,6 +520,9 @@ namespace Simulador.Tablet
                 // campo -> default "pro" (UI completa actual, no-breaking).
                 Mode = (string)o["mode"] ?? "pro";
                 IsAdmin = (bool?)o["is_admin"] ?? false;
+                // Visor viejo sin el campo -> true (mismo estado de arranque de la pantalla,
+                // ver docs/networking.md "focus_check").
+                FocusCheckVisible = (bool?)o["focus_check"] ?? true;
                 _sessionActive = true;
                 _reconnecting = false; // P2.5: hello == reconexion exitosa (si venia de ahi)
                 HelloReceived?.Invoke(lenses);

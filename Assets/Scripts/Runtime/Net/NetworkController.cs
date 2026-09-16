@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using Newtonsoft.Json.Linq;
 using Simulador.Data;
+using Simulador.Onboarding;
 using Simulador.Tablet;
 using Simulador.Vision;
 using UnityEngine;
@@ -19,7 +20,7 @@ namespace Simulador.Net
     /// persistente de un enlace previo, opcion B de emparejamiento -- ver
     /// docs/networking.md) como primer mensaje; recien autenticado recibe el "hello"
     /// (catalogo + estado), puede mandar comandos (apply_lens, override_params,
-    /// set_astigmatism, load_scenario, refresh, unpair, set_hud) y recibe el
+    /// set_astigmatism, load_scenario, refresh, unpair, set_hud, set_focus_check) y recibe el
     /// vision_state/stream. Un PIN correcto emite un token nuevo (persistido en
     /// persistentDataPath/paired_tokens.json) que la tablet reusa en reconexiones
     /// futuras sin volver a pedir el PIN; el token NO consume el lockout de PIN si
@@ -284,6 +285,12 @@ namespace Simulador.Net
                 // los campos; un visor viejo no los manda (la tablet asume "pro").
                 ["mode"] = License.LicenseManager.AppMode,
                 ["is_admin"] = License.LicenseManager.IsAdmin,
+                // La pantalla de chequeo de calce (Onboarding/FocusCheckScreenVR) se muestra
+                // SOLA al arrancar el visor -- sin este campo, el estado optimista local de la
+                // tablet (patron de "set_hud") arrancaria mintiendo (el boton diria "Mostrar"
+                // aunque ya este visible). Se sincroniza desde ACA en vez de agregar un mensaje
+                // nuevo, ver docs/networking.md.
+                ["focus_check"] = FocusCheckScreenVR.IsVisible,
             };
             return hello.ToString(Newtonsoft.Json.Formatting.None);
         }
@@ -583,6 +590,13 @@ namespace Simulador.Net
                     var targetHud = ResolveHud();
                     if (targetHud != null) targetHud.gameObject.SetActive(setHudVisible);
                     else Debug.LogWarning("Net: set_hud recibido pero no se encontro HudController en la escena.");
+                    break;
+                case "set_focus_check":
+                    // Toggle de la pantalla de chequeo de calce (Onboarding/) desde la tablet,
+                    // ver docs/networking.md. Fire-and-forget como set_hud: sin ack ni campo en
+                    // vision_state -- el campo "focus_check" del hello es lo que sincroniza el
+                    // boton de la tablet (arranca visible al conectar).
+                    FocusCheckScreenVR.SetVisible((bool?)cmd["visible"] ?? true);
                     break;
                 case "create_lens":
                 case "update_lens":

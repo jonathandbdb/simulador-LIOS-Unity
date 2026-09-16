@@ -10,7 +10,7 @@ namespace Simulador.Localization
     /// <c>reconnect.*</c>, <c>main.*</c>, <c>lens.*</c>, <c>standard.*</c>,
     /// <c>kiosk.*</c>, <c>unpair.*</c>, <c>lang.*</c>,
     /// <c>param.&lt;clave&gt;.label|hint</c>,
-    /// <c>scenario.*</c>, <c>update.*</c>, <c>license.*</c>, <c>hud.*</c>,
+    /// <c>scenario.*</c>, <c>update.*</c>, <c>license.*</c>, <c>hud.*</c>, <c>focus.*</c>,
     /// <c>common.*</c>). El texto español es la fuente (copiado EXACTO del
     /// literal original, mismos acentos/puntuacion tal cual estaban en el
     /// código -- algunos hints de <c>param.*</c> vienen sin tildes en el
@@ -82,6 +82,8 @@ namespace Simulador.Localization
             ["main.theme_toggle_dark"] = "Modo oscuro",
             ["main.hud_hide"] = "Ocultar HUD",
             ["main.hud_show"] = "Mostrar HUD",
+            ["main.focus_check_hide"] = "Ocultar calce",
+            ["main.focus_check_show"] = "Mostrar calce",
             ["main.scenario_label"] = "Escenario:",
             ["main.recenter"] = "Recentrar",
             ["main.refresh"] = "Actualizar",
@@ -230,6 +232,17 @@ namespace Simulador.Localization
             ["hud.halo_on"] = "ON",
             ["hud.halo_off"] = "off",
 
+            // ---- focus (FocusCheckScreenVR, pantalla de chequeo de calce del visor) ----
+            ["focus.title"] = "Ajustá el visor hasta ver este texto nítido",
+            ["focus.line1"] = "Movelo suavemente arriba y abajo hasta que las letras se vean definidas.",
+            ["focus.line2"] = "Ajustá la correa para que no se mueva.",
+            ["focus.line3"] = "Si podés leer esta línea, el visor está bien colocado.",
+            // Revision (MAYOR): U+2500 (Box Drawing) no esta cubierto por LegacyRuntime.ttf
+            // (Liberation Sans) -- en el Editor sobre Windows el Text dinamico cae a fuentes del
+            // SO y lo tapa, pero en Quest/Android sale como tofu. U+2014 (em dash) SI esta
+            // cubierto (ya se usa en update.*). No le metas glifos exoticos a este string.
+            ["focus.center_mark"] = "———  +  ———",
+
             // ---- scenario (labels del hello, NetworkController.ScenarioLabels) ----
             ["scenario.consultorio"] = "Consultorio",
             ["scenario.ruta_noche"] = "Ruta nocturna",
@@ -324,6 +337,8 @@ namespace Simulador.Localization
             ["main.theme_toggle_dark"] = "Dark mode",
             ["main.hud_hide"] = "Hide HUD",
             ["main.hud_show"] = "Show HUD",
+            ["main.focus_check_hide"] = "Hide fit check",
+            ["main.focus_check_show"] = "Show fit check",
             ["main.scenario_label"] = "Scenario:",
             ["main.recenter"] = "Recenter",
             ["main.refresh"] = "Refresh",
@@ -461,6 +476,13 @@ namespace Simulador.Localization
             ["hud.pairing_pin"] = "Tablet PIN: {0}",
             ["hud.halo_on"] = "ON",
             ["hud.halo_off"] = "off",
+
+            ["focus.title"] = "Adjust the headset until this text looks sharp",
+            ["focus.line1"] = "Move it gently up and down until the letters look sharp.",
+            ["focus.line2"] = "Tighten the strap so it doesn't move.",
+            ["focus.line3"] = "If you can read this line, the headset is properly fitted.",
+            // Same em dash caveat as the Es table above -- LegacyRuntime.ttf coverage, no exotic glyphs.
+            ["focus.center_mark"] = "———  +  ———",
 
             ["scenario.consultorio"] = "Exam room",
             ["scenario.ruta_noche"] = "Night road",
