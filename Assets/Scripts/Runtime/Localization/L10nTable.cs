@@ -242,6 +242,9 @@ namespace Simulador.Localization
             // SO y lo tapa, pero en Quest/Android sale como tofu. U+2014 (em dash) SI esta
             // cubierto (ya se usa en update.*). No le metas glifos exoticos a este string.
             ["focus.center_mark"] = "———  +  ———",
+            // Replica del PIN que muestra el HUD (docs/pantalla-calce.md, gotcha del
+            // cullingMask): visible solo mientras no haya ninguna tablet autenticada.
+            ["focus.pairing_pin"] = "PIN de emparejamiento: {0}",
 
             // ---- scenario (labels del hello, NetworkController.ScenarioLabels) ----
             ["scenario.consultorio"] = "Consultorio",
@@ -483,6 +486,7 @@ namespace Simulador.Localization
             ["focus.line3"] = "If you can read this line, the headset is properly fitted.",
             // Same em dash caveat as the Es table above -- LegacyRuntime.ttf coverage, no exotic glyphs.
             ["focus.center_mark"] = "———  +  ———",
+            ["focus.pairing_pin"] = "Pairing PIN: {0}",
 
             ["scenario.consultorio"] = "Exam room",
             ["scenario.ruta_noche"] = "Night road",

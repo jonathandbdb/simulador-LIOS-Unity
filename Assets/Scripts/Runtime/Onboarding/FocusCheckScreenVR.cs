@@ -80,6 +80,22 @@ namespace Simulador.Onboarding
         private bool _visible;
         private bool _occlusionAcquired;
 
+        // PIN de emparejamiento (ver docs/pantalla-calce.md, gotcha "punto muerto de
+        // emparejamiento"): CameraSceneOcclusionGate.Acquire() restringe el cullingMask
+        // de la camara a la capa UI mientras este cartel esta visible, asi que el
+        // DebugHUD (capa Default) -- donde normalmente se muestra el PIN -- queda
+        // CULLED. Sin este PIN replicado aca, un emparejamiento nuevo es imposible
+        // mientras el chequeo de calce esta visible (que es SIEMPRE al arrancar, antes
+        // de que exista ninguna tablet). _pendingPin guarda el valor si SetPairingPin
+        // se llama antes de que el canvas exista (el orden de arranque entre
+        // NetworkController.Start() y el Bootstrap de esta clase no esta garantizado);
+        // _pairingPinRow es un GameObject aparte (no directamente el Text) para poder
+        // desactivarlo entero -- asi el VerticalLayoutGroup no le reserva espacio
+        // cuando no hay PIN que mostrar (p.ej. ya hay una tablet autenticada).
+        private static string _pendingPin;
+        private GameObject _pairingPinRow;
+        private Text _pairingPinText;
+
         // Guard anti-coexistencia (ver Update()): NO se chequea por frame -- mismo criterio que
         // NetworkController.DiscoverSceneRefs (Net/NetworkController.cs:201-213), que ya acota un
         // FindFirstObjectByType a 1 Hz por el mismo motivo. Acá el cartel puede quedar visible
@@ -102,6 +118,7 @@ namespace Simulador.Onboarding
         {
             _instance = null;
             IsVisible = false;
+            _pendingPin = null;
         }
 
         // Se auto-crea SOLO si hay un ScenarioManager en la escena (componente exclusivo del
@@ -126,6 +143,21 @@ namespace Simulador.Onboarding
         {
             if (_instance == null) return;
             _instance.SetVisibleInternal(visible);
+        }
+
+        /// <summary>
+        /// Muestra/oculta la linea del PIN de emparejamiento en ESTE cartel (ver comentario del
+        /// campo <see cref="_pendingPin"/> para el porque). <paramref name="pin"/> null o vacio
+        /// oculta la linea (ya hay una tablet autenticada, o el visor todavia no genero PIN).
+        /// Empujado por <see cref="Simulador.Net.NetworkController"/> (Net -&gt; Onboarding, nunca
+        /// al reves) -- esta clase nunca resuelve el PIN por su cuenta. Seguro de llamar ANTES de
+        /// que exista el canvas (o incluso antes de <see cref="Bootstrap"/>): el valor queda en
+        /// <see cref="_pendingPin"/> y se aplica en cuanto el canvas se construye.
+        /// </summary>
+        public static void SetPairingPin(string pin)
+        {
+            _pendingPin = string.IsNullOrEmpty(pin) ? null : pin;
+            _instance?.ApplyPendingPin();
         }
 
         private void Update()
@@ -204,6 +236,18 @@ namespace Simulador.Onboarding
             _line2Text.text = L10n.T("focus.line2");
             _line3Text.text = L10n.T("focus.line3");
             _centerMarkText.text = L10n.T("focus.center_mark");
+            ApplyPendingPin();
+        }
+
+        // Aplica _pendingPin a la fila del PIN (ver comentario del campo). No-op si el canvas
+        // todavia no existe -- BuildCanvas() y Refresh() la vuelven a llamar cuando corresponde,
+        // asi que SetPairingPin() nunca pierde un valor por orden de arranque.
+        private void ApplyPendingPin()
+        {
+            if (_pairingPinRow == null) return;
+            bool show = !string.IsNullOrEmpty(_pendingPin);
+            _pairingPinRow.SetActive(show);
+            if (show) _pairingPinText.text = L10n.T("focus.pairing_pin", _pendingPin);
         }
 
         // ---------------- Construccion del canvas world-space ----------------
@@ -281,6 +325,25 @@ namespace Simulador.Onboarding
             // solo la nitidez del texto, tambien que este centrado en el campo visual). Color
             // propio (no forma parte de la escalera de contraste de arriba).
             _centerMarkText = MakeLabel(layoutGo.transform, font, 26, FontStyle.Bold, new Color(0.6f, 0.85f, 0.8f));
+
+            // Fila del PIN de emparejamiento (ver comentario del campo _pendingPin): bloque
+            // APARTE de la escalera de tamaños decrecientes de arriba -- ese instrumento de
+            // medicion no puede tener una variable mas que el tamaño (ver el comentario de la
+            // escalera), y un PIN grande al final la rompería. Fuente propia (~orden del titulo,
+            // no la escalera), color claro para que se lea sin esfuerzo (es un dato que el
+            // clinico tiene que tipear en la tablet), y un padding superior extra (en vez del
+            // "spacing" uniforme del VerticalLayoutGroup) para separarla visualmente de la cruz
+            // de centrado. GameObject propio (no solo el Text) para que quede TOTALMENTE
+            // inactivo -- y sin reserva de espacio -- cuando no hay PIN que mostrar.
+            _pairingPinRow = new GameObject("PairingPinRow", typeof(RectTransform), typeof(VerticalLayoutGroup));
+            _pairingPinRow.transform.SetParent(layoutGo.transform, false);
+            var pinRowLayout = _pairingPinRow.GetComponent<VerticalLayoutGroup>();
+            pinRowLayout.padding = new RectOffset(0, 0, 24, 0);
+            pinRowLayout.childAlignment = TextAnchor.MiddleCenter;
+            pinRowLayout.childControlWidth = true; pinRowLayout.childControlHeight = true;
+            pinRowLayout.childForceExpandWidth = true; pinRowLayout.childForceExpandHeight = false;
+            _pairingPinText = MakeLabel(_pairingPinRow.transform, font, 36, FontStyle.Bold, new Color(1f, 0.87f, 0.4f));
+            _pairingPinRow.SetActive(false); // ApplyPendingPin() decide el estado real mas abajo
 
             // Ocultar la escena de fondo a nivel de camara mientras el cartel este visible (ver
             // docstring "OCLUSION DE LA ESCENA"). El Acquire real ocurre en

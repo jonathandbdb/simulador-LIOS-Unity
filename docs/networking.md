@@ -105,6 +105,16 @@ JPGs binarios. Todo es un port de la versión Godot (`streaming_server.gd`, `dis
   pública read-only para que el HUD lo muestre — eso lo consume `Vision/`, fuera de este cambio;
   también se expone `AuthenticatedClientCount` como passthrough de
   `WebSocketServer.AuthenticatedClientCount`, para que el HUD sepa si hay una tablet emparejada).
+  **El PIN se muestra en DOS lugares (0.8.0):** el HUD (`Vision/`, capa Default) y, desde esta
+  versión, también la pantalla de chequeo de calce (`Onboarding/FocusCheckScreenVR`,
+  `SetPairingPin(...)`) — necesario porque el gate de oclusión de esa pantalla restringe el
+  `cullingMask` de la cámara a la capa `UI`, CULEANDO el HUD (capa Default) mientras el chequeo
+  de calce está visible; sin la réplica, un emparejamiento nuevo era imposible en un visor recién
+  arrancado (la pantalla de calce arranca visible siempre, antes de que exista ninguna tablet).
+  Detalle completo del punto muerto y el fix en `docs/pantalla-calce.md` (Gotchas). `Net` empuja
+  el valor a `Onboarding` (nunca al revés): en `Start()` tras generarlo, `null` al autenticar
+  (por PIN o por token), y de nuevo el PIN si `AuthenticatedClientCount` vuelve a 0 en
+  `OnClientDisconnected` (mismo guard que ya reafirma el HUD ahí, ver "set_hud" más abajo).
   El primer mensaje de cada cliente DEBE ser `{"type":"auth","pin":"NNNNNN"}`; hasta que no llega
   un PIN correcto, el server no manda `hello` y `BroadcastText`/`BroadcastBinary` (vision_state,
   stream JPG) lo excluyen. La validación vive en la capa de protocolo

@@ -15,8 +15,8 @@ veo bien" y hay que descartar que sea el casco antes de tocar ningún parámetro
 
 | Archivo | Rol |
 |---|---|
-| `Assets/Scripts/Runtime/Onboarding/FocusCheckScreenVR.cs` | Único archivo del sistema. `MonoBehaviour` que se auto-crea (`[RuntimeInitializeOnLoadMethod(AfterSceneLoad)]`) solo si hay un `ScenarioManager` en la escena (componente exclusivo del visor, `Vision/`) — así nunca se dispara en `Tablet.unity`, que comparte el asmdef `Simulador.Runtime` pero no tiene ese componente. Expone `static bool IsVisible` y `static void SetVisible(bool)`. |
-| `Assets/Scripts/Runtime/Net/NetworkController.cs` | `case "set_focus_check"` en el switch de comandos (`OnTextReceived`) llama `FocusCheckScreenVR.SetVisible(...)` directo (clase estática, sin resolver una referencia de escena como `ResolveHud()`). `BuildHello()` agrega `["focus_check"] = FocusCheckScreenVR.IsVisible`. |
+| `Assets/Scripts/Runtime/Onboarding/FocusCheckScreenVR.cs` | Único archivo del sistema. `MonoBehaviour` que se auto-crea (`[RuntimeInitializeOnLoadMethod(AfterSceneLoad)]`) solo si hay un `ScenarioManager` en la escena (componente exclusivo del visor, `Vision/`) — así nunca se dispara en `Tablet.unity`, que comparte el asmdef `Simulador.Runtime` pero no tiene ese componente. Expone `static bool IsVisible`, `static void SetVisible(bool)` y (ver gotcha "punto muerto de emparejamiento" más abajo) `static void SetPairingPin(string)` — una línea aparte, debajo de la cruz de centrado, con el PIN de emparejamiento; `null`/vacío la oculta SIN reservarle espacio (GameObject propio, no solo el `Text`, para que el `VerticalLayoutGroup` lo omita del todo). |
+| `Assets/Scripts/Runtime/Net/NetworkController.cs` | `case "set_focus_check"` en el switch de comandos (`OnTextReceived`) llama `FocusCheckScreenVR.SetVisible(...)` directo (clase estática, sin resolver una referencia de escena como `ResolveHud()`). `BuildHello()` agrega `["focus_check"] = FocusCheckScreenVR.IsVisible`. Además empuja el PIN de emparejamiento a esta pantalla (`FocusCheckScreenVR.SetPairingPin(...)`, dirección Net -> Onboarding, nunca al revés): en `Start()` justo tras generarlo, `null` al autenticar un cliente (por PIN o por token), y de nuevo el PIN real si `AuthenticatedClientCount` vuelve a 0 en `OnClientDisconnected` (mismo guard que ya reafirma el HUD ahí, ver "set_hud" en `docs/networking.md`). |
 | `Assets/Scripts/Runtime/Tablet/TabletSession.cs` | `FocusCheckVisible` (bool, default `true`) parseado del campo `"focus_check"` del hello. |
 | `Assets/Scripts/Runtime/Net/TabletController.cs` | Botón "Ocultar calce"/"Mostrar calce" en el header Pro (`BuildHeader`, junto a "Recentrar") y en `StdTopBar` (modo Standard, también junto a "Recentrar") — **en AMBOS modos**, a diferencia del toggle de HUD (Pro/admin only): es una acción clínica básica. `OnFocusCheckTogglePressed` (compartido por los dos botones) manda `{"cmd":"set_focus_check","visible":bool}`; `OnSessionHello` resincroniza `_focusCheckVisible` desde `_session.FocusCheckVisible` en cada hello. |
 | `Assets/Scripts/Runtime/Localization/L10nTable.cs` | Namespace `focus.*` (título + 3 líneas + marca de centrado) y `main.focus_check_show`/`main.focus_check_hide` (label del botón). |
@@ -93,6 +93,38 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
 
 ## Gotchas
 
+- **PUNTO MUERTO DE EMPAREJAMIENTO (0.8.0, corregido) — por qué el PIN se replica en esta
+  pantalla.** `CameraSceneOcclusionGate.Acquire()` (ver más abajo, "OCLUSION DE LA ESCENA")
+  restringe el `cullingMask` de `Camera.main` a la capa `UI` mientras este cartel está visible —
+  y el `DebugHUD` (donde normalmente se muestra el PIN de emparejamiento, `hud.pairing_pin` en
+  `docs/networking.md`) vive en la capa **Default**, no `UI`. Resultado: mientras el chequeo de
+  calce está en pantalla, el HUD queda **CULLED por completo**, PIN incluido. Como esta pantalla
+  (a) arranca visible SIEMPRE, apenas carga `Main.unity`, ANTES de que exista ninguna tablet, y
+  (b) SOLO se puede ocultar desde un comando `set_focus_check` que manda la tablet YA
+  autenticada — la consecuencia era un punto muerto real: sin ver el PIN, ninguna tablet podía
+  autenticarse por primera vez; sin una tablet autenticada, nadie podía ocultar el cartel para
+  volver a ver el HUD. Un emparejamiento nuevo en un visor recién arrancado era **imposible**.
+  Fix: `NetworkController` empuja el PIN también a `FocusCheckScreenVR.SetPairingPin(...)` en
+  CUATRO puntos que reafirman el HUD por el mismo motivo — `Start()`, éxito de auth (PIN o
+  token), el guard de `OnClientDisconnected` (`wasAuthenticated && AuthenticatedClientCount ==
+  0`), y el guard de `case "unpair"` (`AuthenticatedClientCount <= 1`, ver la nota siguiente) —
+  ver la fila de `NetworkController.cs` en Arquitectura), así que el PIN queda legible en la
+  ÚNICA pantalla que SÍ sobrevive al `cullingMask` restringido (es UI world-space, layer aparte,
+  ver `CameraSceneOcclusionGate.ApplyOverlayLayer`). **No se corrigió moviendo el `DebugHUD` a la
+  capa `UI`** — el usuario descartó esa opción a propósito: haría visible el HUD (FPS, lentes,
+  halos) también sobre las pantallas de bloqueo de licencia y de prompt de actualización, que
+  deben quedar con la escena completamente oculta.
+- **`"unpair"` también re-muestra el PIN (cubierto, mismo guard que el HUD)** → el comando
+  `"unpair"` borra `_tokenByClientId[id]` ANTES de que llegue el disconnect real del socket (la
+  tablet cierra la conexión por su cuenta apenas manda este comando, ver `TabletSession.Unpair`
+  en `docs/networking.md`), así que el guard de `OnClientDisconnected` por sí solo NO lo
+  detectaría (`wasAuthenticated` ya daría `false` para ese cliente). Por eso el `case "unpair"`
+  de `NetworkController.cs` tiene su PROPIO guard (`AuthenticatedClientCount <= 1` — cuenta a
+  este mismo cliente, que sigue Open/Authenticated hasta que se desconecte de verdad) que
+  reafirma el HUD; `FocusCheckScreenVR.SetPairingPin(PairingPin)` se agregó AHÍ MISMO, junto al
+  `ResolveHud()?.gameObject.SetActive(true)` — mismo guard, mismo momento, dos consumidores. Este
+  es justamente el camino típico por el que un clínico llega a necesitar re-emparejar (tocar
+  "Desvincular" y volver a conectar), así que cerrarlo acá era necesario, no cosmético.
 - **El texto sale nítido SIN tocar el sistema de visión, y es intencional** → el post-proceso
   (blur dióptrico, astigmatismo, contraste, velo) se inyecta en
   `VisionRendererFeature.injectionPoint = RenderPassEvent.BeforeRenderingTransparents`
@@ -161,6 +193,18 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
 5. **No coexistencia con el bloqueo de licencia:** forzar un bloqueo de licencia (ver
    `docs/licenciamiento.md`) mientras la pantalla de calce está visible → la pantalla de calce
    debe desaparecer sola (gana el bloqueo de licencia) sin quedar superpuesta.
+6. **PIN de emparejamiento (punto muerto corregido, ver Gotchas):** dar Play en `Main.unity` sin
+   ninguna tablet conectada → la pantalla de calce debe mostrar, debajo de la cruz de centrado y
+   separado del resto (fuente grande, color ámbar), "PIN de emparejamiento: NNNNNN" con el MISMO
+   PIN que loguea la consola (`Net: PIN de emparejamiento de esta sesion: NNNNNN`). Conectar y
+   autenticar una tablet con ese PIN → la línea debe desaparecer SIN dejar un hueco (el panel
+   encoge de vuelta a su tamaño sin la línea, no queda un espacio en blanco). Desconectar esa
+   tablet (o "Desvincular") sin que quede ninguna otra autenticada → la línea debe reaparecer con
+   el mismo PIN (no cambia hasta reiniciar el visor). Repetir autenticando por TOKEN (reconexión)
+   en vez de por PIN → mismo resultado (la línea desaparece igual). **Caso puntual real (el que
+   motivó el fix):** con la tablet autenticada, ocultar el cartel de calce (`set_focus_check`
+   `false`), y con esa MISMA conexión tocar "Desvincular" (no "Desconectar") → el PIN debe
+   reaparecer igual (guard compartido con el HUD en `case "unpair"`, ver Gotchas).
 
 ## Pendientes / deuda
 
@@ -188,3 +232,12 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
   (2) timeout automático, (3) botón del mando (rompería la frontera de `SimuladorInput`, ver
   Decisiones), (4) dejarlo como está — y **el usuario eligió (4) explícitamente**. No implementar
   ninguna salida de emergencia es la decisión tomada, no un pendiente técnico por resolver solo.
+  **Precisión post-fix del PIN (ver Gotchas, "PUNTO MUERTO DE EMPAREJAMIENTO"):** el caso concreto
+  de "ninguna tablet llega a NUNCA poder conectar porque el PIN es invisible" — que en 0.8.0 era
+  además un caso de "ninguna tablet PUEDE llegar a conectar", no solo "ninguna llegó a
+  conectar" — ya no aplica: el PIN se ve en este mismo cartel. Lo que SIGUE sin resolver (y para
+  lo que sigue valiendo la decisión del usuario de arriba) es el caso de una tablet vieja que
+  nunca manda `set_focus_check`, o directamente ninguna tablet conectando pese a ver el PIN — ahí
+  el cartel de calce sigue sin salida desde el HMD, por diseño. El camino de "Desvincular" (el
+  más típico para llegar a necesitar re-emparejar) SÍ está cubierto — ver Gotchas,
+  "`\"unpair\"` también re-muestra el PIN".

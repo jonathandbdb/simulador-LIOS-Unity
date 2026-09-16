@@ -151,6 +151,12 @@ namespace Simulador.Net
         {
             PairingPin = GeneratePin();
             Debug.Log($"Net: PIN de emparejamiento de esta sesion: {PairingPin}");
+            // Ademas del HUD (Vision/, que solo LEE PairingPin), replicarlo en la pantalla de
+            // chequeo de calce: esa pantalla arranca visible SIEMPRE y su gate de oclusion de
+            // camara restringe el cullingMask a la capa UI, lo que CULEA al DebugHUD (capa
+            // Default) -- sin esto, un emparejamiento nuevo es imposible mientras el chequeo de
+            // calce esta en pantalla. Ver docs/pantalla-calce.md (gotcha) y docs/networking.md.
+            FocusCheckScreenVR.SetPairingPin(PairingPin);
             LoadPairedTokens();
 
             _server = new WebSocketServer();
@@ -258,7 +264,13 @@ namespace Simulador.Net
             // sigue siendo valido en paired_tokens.json hasta un unpair explicito.
             _tokenByClientId.Remove(id);
             if (wasAuthenticated && (_server == null || _server.AuthenticatedClientCount == 0))
+            {
                 ResolveHud()?.gameObject.SetActive(true);
+                // Mismo motivo que el HUD (ver docs/pantalla-calce.md): sin ninguna tablet
+                // autenticada, el PIN vuelve a hacer falta -- y en el chequeo de calce, no solo
+                // en el HUD (que puede seguir culled por el gate de oclusion).
+                FocusCheckScreenVR.SetPairingPin(PairingPin);
+            }
             Debug.Log($"Net: cliente {id} desconectado");
         }
 
@@ -447,6 +459,9 @@ namespace Simulador.Net
                 Debug.Log($"Net: cliente {id} autenticado por PIN, enviando hello.");
                 _server.SendTextTo(id, new JObject { ["type"] = "auth_ok", ["token"] = newToken }.ToString(Newtonsoft.Json.Formatting.None));
                 _server.SendTextTo(id, BuildHello());
+                // Ya hay una tablet autenticada: el PIN replicado en el chequeo de calce ya no
+                // hace falta (ver el comentario de Start()).
+                FocusCheckScreenVR.SetPairingPin(null);
             }
             else
             {
@@ -477,6 +492,8 @@ namespace Simulador.Net
                 Debug.Log($"Net: cliente {id} autenticado por token, enviando hello.");
                 _server.SendTextTo(id, new JObject { ["type"] = "auth_ok" }.ToString(Newtonsoft.Json.Formatting.None));
                 _server.SendTextTo(id, BuildHello());
+                // Idem auth por PIN: ya hay una tablet autenticada, ocultar el PIN replicado.
+                FocusCheckScreenVR.SetPairingPin(null);
             }
             else
             {
@@ -569,16 +586,22 @@ namespace Simulador.Net
                         RemovePairedToken(revoked);
                         _tokenByClientId.Remove(id);
                         Debug.Log($"Net: cliente {id} se desvinculo (token revocado).");
-                        // Misma red de seguridad del HUD que OnClientDisconnected: el
-                        // "unpair" borra la entrada de _tokenByClientId ANTES de que
-                        // llegue el disconnect real del socket (la tablet cierra la
-                        // conexion por su cuenta apenas manda este comando, ver
-                        // TabletSession.Unpair), asi que ese chequeo ya no lo
-                        // detectaria -- se resuelve aca. AuthenticatedClientCount
-                        // todavia cuenta a ESTE cliente (sigue Open/Authenticated
-                        // hasta que se desconecte), de ahi el <= 1.
+                        // Misma red de seguridad del HUD (y, desde esta tarea, tambien del PIN
+                        // replicado en la pantalla de chequeo de calce) que OnClientDisconnected:
+                        // el "unpair" borra la entrada de _tokenByClientId ANTES de que llegue el
+                        // disconnect real del socket (la tablet cierra la conexion por su cuenta
+                        // apenas manda este comando, ver TabletSession.Unpair), asi que ese
+                        // chequeo ya no lo detectaria -- se resuelve aca. AuthenticatedClientCount
+                        // todavia cuenta a ESTE cliente (sigue Open/Authenticated hasta que se
+                        // desconecte), de ahi el <= 1. Dos consumidores del mismo guard: el HUD
+                        // (Vision/) y FocusCheckScreenVR.SetPairingPin (Onboarding/, ver
+                        // docs/pantalla-calce.md) -- ambos necesitan volver a ser visibles/mostrar
+                        // el PIN si esta era la ultima tablet autenticada.
                         if (_server == null || _server.AuthenticatedClientCount <= 1)
+                        {
                             ResolveHud()?.gameObject.SetActive(true);
+                            FocusCheckScreenVR.SetPairingPin(PairingPin);
+                        }
                     }
                     break;
                 case "set_hud":

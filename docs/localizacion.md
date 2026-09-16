@@ -25,11 +25,13 @@ toggle de idioma del header + su popup de confirmación (ver `docs/tablet.md` "M
 Header" y Decisiones "Idioma fijo al arrancar, cambio por reinicio"). Cableado en D3:
 `Vision/HudController.cs` (HUD de diagnóstico del visor) con las claves `hud.*` que D1 ya había
 reservado — **cero claves nuevas**, y el escenario traducido por id con las mismas
-`scenario.<id>` que usa la tablet (ver `docs/vision-optica.md` §HudController). 213 claves por
+`scenario.<id>` que usa la tablet (ver `docs/vision-optica.md` §HudController). 214 claves por
 idioma (arrancó en 199 en D1; D3 no agregó ninguna; +2 en correcciones posteriores —
 `kiosk.service_mode_banner`/`kiosk.service_mode_exit`, ver `docs/tablet.md` "Salida de
 servicio del kiosco"; +7 con la pantalla de chequeo de calce — namespace `focus.*` completo más
-`main.focus_check_show`/`main.focus_check_hide`, ver `docs/pantalla-calce.md`).
+`main.focus_check_show`/`main.focus_check_hide`, ver `docs/pantalla-calce.md`; +1
+`focus.pairing_pin` — PIN de emparejamiento replicado en esa misma pantalla, ver
+`docs/pantalla-calce.md` "PUNTO MUERTO DE EMPAREJAMIENTO").
 
 ## Arquitectura actual
 
