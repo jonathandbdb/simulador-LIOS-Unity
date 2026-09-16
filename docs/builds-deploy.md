@@ -108,9 +108,14 @@ SHA256 y recién ahí instala.
 
 #### Qué tablet comprar
 
-- **Android 10 o superior** (preferible **13+** — es lo validado hoy).
+- **Android 10 o superior** (validado hoy en **13** y **16** — ver "Validado en campo" abajo).
 - **Nueva de fábrica, o factory-reseteada sin ninguna cuenta agregada** — `dpm set-device-owner`
   exige cero cuentas.
+- **Bloqueo de pantalla:** no hace falta configurar nada a mano — el script quita solo un
+  bloqueo "Deslizar"/"Ninguno" de fábrica (`locksettings set-disabled`, ver gotcha más abajo).
+  La ÚNICA excepción es una tablet con **PIN/patrón/contraseña ya configurados**: eso el script
+  no lo puede quitar por sí solo y corta pidiendo hacerlo a mano (Ajustes → Seguridad → Bloqueo
+  de pantalla → Ninguno) — evitar configurar un bloqueo seguro al preparar la tablet.
 - Con **Opciones de desarrollador / Depuración USB** habilitables (todas las Android estándar la
   tienen; algunas MDM corporativas la bloquean — evitarlas).
 - **WiFi de 5 GHz recomendado** — el streaming por ojo entre visor y tablet pesa, y 2.4 GHz en un
@@ -119,7 +124,8 @@ SHA256 y recién ahí instala.
 - **Evitar Fire OS de Amazon** (no es Android Enterprise, `dpm set-device-owner` no aplica igual)
   **y ROMs con "espacio dual"/"app twin"** de algunos fabricantes chinos (duplican el package
   manager y confunden a `dpm`).
-- **Validado en campo:** PHILCO TP10A464 (Android 13) — primera provisión real, 2026-09-03 (ver
+- **Validado en campo:** PHILCO TP10A464 (Android 13) — primera provisión real, 2026-09-03; y
+  LENOVO TB336FU "Idea Tab" (Android 16 / API 36) — segunda provisión real, 2026-09-11 (ver
   gotchas más abajo).
 - **Recomendadas si hay que comprar sin poder probar antes:** Samsung Galaxy Tab A9+ o Lenovo Tab
   M11 — ambas son **Android Enterprise Recommended** (Google certifica que `dpm
@@ -149,6 +155,12 @@ SHA256 y recién ahí instala.
 
 (El propio script imprime esta misma checklist en pantalla si no detecta ninguna tablet en los
 primeros 15 segundos, y sigue esperando hasta 5 minutos antes de abortar.)
+
+**Nota — idioma de fábrica:** en la LENOVO TB336FU el locale de sistema venía en `en_GB` y la app
+arrancó en inglés (la L10n de la app sigue el idioma del dispositivo, ver `docs/localizacion.md`)
+— no es un bug, es el idioma de fábrica del dispositivo. Si el cliente espera español, cambiar el
+idioma del sistema (Ajustes → Sistema → Idiomas) antes de entregar la tablet, o avisarle que puede
+cambiarlo él mismo si el kiosco lo permite.
 
 #### La orden
 
@@ -195,6 +207,7 @@ Si ves esto, la tablet está lista para entregar tal cual — no hace falta toca
 | Síntoma | Solución |
 |---------|----------|
 | `adb devices` muestra `unauthorized` | Desbloqueá la pantalla de la tablet y aceptá el diálogo "Permitir depuración USB" / "Permitir siempre desde esta computadora"; si no aparece, desconectá y reconectá el cable. |
+| El script corta con **"La tablet tiene un bloqueo de pantalla CON SEGURIDAD (PIN, patrón o contraseña)"** | `locksettings set-disabled` (que el script ya intenta solo) no puede quitar un bloqueo seguro — quitalo a mano: Ajustes → Seguridad → Bloqueo de pantalla → Ninguno, y volvé a correr el script (ver gotcha abajo). |
 | `dpm set-device-owner` falla con **"already provisioned"** | `scripts/provision-tablet.sh --fix-setup --serial <serial>` y reintentar sin esa flag (ver gotcha abajo). |
 | Sin internet en la PC, o el manifest responde **503** | Backend sin versión activa de tablet, o PC sin conexión — usar `--apk <ruta>` con un APK local, o revisar `/admin/versions` en el backend. |
 | El SHA256 del APK descargado no coincide | Descarga corrupta o manifest inconsistente — el script no instala nada; reintentar, y si persiste avisar a quien administra el backend. |
@@ -224,7 +237,12 @@ provisión real (2026-09-03, PHILCO TP10A464, Android 13):** esta tablet aceptó
 `set-device-owner` al primer intento CON el asistente de configuración completado (asistente
 corrido normalmente, sin cuentas agregadas) y SIN necesitar `--fix-setup` — el gotcha de arriba
 no es universal, depende del fabricante/ROM (algunas OEM no marcan `device_provisioned` tras el
-asistente si no se agregó ninguna cuenta).
+asistente si no se agregó ninguna cuenta). **Segunda provisión real (2026-09-11, LENOVO TB336FU
+"Idea Tab", Android 16 / API 36):** mismo resultado — `set-device-owner` aceptado al primer
+intento pese a `device_provisioned=1` y `user_setup_complete=1` confirmados por `adb shell
+settings get global/secure` ANTES de correr el script, tampoco hizo falta `--fix-setup`. Refuerza
+que el gotcha "already provisioned" es específico de ciertos fabricantes/ROMs, no de la versión
+de Android.
 
 **Gotcha "carrera tarea-standard + Home = doble instancia de Activity = crash de Unity,
 auto-recuperable" — INCIDENTE REAL, corregido (2026-09-03, PHILCO TP10A464).** Al provisionar
@@ -279,6 +297,46 @@ que tocar a mano — inaceptable en una tablet que sale a una clínica sin volve
 immersive_mode_confirmations confirmed` (requiere `WRITE_SECURE_SETTINGS`, que el shell de `adb`
 sí tiene). `scripts/provision-tablet.sh` lo aplica ANTES del primer lanzamiento de la app,
 idempotente.
+
+**Gotcha "keyguard de fábrica + Doze durante los pasos lentos = timeout de 30s en HOME
+persistente" — INCIDENTE REAL, corregido (2026-09-11, LENOVO TB336FU "Idea Tab", Android 16 /
+API 36, segunda provisión real).** Dos causas combinadas, ninguna presente (o ninguna suficiente
+por sí sola) en la PHILCO:
+1. La tablet trae de fábrica un bloqueo de pantalla **"Deslizar"** (`isKeyguardSecure=false`, sin
+   PIN) en vez de "Ninguno".
+2. La pantalla entra en **Doze** (`dumpsys power` → `mWakefulness=Dozing`) durante los pasos
+   lentos del script (`adb install` del APK de ~46 MB, `dpm set-device-owner`, `appops set`) si
+   nadie toca la tablet mientras tanto.
+
+Con las dos cosas juntas, el `am start ... HOME` (mismo intent HOME explícito del gotcha de
+arriba) levanta la Activity de Unity **detrás del keyguard**, sin foco real. Síntoma en logcat:
+`HasWindow = 1, HasFocus = 0` seguido casi inmediatamente de `APP_CMD_PAUSE` →
+`APP_CMD_TERM_WINDOW` → `APP_CMD_STOP` (la app nunca llega a tener foco de verdad, así que
+`KioskManager.ApplyPolicies()`/`EnterLockTask()` no llegan a correr). Confirmable con `adb shell
+dumpsys window | grep mCurrentFocus` → devuelve `Window{... NotificationShade}` (el keyguard de
+`com.android.systemui`) en vez de `com.simulador.tablet`, y con `adb shell dumpsys power | grep
+mWakefulness` → `Dozing`. El síntoma que ve el script es el timeout de 30 s en el paso "Esperando
+a que la app aplique las políticas de kiosco (HOME persistente)": `cmd package resolve-activity`
+nunca devuelve `com.simulador.tablet` porque `addPersistentPreferredActivity` (parte de
+`ApplyPolicies()`) nunca corrió.
+
+**Fix aplicado en `scripts/provision-tablet.sh`** (antes de instalar nada, justo después de
+verificar que la tablet no tenga cuentas — así la pantalla queda despierta durante TODO el resto
+del flujo lento, no solo en el momento del lanzamiento):
+```bash
+adb shell locksettings set-disabled true   # quita el keyguard SI no es seguro (ver guarda abajo)
+adb shell svc power stayon true            # no se duerme mientras esté cargando por USB
+adb shell input keyevent KEYCODE_WAKEUP    # despierta la pantalla ya mismo
+adb shell wm dismiss-keyguard              # descarta cualquier keyguard residual (cinturón y tirantes)
+```
+**Guarda de seguridad, importante:** `locksettings set-disabled true` SOLO tiene efecto sobre un
+keyguard **no seguro** ("Deslizar"/"Ninguno") — si la tablet tiene PIN, patrón o contraseña
+configurados (`isKeyguardSecure=true`), el comando no hace nada y la provisión fallaría igual más
+adelante. El script lo detecta ahí mismo releyendo `adb shell locksettings get-disabled`: si
+sigue devolviendo `false` después de intentar desactivarlo, corta con `exit 1` pidiendo quitar el
+bloqueo a mano (Ajustes → Seguridad → Bloqueo de pantalla → Ninguno) — falla temprano, antes de
+instalar el APK o tocar `dpm`, en vez de esperar los 30 s del timeout de más abajo. Idempotente:
+en una tablet sin keyguard (como la PHILCO) estos cuatro comandos son no-ops seguros.
 
 **Qué verifica el reboot final del script** (ya automatizado, no hace falta repetirlo a mano):
 1. La tablet arranca DIRECTO en la app (sin launcher de Android visible) — la HOME persistente

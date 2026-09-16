@@ -17,13 +17,16 @@
 #      tarda (hasta 5 min).
 #   2. verifica que la tablet NO tenga cuentas configuradas (dpm set-device-owner
 #      falla si hay alguna) -- si las hay, aborta con instrucciones.
-#   3. adb install -r <apk>
-#   4. adb shell dpm set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver
-#   5. adb shell appops set com.simulador.tablet REQUEST_INSTALL_PACKAGES allow
+#   3. quita el bloqueo de pantalla (keyguard) si no es seguro y mantiene la
+#      pantalla despierta para el resto del flujo -- si el keyguard es seguro
+#      (PIN/patrón/contraseña), aborta con instrucciones (ver gotcha más abajo).
+#   4. adb install -r <apk>
+#   5. adb shell dpm set-device-owner com.simulador.tablet/com.simulador.kiosk.SimuladorDeviceAdminReceiver
+#   6. adb shell appops set com.simulador.tablet REQUEST_INSTALL_PACKAGES allow
 #      (red de seguridad para el OTA mientras no exista la Fase C)
-#   6. lanza la app (intent HOME explícito, ver gotcha más abajo)
-#   7. verifica: dumpsys device_policy (Device Owner) + dumpsys package (versionName)
-#   8. reinicia la tablet y confirma en vivo que arranca directo en la app,
+#   7. lanza la app (intent HOME explícito, ver gotcha más abajo)
+#   8. verifica: dumpsys device_policy (Device Owner) + dumpsys package (versionName)
+#   9. reinicia la tablet y confirma en vivo que arranca directo en la app,
 #      en foco y con el kiosco (lock task) activo -- salvo --no-reboot.
 #
 # Qué NO hace:
@@ -404,6 +407,37 @@ run_provision() {
     if [[ "$account_count" -ne 0 ]]; then
         fail "La tablet tiene $account_count cuenta(s) configurada(s). dpm set-device-owner exige CERO cuentas -- hacé un factory reset y SALTEÁ el asistente (no inicies sesión con ninguna cuenta durante el setup)."
     fi
+
+    # Gotcha real, CONFIRMADO en vivo (LENOVO TB336FU "Idea Tab", Android 16,
+    # 2026-09-11, ver docs/builds-deploy.md "Provision de tablets"): esta
+    # tablet trae de fabrica un bloqueo de pantalla "Deslizar" (sin PIN,
+    # keyguard NO seguro) y ademas la pantalla entra en Doze durante los pasos
+    # lentos de mas abajo (install, set-device-owner, appops) si nadie la
+    # toca. Con las dos cosas juntas, el `am start ... HOME` de mas abajo
+    # levanta la Activity DETRAS del keyguard sin foco real (logcat:
+    # HasWindow=1 HasFocus=0 seguido de un PAUSE/TERM_WINDOW/STOP casi
+    # inmediato; dumpsys window: mCurrentFocus=NotificationShade en vez de la
+    # app) -- ApplyPolicies()/EnterLockTask() nunca corren y la verificacion
+    # de "HOME persistente" revienta por timeout a los 30s. Se resuelve ACA,
+    # antes de las partes lentas, para que la pantalla quede despierta y sin
+    # keyguard durante TODO el resto del flujo (no solo en el momento del
+    # lanzamiento). Idempotente: en una tablet sin keyguard (ej. la PHILCO
+    # validada antes) estos comandos son no-ops seguros.
+    step "Verificando/quitando el bloqueo de pantalla (keyguard)..."
+    "${ADB[@]}" shell locksettings set-disabled true >/dev/null 2>&1
+    local keyguard_disabled
+    keyguard_disabled="$("${ADB[@]}" shell locksettings get-disabled 2>/dev/null | tr -d '\r\n')"
+    if [[ "$keyguard_disabled" != "true" ]]; then
+        fail "La tablet tiene un bloqueo de pantalla CON SEGURIDAD (PIN, patrón o contraseña) -- 'locksettings set-disabled' solo puede desactivar 'Deslizar'/'Ninguno', no un bloqueo seguro. Quitalo a mano: Ajustes -> Seguridad -> Bloqueo de pantalla -> Ninguno, y volvé a correr este script."
+    fi
+
+    step "Manteniendo la pantalla despierta (evita que se duerma/entre en Doze durante los pasos siguientes)..."
+    "${ADB[@]}" shell svc power stayon true \
+        || fail "No se pudo aplicar 'svc power stayon true'"
+    "${ADB[@]}" shell input keyevent KEYCODE_WAKEUP \
+        || fail "No se pudo despertar la pantalla (input keyevent KEYCODE_WAKEUP)"
+    "${ADB[@]}" shell wm dismiss-keyguard \
+        || fail "No se pudo descartar el keyguard (wm dismiss-keyguard)"
 
     step "Instalando $APK_PATH..."
     "${ADB[@]}" install -r "$APK_PATH" || fail "adb install falló"
