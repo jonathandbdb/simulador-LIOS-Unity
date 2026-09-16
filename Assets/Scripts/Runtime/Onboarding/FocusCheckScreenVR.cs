@@ -300,38 +300,49 @@ namespace Simulador.Onboarding
             vlg.childForceExpandWidth = true; vlg.childForceExpandHeight = false;
             vlg.childAlignment = TextAnchor.MiddleCenter;
 
-            // Escalera de tamaño decreciente (ver docstring/handoff): a 2 m con scale 0.002,
-            // 1° subtiende ~17.4 px de canvas. La linea 3 (15 px ~ 0.86° de alto de linea,
-            // x-height ~0.43°) es el umbral diagnostico -- verificado (revision): sobre un Quest 3
-            // (~25 ppd) eso son ~10 px de x-height, sobre un Quest 2 (~20 ppd) ~8.6 px, por encima
-            // del umbral de legibilidad con margen razonable. NO tocar este fontSize a ojo: el
-            // parametro que varia en la escalera es el TAMAÑO, nunca el contraste (ver el
-            // siguiente comentario).
+            // Tamaños vigentes: 40 (titulo) / 30 (linea 1) / 22 (linea 2) / 22 (linea 3).
+            // Referencia angular: a 2 m con scale 0.002, 1° subtiende ~17.4 px de canvas.
+            //
+            // QUE MIDE HOY: que el paciente pueda leer COMODAMENTE texto de cuerpo a 22 px, con el
+            // titulo y la linea 1 mas grandes haciendo de entrada a la pantalla. Ya NO es una
+            // escalera decreciente de agudeza: con lineas 2 y 3 al mismo tamaño, quien lee la 2 lee
+            // la 3 por construccion -- el umbral diagnostico es ese unico peldaño de 22 px, no una
+            // rampa. Esta pantalla mide el CALCE DEL CASCO, no agudeza visual (para agudeza esta el
+            // optotipo ETDRS, ver docs/vision-optica.md); un peldaño unico y comodo alcanza.
+            //
+            // LINEA 3: 15 -> 22, POR LECTURA EN DISPOSITIVO, NO A OJO -- NO REVERTIR. El 15 salia
+            // de un calculo angular (0.86° de alto de linea, x-height ~0.43° => ~10 px de x-height
+            // en un Quest 3 a ~25 ppd, ~8.6 px en un Quest 2 a ~20 ppd) que sobre el papel quedaba
+            // por encima del umbral de legibilidad. En el VISOR REAL el usuario la reporto
+            // demasiado chica: manda la observacion en hardware, no el calculo. Una linea con
+            // tamaño marginal devuelve un falso "mal calzado", que es el error caro en la direccion
+            // equivocada (manda a reajustar un casco que estaba bien). Sigue valiendo el criterio
+            // de NO tocar estos tamaños A OJO: se cambian por lectura en dispositivo.
             //
             // Las 3 lineas usan el MISMO color (revision, corregido): esta pantalla mide UNA sola
             // cosa -- si el casco esta bien calzado -- y el unico parametro que puede degradar la
-            // legibilidad hacia abajo de la escalera es el tamaño. Si ademas bajara el contraste,
-            // una linea 3 no leida seria ambigua (¿fallo el calce, o el contraste? -- el contraste
-            // es justamente lo que las LIOs simuladas degradan en el resto de la app, la ambiguedad
-            // exacta que esta pantalla existe para eliminar). El titulo queda en blanco puro; la
-            // cruz de centrado (mas abajo) SI puede tener un color propio -- no es parte de la
-            // escalera, no mide legibilidad.
+            // legibilidad es el tamaño. Si ademas bajara el contraste, una linea no leida seria
+            // ambigua (¿fallo el calce, o el contraste? -- el contraste es justamente lo que las
+            // LIOs simuladas degradan en el resto de la app, la ambiguedad exacta que esta pantalla
+            // existe para eliminar). El titulo queda en blanco puro; la cruz de centrado (mas
+            // abajo) SI puede tener un color propio -- no mide legibilidad.
             var lineColor = new Color(0.92f, 0.92f, 0.92f);
             _titleText = MakeLabel(layoutGo.transform, font, 40, FontStyle.Bold, Color.white);
             _line1Text = MakeLabel(layoutGo.transform, font, 30, FontStyle.Normal, lineColor);
             _line2Text = MakeLabel(layoutGo.transform, font, 22, FontStyle.Normal, lineColor);
-            _line3Text = MakeLabel(layoutGo.transform, font, 15, FontStyle.Normal, lineColor);
+            _line3Text = MakeLabel(layoutGo.transform, font, 22, FontStyle.Normal, lineColor);
             // Cruz de centrado: verifica el sweet spot optico de las lentes del visor (no
             // solo la nitidez del texto, tambien que este centrado en el campo visual). Color
-            // propio (no forma parte de la escalera de contraste de arriba).
+            // propio (no forma parte del texto de medicion de arriba, que va todo al mismo color).
             _centerMarkText = MakeLabel(layoutGo.transform, font, 26, FontStyle.Bold, new Color(0.6f, 0.85f, 0.8f));
 
             // Fila del PIN de emparejamiento (ver comentario del campo _pendingPin): bloque
-            // APARTE de la escalera de tamaños decrecientes de arriba -- ese instrumento de
-            // medicion no puede tener una variable mas que el tamaño (ver el comentario de la
-            // escalera), y un PIN grande al final la rompería. Fuente propia (~orden del titulo,
-            // no la escalera), color claro para que se lea sin esfuerzo (es un dato que el
-            // clinico tiene que tipear en la tablet), y un padding superior extra (en vez del
+            // APARTE del texto de medicion de arriba -- ese instrumento no puede tener mas
+            // variable que el tamaño (ver el comentario de los tamaños), y un PIN grande al final
+            // se leeria como un peldaño mas del texto que hay que poder leer, cuando no lo es:
+            // el PIN es un dato operativo para el clinico, no parte de la medicion del calce.
+            // Fuente propia (~orden del titulo), color claro para que se lea sin esfuerzo (es un
+            // dato que el clinico tiene que tipear en la tablet), y un padding superior extra (en vez del
             // "spacing" uniforme del VerticalLayoutGroup) para separarla visualmente de la cruz
             // de centrado. GameObject propio (no solo el Text) para que quede TOTALMENTE
             // inactivo -- y sin reserva de espacio -- cuando no hay PIN que mostrar.

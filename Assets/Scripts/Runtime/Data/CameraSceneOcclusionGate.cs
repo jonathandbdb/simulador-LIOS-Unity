@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 namespace Simulador.Data
@@ -24,6 +25,15 @@ namespace Simulador.Data
     /// pantallas, ver <see cref="ApplyOverlayLayer"/>). El canvas en si puede volver a vivir a
     /// distancia estereo comoda (1.5-2 m) porque ya no necesita tapar nada con su propio tamaño
     /// -- la camara se encarga de eso.
+    ///
+    /// LIMITE DEL SNAPSHOT (regresion 0.8.1): la foto que toma <see cref="Acquire"/> NO es la
+    /// fuente de verdad del aspecto de camara. <c>clearFlags</c>/<c>backgroundColor</c> los posee
+    /// <c>Simulador.Vision.ScenarioManager</c> (dia = Skybox, noche = SolidColor casi negro) y
+    /// puede cambiarlos en cualquier momento; ademas el bootstrap de la pantalla de calce corre
+    /// en AfterSceneLoad, ANTES del <c>Start()</c> del ScenarioManager, asi que la foto sale del
+    /// estado AUTORADO de la escena (Skybox) y no del escenario vigente. Restaurarla a ciegas
+    /// reponia el skybox diurno detras de ruta_noche. Por eso <see cref="Release"/> avisa por
+    /// <see cref="SceneRestored"/>: el dueño del aspecto se reimpone despues del restore.
     /// </summary>
     public static class CameraSceneOcclusionGate
     {
@@ -37,6 +47,24 @@ namespace Simulador.Data
         private static CameraClearFlags _savedClearFlags;
         private static Color _savedBackgroundColor;
 
+        /// <summary>
+        /// True mientras la oclusion este EFECTIVAMENTE aplicada sobre la camara. Lo consulta el
+        /// dueño del aspecto de camara (<c>ScenarioManager</c>) para NO escribir
+        /// <c>clearFlags</c>/<c>backgroundColor</c> mientras la escena debe estar oculta: sin
+        /// eso, un cambio de escenario con el gate tomado repone el Skybox del consultorio y el
+        /// panorama se ve detras del cartel modal.
+        /// </summary>
+        public static bool IsOccluding => _applied;
+
+        /// <summary>
+        /// Se dispara cuando el ULTIMO consumidor libera el gate y la camara YA fue restaurada
+        /// (fin de <see cref="Release"/>, refcount en 0). Existe porque el snapshot del gate no
+        /// es la fuente de verdad del aspecto de camara (ver el docstring de la clase): quien lo
+        /// posee se suscribe y lo reimpone. El orden es critico -- si se disparara ANTES del
+        /// restore, el gate pisaria lo que el suscriptor acaba de escribir.
+        /// </summary>
+        public static event Action SceneRestored;
+
         // Reset defensivo: RuntimeInitializeOnLoadMethod corre en CADA sesion de Play (Editor o
         // build), con o sin domain reload -- sin esto, un refcount residual de una sesion de
         // Play anterior con Domain Reload deshabilitado (Editor) dejaria este gate en un estado
@@ -47,6 +75,10 @@ namespace Simulador.Data
             _refCount = 0;
             _applied = false;
             _camera = null;
+            // El evento es estatico: sin este reset, con Domain Reload deshabilitado (Editor)
+            // quedarian suscriptores de la sesion de Play anterior (MonoBehaviours ya
+            // destruidos) y la invocacion tiraria MissingReferenceException.
+            SceneRestored = null;
         }
 
         /// <summary>
@@ -127,6 +159,10 @@ namespace Simulador.Data
             }
             _applied = false;
             _camera = null;
+
+            // DESPUES del restore (nunca antes): el dueño del aspecto de camara reimpone el
+            // estado del escenario vigente sobre la foto generica que acabamos de reponer.
+            SceneRestored?.Invoke();
         }
     }
 }

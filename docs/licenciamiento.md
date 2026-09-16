@@ -121,6 +121,10 @@ cartel y `UpdatePromptVR` PUEDEN coexistir (ver Decisiones "Los updates... sigue
 la licencia bloqueada" más abajo) — la escena solo reaparece cuando el ÚLTIMO consumidor se
 cierra. `BuildCanvas()` adquiere el gate (solo si encontró `Camera.main`) y `OnDestroy()` lo
 libera — 1:1 con el ciclo de vida del canvas, mismo patrón que `UpdatePromptVR`.
+**Ojo (0.8.1):** `Release()` además restaura la cámara y dispara `SceneRestored`, porque el
+snapshot del gate NO es la fuente de verdad de `clearFlags`/`backgroundColor` (los posee
+`ScenarioManager`) — contrato completo en `docs/updates.md` §Arquitectura. Este cartel no necesita
+hacer nada al respecto, pero si alguna vez escribe la cámara por su cuenta, sí.
 - **`Assets/Scripts/Runtime/Net/NetworkController.cs`** — refactor quirúrgico: el cuerpo del
   bootstrap se extrajo a `public static void EnsureCreated()` (idempotente: no-op si `Instance`
   existe o si hay `TabletController` en escena). **Ya NO tiene un `[RuntimeInitializeOnLoadMethod]`

@@ -35,6 +35,11 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
   -> {"cmd":"set_focus_check","visible":bool}
   -> NetworkController.OnTextReceived -> FocusCheckScreenVR.SetVisible(bool)
   -> canvas world-space se activa/desactiva + CameraSceneOcclusionGate Acquire/Release
+       al ocultar, SOLO si este es el ULTIMO consumidor (refcount llega a 0):
+                   Release -> restaura la foto de camara -> evento SceneRestored
+                           -> ScenarioManager reimpone clearFlags/bg del escenario vigente
+       si licencia o update siguen tomando el gate: Release solo decrementa el refcount,
+                   no hay restore ni evento y la escena sigue oculta (correcto)
 ```
 
 ## Decisiones y porqués
@@ -54,6 +59,27 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
   panel de calce. Fix: `canvas.sortingOrder = -1` en `BuildCanvas` — el cartel de calce siempre
   se manda detrás; la licencia (que no setea `sortingOrder`, queda en 0) siempre gana si ambos
   llegan a coexistir en ese margen.
+- **Tamaños 40 / 30 / 22 / 22 (línea 3 subida de 15 a 22 en 0.8.1)** → título 40, línea 1 = 30,
+  línea 2 = 22, **línea 3 = 22** (antes 15), cruz de centrado 26.
+  **Lo que la pantalla mide hoy:** que el paciente pueda leer **cómodamente texto de cuerpo a
+  22 px**, con el título y la línea 1 más grandes haciendo de entrada. Con las líneas 2 y 3 al
+  mismo tamaño **ya no hay escalera decreciente de agudeza**: quien lee la 2 lee la 3 por
+  construcción, así que el umbral diagnóstico es ese único peldaño de 22 px, no una rampa. Es
+  coherente con lo que esta pantalla existe para medir — el **calce del casco**, no agudeza visual
+  (para agudeza está el optotipo ETDRS, ver `docs/vision-optica.md`). El único parámetro que puede
+  degradar la legibilidad es el **tamaño**: las 3 líneas comparten color (`0.92, 0.92, 0.92`) a
+  propósito — si además bajara el contraste, una línea no leída sería ambigua (¿falló el calce, o
+  el contraste?, que es justo lo que las LIOs simuladas degradan en el resto de la app).
+  **Por qué la línea 3 pasó de 15 a 22 — observación en dispositivo, no cálculo.** El 15 venía de
+  un cálculo angular: a 2 m con `localScale` 0.002, 1° subtiende ~17.4 px de canvas ⇒ 15 px ≈ 0.86°
+  de alto de línea, x-height ≈ 0.43°, que sobre un Quest 3 (~25 ppd) son ~10 px de x-height y sobre
+  un Quest 2 (~20 ppd) ~8.6 px — sobre el papel, por encima del umbral de legibilidad. **En el
+  visor real el usuario la reportó demasiado chica**, así que manda la observación en hardware y no
+  el cálculo: esta pantalla mide el CALCE del casco, y una línea con tamaño marginal devuelve un
+  falso "mal calzado" (el error es clínicamente caro en la dirección equivocada). La línea 3 queda
+  igual que la línea 2. **Es decisión del usuario tras leerlo en el visor real: no revertir a 15.**
+  Lo que sigue valiendo es **no tocar estos tamaños A OJO**: se cambian por lectura en dispositivo. Verificado en captura (`capturas/calce_tipografia_22.png`): la línea 3 —
+  la cadena más larga de las tres — entra en **un solo renglón** y el panel no se desborda.
 - **`CameraSceneOcclusionGate` compartido con License/Update** → mismo refcount que
   `LicenseBlockScreenVR`/`UpdatePromptVR`. A diferencia de esos dos (que se crean/destruyen una
   vez por evento), esta pantalla puede toggearse muchas veces por sesión (botón de la tablet), así
@@ -160,6 +186,35 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
   función de ninguna de las tres pantallas. Si hiciera falta un fondo garantizado neutro, la vía
   natural es que el gate también controle el `enabled`/`renderPassEvent` del
   `VisionRendererFeature` mientras esté activo — fuera de alcance de esta tarea, ver Pendientes.
+- **EL GATE NO ES LA FUENTE DE VERDAD DEL `clearFlags` (0.8.1, regresión corregida en dispositivo)**
+  → `CameraSceneOcclusionGate.Acquire()` **fotografía** `cullingMask` + `clearFlags` +
+  `backgroundColor` de `Camera.main` y `Release()` los repone. Esa foto es correcta para el
+  `cullingMask` (nadie más lo toca), pero **NO** para `clearFlags`/`backgroundColor`: el dueño de
+  esos dos campos es `Simulador.Vision.ScenarioManager` (día ⇒ `Skybox`, noche ⇒ `SolidColor` casi
+  negro) y los cambia en cada `load_scenario`. La foto sale desalineada por dos caminos, **los dos
+  alcanzables en una sesión normal**:
+  1. **En el arranque**: el `Bootstrap()` de esta pantalla corre en `AfterSceneLoad`, que es
+     **antes** del `Start()` del `ScenarioManager` — así que el `Acquire()` fotografía el estado
+     **autorado** de `Main.unity` (`Main Camera` está autorada en `Skybox`), no el del escenario
+     que el `ScenarioManager` está por aplicar. Con `startScenario = "ruta_noche"`, ocultar esta
+     pantalla reponía `Skybox` ⇒ **el panorama diurno (montañas + molino) aparecía detrás de la
+     ruta nocturna**. Ese fue el bug reportado en el visor real en 0.8.1.
+  2. **Cambiando de escenario con la pantalla visible**: el médico manda `load_scenario` desde la
+     tablet (sigue funcionando con el cartel en pantalla) y al ocultarla la cámara vuelve al
+     aspecto del escenario **anterior**.
+  **No se arregló acá** (esta pantalla no tiene por qué saber de escenarios) **ni tocando la foto
+  del gate**: el gate avisa y el dueño repone. `CameraSceneOcclusionGate` expone el evento estático
+  `SceneRestored`, que dispara al final de `Release()` — refcount en 0 y cámara **ya** restaurada,
+  el orden importa — y `ScenarioManager` se suscribe (`OnEnable`/`OnDisable`) para reimponer
+  **solo** el aspecto de cámara del escenario vigente; nunca un `SwitchTo` completo, que
+  recolocaría el `xrOrigin` y **recentraría al paciente a media sesión**. Detalle completo en
+  `docs/vision-optica.md` §`ScenarioManager` ("Dueño del aspecto de cámara"). Simétricamente,
+  `ScenarioManager` **no escribe** la cámara mientras `CameraSceneOcclusionGate.IsOccluding` sea
+  `true`: sin eso, un cambio a `consultorio` con el gate tomado repondría el `Skybox` y el paisaje
+  se vería **detrás de este cartel**. **Consecuencia para quien agregue una cuarta pantalla modal:**
+  no hace falta hacer nada — heredás el comportamiento por usar el mismo gate. **Y para quien
+  agregue otro escritor de `clearFlags`/`backgroundColor`: no lo hagas sin suscribirte también**, o
+  el último `Release()` te va a pisar el estado.
 - **Un `Acquire` sin su `Release` deja la cámara ocluida para siempre** (`CameraSceneOcclusionGate`,
   refcount compartido con License/Update) — `SetVisibleInternal` guarda contra el doble-toggle
   (`if (_visible) return;` / `if (!_visible) return;`) antes de tocar Acquire/Release, así que
@@ -190,10 +245,17 @@ Médico toca "Ocultar calce"/"Mostrar calce" (header Pro o StdTopBar)
    (o el overlay a pantalla completa) debe mostrar el texto de calce nítido — confirma que el
    `Canvas` viaja en la captura de `StreamingCapture` como cualquier otra UI world-space de la
    cámara.
-5. **No coexistencia con el bloqueo de licencia:** forzar un bloqueo de licencia (ver
+5. **El escenario sobrevive al ciclo mostrar/ocultar (regresión 0.8.1, ver Gotchas):** en
+   `ruta_noche`, ocultar esta pantalla → el fondo debe quedar **negro**, sin skybox ni molino; el
+   escenario tiene que verse exactamente igual que si la pantalla nunca se hubiera mostrado. En
+   `consultorio`, el mismo ciclo → el skybox **sí** debe estar (el paisaje por la ventana, como
+   siempre). Tercer caso, el que cubre el camino del médico: mostrar la pantalla en `consultorio`,
+   cambiar a `ruta_noche` desde la tablet **con la pantalla visible**, y recién ahí ocultarla → debe
+   quedar el aspecto de noche, no el de día.
+6. **No coexistencia con el bloqueo de licencia:** forzar un bloqueo de licencia (ver
    `docs/licenciamiento.md`) mientras la pantalla de calce está visible → la pantalla de calce
    debe desaparecer sola (gana el bloqueo de licencia) sin quedar superpuesta.
-6. **PIN de emparejamiento (punto muerto corregido, ver Gotchas):** dar Play en `Main.unity` sin
+7. **PIN de emparejamiento (punto muerto corregido, ver Gotchas):** dar Play en `Main.unity` sin
    ninguna tablet conectada → la pantalla de calce debe mostrar, debajo de la cruz de centrado y
    separado del resto (fuente grande, color ámbar), "PIN de emparejamiento: NNNNNN" con el MISMO
    PIN que loguea la consola (`Net: PIN de emparejamiento de esta sesion: NNNNNN`). Conectar y

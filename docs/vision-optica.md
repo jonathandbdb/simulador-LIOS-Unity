@@ -205,7 +205,53 @@ VisionRendererFeature, cadena de passes (etapa C):
   direccional configurado pero OFF; noche: ambiente `(0.14,0.14,0.15)`, `reflectionIntensity 0`,
   luna direccional 0.3 casi neutra sin sombras, fondo `SolidColor` casi negro), recoloca el rig XR
   y fija el TARGET de pupila (`_pupilTarget` 0 = día, 1 = noche). De día `haloScale=0.2` y
-  `starScale=0.7`. **Pupila dinámica (4.6):** `Update()` interpola `_PupilScene` hacia el target con
+  `starScale=0.7`.
+  **DUEÑO DEL ASPECTO DE CÁMARA (0.8.1, regresión corregida).** Este componente decide `clearFlags`
+  y `backgroundColor` de `xrCamera` **en régimen normal**: día ⇒ `Skybox`, noche ⇒ `SolidColor`
+  `(0.008, 0.01, 0.02)`. No es propiedad exclusiva y conviene no leerlo así: el otro escritor
+  legítimo es `CameraSceneOcclusionGate` (`Data/`), que los sobrescribe **mientras** una pantalla
+  modal oculta la escena y los repone al soltarse — el reparto es temporal (ver el párrafo
+  siguiente), no por campo. Los valores de régimen se escriben desde un único método privado,
+  `ApplyCameraAspect()`, que lee `Current` como fuente de verdad — lo llaman `ApplyDay()`/
+  `ApplyNight()`, el `OnEnable` (que reconcilia además de suscribirse) y el evento
+  `CameraSceneOcclusionGate.SceneRestored`. Matiz de la rama de día: `ApplyCameraAspect()` **no**
+  escribe `backgroundColor` ahí, porque con `clearFlags = Skybox` ese color no se rasteriza nunca
+  (inventarle un "color de día" sería un valor muerto); de día, tras una oclusión, queda en lo que
+  haya restaurado el gate. Si el escenario de día pasara alguna vez a `SolidColor`, hay que fijarlo
+  explícitamente igual que la rama de noche.
+  **El problema que resuelve:** las pantallas modales del visor (chequeo de calce, bloqueo de
+  licencia, prompt de update — ver `docs/pantalla-calce.md`) ocultan la escena con
+  `CameraSceneOcclusionGate` (`Data/`), que en `Acquire()` **fotografía** `cullingMask` +
+  `clearFlags` + `backgroundColor` y los repone en `Release()`. Esa foto NO es la verdad del
+  aspecto de cámara: (a) el bootstrap de la pantalla de calce corre en
+  `[RuntimeInitializeOnLoadMethod(AfterSceneLoad)]`, **antes** del `Start()` de este componente,
+  así que fotografía el estado **autorado** de `Main.unity` (`Main Camera` está autorada en
+  `Skybox`, verificado en el Editor: `cullingMask = -1`, `clearFlags = Skybox`); y (b) el médico
+  puede cambiar de escenario (`load_scenario`) con la pantalla visible, dejando la foto vieja.
+  Al ocultar la pantalla, el gate reponía `Skybox` sobre `ruta_noche` ⇒ **el panorama diurno
+  (montañas + molino del skybox del consultorio) aparecía detrás de la ruta nocturna** — la
+  regresión reportada en dispositivo en 0.8.1.
+  **Cómo se arregló (y por qué así):** el gate expone `SceneRestored` (se dispara al final de
+  `Release()`, con el refcount ya en 0 y la cámara YA restaurada — si se disparara antes, el gate
+  pisaría lo que el suscriptor escribe) y este componente se suscribe en `OnEnable` / se da de baja
+  en `OnDisable`. El handler reimpone **solo** el aspecto de cámara: **NO** se dispara un
+  `SwitchTo(Current)` completo, porque `SwitchTo` recoloca el `xrOrigin` y eso **recentraría al
+  paciente a media sesión** (bug peor que el original). La dirección de la dependencia es
+  `Vision/ → Data/` (el gate es genérico y lo comparten licencia y updates; nunca al revés).
+  Complemento simétrico: mientras `CameraSceneOcclusionGate.IsOccluding` sea `true`,
+  `ApplyCameraAspect()` **no escribe nada** — si no, un cambio de escenario con el gate tomado
+  repondría el `Skybox` del consultorio y el paisaje se vería **detrás del cartel modal**; el
+  estado correcto se aplica solo al soltarse el gate. Por el mismo motivo `Current` se fija al
+  **principio** de `SwitchTo` (antes era la última línea): es la fuente única que lee el handler.
+  El gate resetea `SceneRestored = null` en su `ResetStaticState` (mismo patrón de reset defensivo
+  de estáticos que el resto del proyecto: sin eso, con Domain Reload deshabilitado quedarían
+  suscriptores de la sesión de Play anterior, ya destruidos).
+  Verificado en play (`Main.unity`, capturas en `capturas/`): `antes_1_ruta_noche.png` (molino y
+  montañas detrás de la ruta) vs `despues_1_ruta_noche.png` (negro, idéntico a
+  `ctl_ruta_noche.png`); `despues_2_consultorio.png` conserva el skybox igual que
+  `ctl_consultorio.png`; y el cambio de escenario con el gate tomado,
+  `antes_3_switch_con_gate.png` vs `despues_3_switch_con_gate.png`.
+  **Pupila dinámica (4.6):** `Update()` interpola `_PupilScene` hacia el target con
   constantes de tiempo ASIMÉTRICAS (constricción rápida `pupilConstrictTau≈0.9 s`, redilatación lenta
   `pupilDilateTau≈3 s`; el reflejo fotomotor no es instantáneo y la dilatación es más lenta que la
   constricción [9]), más una **miosis transitoria** opcional (`glareMiosisGain`) que baja el target

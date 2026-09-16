@@ -348,6 +348,38 @@ porque esa es la única clase de UI de la app tablet (mismo criterio que `PinScr
   de vida del canvas — ver el helper compartido justifica no duplicar esta lógica dos veces
   (criterio `minimal-footprint`: es el MISMO estado global de cámara con dos consumidores, la
   duplicación sería un bug latente).
+  **CONSUMIDORES (actualizado): son TRES.** A `UpdatePromptVR` y `LicenseBlockScreenVR` se sumó
+  `FocusCheckScreenVR` (`Onboarding/`, ver `docs/pantalla-calce.md`), que a diferencia de los otros
+  dos **se togglea muchas veces por sesión** desde la tablet en vez de crearse/destruirse una vez
+  por evento.
+  **`SceneRestored` + `IsOccluding` (0.8.1) — el gate NO es la fuente de verdad del `clearFlags`.**
+  El snapshot que toma `Acquire()` es correcto para el `cullingMask` (nadie más lo escribe), pero
+  **no** para `clearFlags`/`backgroundColor`: el dueño de esos dos campos es
+  `Simulador.Vision.ScenarioManager` (día ⇒ `Skybox`, noche ⇒ `SolidColor` casi negro) y los cambia
+  en cada `load_scenario`. La foto sale desalineada por dos caminos reales: (a) el bootstrap de
+  `FocusCheckScreenVR` corre en `AfterSceneLoad`, **antes** del `Start()` del `ScenarioManager`, así
+  que fotografía el estado **autorado** de `Main.unity` (`Main Camera` está autorada en `Skybox`);
+  y (b) el médico puede cambiar de escenario con un cartel visible, dejando la foto vieja. Síntoma
+  en dispositivo (0.8.1): al ocultar el cartel en `ruta_noche` reaparecía el **skybox diurno**
+  (montañas + molino) detrás de la ruta. Fix, sin que el gate sepa de escenarios:
+  - `public static event Action SceneRestored` — se dispara al **final** de `Release()`, con el
+    refcount ya en `0` y la cámara **ya** restaurada. **El orden no es negociable**: si se disparara
+    antes del restore, el gate pisaría lo que el suscriptor acaba de escribir. Se resetea a `null`
+    en `ResetStaticState` (sin eso, con Domain Reload deshabilitado quedarían suscriptores de la
+    sesión de Play anterior, ya destruidos).
+  - `public static bool IsOccluding => _applied` — lo consulta el dueño del aspecto para **no**
+    escribir la cámara mientras la escena deba estar tapada; si no, un cambio a `consultorio` con
+    el gate tomado repondría el `Skybox` y el paisaje se vería **detrás del cartel modal**.
+  - `ScenarioManager` se suscribe en `OnEnable` (y ahí mismo **reconcilia**, llamando al handler:
+    un `Release` ocurrido mientras el componente estaba deshabilitado se perdería si no) y se da de
+    baja en `OnDisable`. Reimpone **solo** el aspecto de cámara: nunca un `SwitchTo` completo, que
+    recolocaría el `xrOrigin` y **recentraría al paciente a media sesión**.
+  Dirección de la dependencia: `Vision/ → Data/`, nunca al revés (el gate es genérico y lo comparten
+  los tres carteles). **Qué tenés que hacer vos:** si agregás una **cuarta pantalla modal**, nada —
+  heredás el comportamiento por usar `Acquire`/`Release`. Si agregás **otro escritor de
+  `clearFlags`/`backgroundColor` de `Camera.main`**, suscribite a `SceneRestored` y respetá
+  `IsOccluding`, o el último `Release()` te va a pisar el estado. Detalle del modelo y evidencia en
+  `docs/vision-optica.md` §`ScenarioManager` ("Dueño del aspecto de cámara").
 
 ### Telemetría (F6)
 

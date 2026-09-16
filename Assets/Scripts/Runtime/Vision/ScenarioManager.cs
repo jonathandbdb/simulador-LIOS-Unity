@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Simulador.Data;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -64,6 +65,33 @@ namespace Simulador.Vision
         private float _pupilCurrent;
         private static readonly int PupilSceneId = Shader.PropertyToID("_PupilScene");
 
+        // Fondo de camara de noche (casi negro). Constante con nombre porque ahora la escriben
+        // dos caminos: ApplyNight() y la reimposicion tras una oclusion.
+        private static readonly Color NightBackgroundColor = new Color(0.008f, 0.01f, 0.02f);
+
+        // Reimposicion del aspecto de camara tras una pantalla modal (calce / licencia / update):
+        // esas pantallas ocultan la escena via CameraSceneOcclusionGate, que guarda y restaura
+        // clearFlags/backgroundColor -- pero ESTE componente es el dueño de esos campos y el gate
+        // fotografia un estado que puede ser viejo (o el AUTORADO de la escena, porque el
+        // bootstrap de la pantalla de calce corre en AfterSceneLoad, antes de nuestro Start).
+        // Suscribirse en OnEnable/OnDisable, no en Start/OnDestroy: OnEnable corre antes de
+        // cualquier Acquire posible y OnDisable garantiza la baja simetrica.
+        //
+        // OnEnable ADEMAS reconcilia (no solo se suscribe): como ApplyDay/ApplyNight se saltean
+        // mientras el gate esta tomado, el evento es la UNICA via de recuperacion del aspecto de
+        // camara -- y un Release ocurrido mientras este componente estaba deshabilitado se pierde
+        // sin que nadie lo recupere hasta el proximo SwitchTo sin gate. Reproducible en el Editor:
+        // Play -> destildar este componente -> ocultar el cartel de calce -> volver a tildarlo
+        // dejaba el skybox diurno sobre ruta_noche. La llamada es barata, idempotente y ya se
+        // auto-protege con IsOccluding (si el gate sigue tomado, no escribe nada).
+        private void OnEnable()
+        {
+            CameraSceneOcclusionGate.SceneRestored += ApplyCameraAspect;
+            ApplyCameraAspect();
+        }
+
+        private void OnDisable() => CameraSceneOcclusionGate.SceneRestored -= ApplyCameraAspect;
+
         private void Start()
         {
             SwitchTo(startScenario);
@@ -121,6 +149,10 @@ namespace Simulador.Vision
         public void SwitchTo(string id)
         {
             bool night = id == "ruta_noche";
+            // Current se fija ANTES de aplicar: ApplyCameraAspect() lo lee como fuente unica del
+            // escenario vigente (lo llaman tanto ApplyDay/ApplyNight como la reimposicion tras
+            // una oclusion). Nada mas en este metodo depende del valor previo.
+            Current = id;
             if (consultorio) consultorio.SetActive(!night);
             if (rutaNoche) rutaNoche.SetActive(night);
             if (book) book.SetActive(!night);                // libro solo de dia
@@ -143,8 +175,42 @@ namespace Simulador.Vision
                 xrOrigin.rotation = Quaternion.Euler(night ? rutaOriginEuler : consultorioOriginEuler);
             }
 
-            Current = id;
             Debug.Log($"ScenarioManager: -> {id}");
+        }
+
+        /// <summary>
+        /// Reimpone el ASPECTO DE CAMARA del escenario vigente (<c>clearFlags</c> y, de noche,
+        /// <c>backgroundColor</c>) y NADA MAS -- no toca el rig (un SwitchTo completo recolocaria
+        /// al paciente a media sesion) ni luces ni pupila. Lo llaman ApplyDay/ApplyNight y el
+        /// evento <c>CameraSceneOcclusionGate.SceneRestored</c>.
+        /// Mientras el gate este ocluyendo NO se escribe nada: la escena debe quedar tapada, y el
+        /// estado correcto se repone solo al soltarse el gate (que dispara este mismo metodo).
+        /// </summary>
+        private void ApplyCameraAspect()
+        {
+            if (!xrCamera || CameraSceneOcclusionGate.IsOccluding) return;
+            // Sin escenario resuelto todavia no hay aspecto que imponer. Hoy es inalcanzable
+            // (Start corre SwitchTo, que fija Current antes de aplicar nada), pero desde que
+            // OnEnable llama a este metodo el invariante conviene explicito: sin la guarda,
+            // Current == null caeria en la rama de DIA y pondria Skybox -- exactamente la falla
+            // que este metodo existe para evitar.
+            if (string.IsNullOrEmpty(Current)) return;
+            if (Current == "ruta_noche")
+            {
+                xrCamera.clearFlags = CameraClearFlags.SolidColor;
+                xrCamera.backgroundColor = NightBackgroundColor;
+            }
+            else
+            {
+                // De dia NO se escribe backgroundColor a proposito: con clearFlags = Skybox ese
+                // color no se rasteriza nunca, asi que no existe un "color de fondo de dia" que
+                // definir (inventarle uno seria un valor muerto que el proximo lector tomaria por
+                // significativo). Consecuencia a tener presente: tras una oclusion, de dia el
+                // backgroundColor queda en lo que haya restaurado el gate. Es inocuo mientras el
+                // escenario de dia use Skybox; si alguna vez pasara a SolidColor, hay que fijarlo
+                // aca igual que la rama de noche.
+                xrCamera.clearFlags = CameraClearFlags.Skybox;
+            }
         }
 
         private void ApplyDay()
@@ -157,7 +223,7 @@ namespace Simulador.Vision
             // El consultorio no usa direccional (GO apagado). La dejamos configurada pero
             // OFF, para que la luna nocturna no quede encendida al pasar de noche -> dia.
             if (sun) { sun.intensity = 1.25f; sun.color = new Color(1f, 0.96f, 0.88f); sun.shadows = LightShadows.Soft; sun.transform.rotation = Quaternion.LookRotation(new Vector3(0.410f, -0.242f, -0.879f)); sun.gameObject.SetActive(false); }
-            if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.Skybox; }
+            ApplyCameraAspect();
             _pupilTarget = 0f; // dia: pupila chica (Update interpola _PupilScene hacia aca)
         }
 
@@ -183,7 +249,7 @@ namespace Simulador.Vision
                 sun.shadows = LightShadows.None;
                 sun.transform.rotation = Quaternion.Euler(55f, 20f, 0f); // luna alta, casi cenital
             }
-            if (xrCamera) { xrCamera.clearFlags = CameraClearFlags.SolidColor; xrCamera.backgroundColor = new Color(0.008f, 0.01f, 0.02f); }
+            ApplyCameraAspect();
             _pupilTarget = 1f; // noche: pupila dilatada (Update interpola _PupilScene hacia aca)
         }
     }
