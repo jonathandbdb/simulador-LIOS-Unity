@@ -1,7 +1,9 @@
 package com.simulador.kiosk;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.os.Bundle;
+import android.os.PersistableBundle;
 import android.util.Log;
 
 /**
@@ -33,6 +35,10 @@ import android.util.Log;
  *
  * Sin UI. Se compila tambien en el visor (igual que ProvisioningModeActivity)
  * pero queda INERTE ahi -- el manifest del visor nunca la declara.
+ *
+ * Telemetria (ver ProvisioningTelemetry): si "prov_get_mode" llego al backend
+ * pero "prov_policy_compliance" no, el asistente se cayo ENTRE ambas etapas
+ * (durante la creacion real del Device Owner / registro de admin activo).
  */
 public class PolicyComplianceActivity extends Activity {
 
@@ -41,6 +47,9 @@ public class PolicyComplianceActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        Intent intent = getIntent();
+        PersistableBundle adminExtras = ProvisioningTelemetry.extractAdminExtras(intent);
+        ProvisioningTelemetry.send(this, adminExtras, "prov_policy_compliance", "");
         Log.i(TAG, "ADMIN_POLICY_COMPLIANCE: sin pantallas propias, OK inmediato (no relanza la app).");
         setResult(RESULT_OK);
         finish();
