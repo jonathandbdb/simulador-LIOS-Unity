@@ -97,17 +97,24 @@ Procedimiento para dejar una tablet lista para salir a una clínica sin volver a
 kiosco vía **Android Device Owner** (Fase A del pedido de "vender bundles Quest + tablet sin
 volver a tocar los dispositivos"; el porqué de elegir Device Owner en vez de otro mecanismo vive
 en `docs/tablet.md` Decisiones "Kiosco vía Android Device Owner"). Fase B (WiFi desde la propia
-app) ya está cubierta. Hay DOS caminos de provisión, documentados cada uno en su propia
+app) ya está cubierta. Hay TRES caminos de provisión, documentados cada uno en su propia
 subsección:
 
+- **Kit para clínicas (Windows)** (`scripts/provision-kit/windows/`, ver §"Kit para clínicas
+  (Windows)" más abajo) — camino **PRINCIPAL** para salir a una clínica desde esta tarea: doble
+  clic, pensado para que lo corra un médico sin conocimientos técnicos en su propia PC con
+  Windows. Por dentro hace lo mismo que "por cable/adb" de abajo, empaquetado con instalación
+  automática de `adb` y mensajes en español sin jerga técnica.
 - **Por cable/adb** (`scripts/provision-tablet.sh`, esta subsección) — pensado para taller/banco
   de trabajo: control fino paso a paso, mejor para diagnosticar una tablet nueva o un fabricante
-  no probado antes.
+  no probado antes; también es la base del kit de Windows de arriba.
 - **Por QR, sin adb ni PC** (Fase C, `SimuladorDeviceAdminReceiver` +
   `ProvisioningModeActivity`/`PolicyComplianceActivity`, ver §"Recuperación remota por QR" más
-  abajo) — es el camino PRINCIPAL tanto para entregar tablets nuevas como para recuperar una
-  tablet remota tras un factory reset accidental; el de cable queda como alternativa de
-  taller/diagnóstico o para ROMs sin lector de QR en el asistente de configuración.
+  abajo) — pensado para recuperar una tablet remota tras un factory reset accidental sin visita
+  presencial. **Bloqueado hoy en tablets Android 16 con Google Play Services** (el verificador de
+  desarrolladores de Google corta la instalación que hace Android Device Policy — ver el gotcha
+  en esa subsección); mientras no se resuelva de fondo, usar el kit de Windows de arriba también
+  para esos dispositivos.
 
 Pensado para que **cualquier dev con una PC** (no hace falta Unity ni un build local) pueda
 provisionar una tablet nueva con `scripts/provision-tablet.sh`: por defecto descarga el APK
@@ -222,6 +229,59 @@ Si ves esto, la tablet está lista para entregar tal cual — no hace falta toca
 | La tablet ya tenía un Device Owner de **otra** app/proyecto | No se puede reasignar sin borrar el anterior — factory reset completo y empezar de cero. |
 | No se detecta ningún dispositivo tras 5 minutos | Revisar la checklist que imprime el script; en Windows puede hacer falta instalar el driver USB del fabricante de la tablet. |
 | Falla la verificación final (foco / `LOCKED`) tras el reboot | Puede ser una tablet que quedó a mitad de camino de una provisión anterior — repetir el comando; si persiste, factory reset. |
+
+#### Kit para clínicas (Windows)
+
+Camino **PRINCIPAL** para salir a una clínica (ver la nota al tope de §"Provisión de tablets").
+`scripts/provision-tablet.sh` exige Git Bash, que un médico sin conocimientos técnicos no tiene
+instalado. El kit de `scripts/provision-kit/windows/` es un **port fiel a Windows PowerShell
+5.1** (el que ya viene con Windows 10/11 — sin instalar nada) del mismo procedimiento de arriba,
+mismos pasos/orden/gotchas, pensado para doble clic sin tocar ninguna opción:
+
+| Archivo | Rol |
+|---------|-----|
+| `scripts/provision-kit/windows/Configurar tablet.bat` | Lo que el médico dobleclickea: pone la consola en UTF-8 (`chcp 65001`) y corre `configurar.ps1` con `powershell -NoProfile -ExecutionPolicy Bypass`; al final hace `pause` para que la ventana no se cierre sola. |
+| `scripts/provision-kit/windows/configurar.ps1` | El procedimiento en sí, en español, con pasos numerados en pantalla ("Paso N de 8: ...") y un registro completo (`registro-AAAAMMDD-HHMMSS.txt`, con la salida cruda de `adb`) junto al script para mandar a soporte. Guardado en **UTF-8 con BOM** — Windows PowerShell 5.1 lo necesita para no romper acentos/eñes; si se reguarda el archivo, hay que conservar el BOM. |
+| `scripts/provision-kit/build-kit.sh` | Lo corre el operador (esta PC) para armar `Builds/IOLSIMULATOR-Configurar-Tablet.zip` (carpeta gitignorada) con los dos archivos de arriba + `scripts/provision-kit/Guia - Configurar tablet.pdf` si existe (la arma otro proceso; si falta, el script avisa por stderr y arma el kit igual, sin la guía). Usa `zip` si está disponible, si no cae a `python3 -m zipfile`. |
+
+Diferencias respecto al script bash (mismo procedimiento, mismos 8 pasos: herramientas → descargar
+APK → buscar tablet → cuentas/bloqueo de pantalla → instalar → Device Owner → lanzar y confirmar
+kiosco → reiniciar y confirmar):
+
+- **`adb` autoinstalable**: si no lo encuentra en el PATH ni en las rutas conocidas del SDK,
+  descarga `platform-tools-latest-windows.zip` **oficial de Google**
+  (`https://dl.google.com/android/repository/platform-tools-latest-windows.zip`) a una carpeta
+  `herramientas\` junto al script — el kit no redistribuye el binario.
+- **"Ya es Device Owner" no es un error**: a diferencia del script bash (que no lo contempla),
+  `configurar.ps1` chequea `dumpsys device_policy` ANTES de llamar `dpm set-device-owner`; si la
+  tablet ya está configurada con nuestro propio componente, lo informa y sigue el resto del flujo
+  (lanzar/verificar/reiniciar) para confirmar que todo esté en orden, en vez de cortar — cubre el
+  caso de que el médico vuelva a correr el programa por las dudas.
+- **"already provisioned" se resuelve solo**: aplica automáticamente el mismo truco sin root que
+  `--fix-setup` del script bash (`device_provisioned=0` + `user_setup_complete=0`) y reintenta
+  una vez — el médico no tiene forma de pasar esa flag a mano.
+- **Varios dispositivos conectados**: a diferencia de `--serial` del script bash, acá se le pide
+  directamente al médico que deje UNA sola tablet conectada.
+- Mensajes de error sin jerga técnica, con el "qué hacer" en la misma línea (ej. `unauthorized` →
+  qué cartel tocar en la tablet; cuentas presentes → restablecer de fábrica; otra app ya es Device
+  Owner → restablecer de fábrica), más el detalle técnico crudo solo en el registro `.txt`.
+
+**Requisitos de la PC del médico**: Windows 10 u 11 (PowerShell 5.1 ya incluido, no hace falta
+instalar nada), conexión a Internet, cable USB de datos. La preparación de la tablet (checklist de
+fábrica, qué tablet comprar, bloqueo de pantalla) es la misma que en §"Preparación de la tablet" y
+§"Qué tablet comprar" más arriba — va en la guía impresa que acompaña al kit.
+
+**Armar el .zip para mandar** (esta PC, operador):
+
+```bash
+scripts/provision-kit/build-kit.sh
+# -> Builds/IOLSIMULATOR-Configurar-Tablet.zip
+```
+
+Validado por revisión estática (parser de PowerShell + corrida completa contra un `adb` simulado
+cubriendo el flujo feliz y los caminos de error) porque esta máquina de desarrollo es Linux y no
+hay una PC Windows a mano para probar el `.bat`/`.ps1` reales — **pendiente de una prueba real en
+Windows contra una tablet física** antes de entregar el primer kit a una clínica.
 
 #### Detalle técnico y gotchas
 
@@ -375,8 +435,12 @@ del todo hace falta `clearDeviceOwnerApp()` desde la app o un factory reset.
 
 #### Recuperación remota por QR
 
-Camino PRINCIPAL de provisión (tablets nuevas y recuperación remota) — ver la nota al tope de
-§"Provisión de tablets". Para cuando la tablet NO está en el taller: una clínica en el exterior
+Camino pensado originalmente como PRINCIPAL para tablets nuevas y recuperación remota (ver la
+nota al tope de §"Provisión de tablets") — hoy **bloqueado en tablets Android 16 con Google Play
+Services** (ver gotcha más abajo); mientras eso no se resuelva, el camino principal para clínicas
+es el kit de Windows (§"Kit para clínicas (Windows)" más arriba). Sigue siendo la vía para
+recuperar remotamente una tablet en dispositivos/versiones no afectados. Para cuando la tablet NO
+está en el taller: una clínica en el exterior
 sufre un **factory reset** (batería agotada durante una actualización de Android,
 restablecimiento accidental, etc.) y el procedimiento de arriba (`scripts/provision-tablet.sh`
 por USB/adb) no es viable a distancia. La alternativa es **Android Enterprise QR provisioning**:
@@ -396,6 +460,23 @@ onProfileProvisioningComplete` después) — ver ambos `.java` en
 asistente corta con **"No se puede configurar el dispositivo"** (confirmado en campo: PHILCO
 Android 13, Lenovo Android 16) — este camino QR no era funcional hasta agregarlas.
 
+**Gotcha real, ABIERTO — bloqueado en Android 16 con Google Play Services (2026-09-24):** en una
+tablet Android 16 con GMS, el asistente de QR provisioning corta la instalación silenciosa del
+APK con un error del **verificador de desarrolladores de Google** (Play Protect), no con nuestro
+manifest: `Android Device Policy` (el componente del sistema que ejecuta el flujo QR) descarga e
+intenta instalar el APK, Play Protect lo intercepta en `PlayProtectDialogsActivity` porque el
+`applicationId`/certificado del proyecto no está registrado ante Google, y el asistente termina en
+`TerminalProvisioningErrorActivity` sin completar el `dpm set-device-owner`. Instalar el MISMO APK
+por `adb install` (el camino "por cable/adb" y el kit de Windows) **no pasa por ese chequeo** —
+`adb` está exento del verificador de desarrolladores — por eso ambos siguen funcionando sin
+cambios en dispositivos Android 16/GMS. **Solución de fondo, pendiente:** registrar el
+`applicationId`/paquete/firma del proyecto ante la consola de desarrolladores de Google para que
+Play Protect confíe en el APK también cuando lo instala Android Device Policy; hasta que eso esté
+hecho, usar el kit de Windows (§"Kit para clínicas (Windows)" más arriba) para cualquier tablet
+Android 16 con GMS, y reservar el QR para dispositivos/versiones donde no aparece este bloqueo
+(confirmar caso a caso con `ProvisioningTelemetry` — ver más abajo — antes de asumir que el QR
+sirve para un modelo nuevo).
+
 **Gotcha conocido, sin fix — diálogo de modo inmersivo la primera vez, sin nadie que lo toque:**
 `KioskManager.ApplyPolicies()` llama `setStatusBarDisabled(true)` apenas arranca la app (ver
 `docs/tablet.md`), y la PRIMERA vez que corre esa llamada Android muestra el diálogo nativo
@@ -408,6 +489,57 @@ que nadie lo pueda tocar de forma remota la primera vez que se oculta la barra d
 pendiente de resolver (posible mitigación a investigar: pedirle al cliente ese único toque como
 parte de las instrucciones, o un cambio de UX en `KioskManager` que evite depender de
 `setStatusBarDisabled` en el primer arranque tras QR provisioning).
+
+**Telemetría de diagnóstico del asistente (`ProvisioningTelemetry`, sin adb del lado del
+cliente):** durante el asistente de configuración no hay logcat posible (el cliente no tiene adb),
+así que un fallo silencioso tipo "Something went wrong" DESPUÉS de que el asistente ya bajó el APK
+completo (confirmable del lado servidor por el log de acceso de Caddy: `AndroidDownloadManager`
+pidiendo `/files/apk/tablet/...` con `200`) no deja ningún rastro del lado cliente. Fix: cada etapa
+Java que el asistente invoca manda un POST best-effort a `{backend_url}/api/log` (mismo contrato
+`{"device_id","events":[{"event","detail"}]}` que ya usan `UpdateManager`/`LicenseManager`, ver
+`docs/updates.md`) vía `Assets/Plugins/Android/com/simulador/kiosk/ProvisioningTelemetry.java`
+(Java puro, `HttpURLConnection` + JSON armado a mano — sin dependencias nuevas). Nunca lanza
+excepción hacia afuera ni bloquea el asistente más que el `Thread.join(4500ms)` necesario para que
+el POST salga antes de que el proceso pueda morir.
+
+- **`device_id`** que manda: `"prov-" + Settings.Secure.ANDROID_ID` — prefijo `prov-` para
+  distinguirlos a simple vista de los `device_id` normales de la app ya instalada (que no llevan
+  ese prefijo). **El filtro de `/admin/logs` es por igualdad exacta, no por substring** (ver
+  `_build_logs_query` en `backend/api/app/admin/router.py`), así que no se puede filtrar
+  "que empiecen con prov-" desde el form del panel. Para revisar una provisión: dejar `device_id`
+  vacío y ordenar por fecha (ya viene `ORDER BY created_at DESC`) — las filas `prov-*` de una
+  provisión reciente quedan arriba y se identifican a simple vista por el prefijo; o exportar
+  `/admin/logs.csv` (sin filtro) y buscar el prefijo `prov-` en la columna `device_id` con
+  grep/Excel. Una vez visto el `device_id` completo de una tablet puntual, recién ahí sí sirve el
+  filtro exacto del form para aislar solo esas filas.
+- **Eventos, en el orden esperado de un provisioning sano** (ver los `.java` respectivos para el
+  detalle exacto que manda cada uno):
+  1. `prov_get_mode` (`ProvisioningModeActivity.onCreate`) — el asistente nos preguntó el modo de
+     provisioning. Si este evento NUNCA llega, el asistente se cayó ANTES de invocar nuestro DPC
+     (típicamente durante la descarga/verificación de checksum del APK, o el propio
+     `dpm`/`ACTION_GET_PROVISIONING_MODE` no se disparó).
+  2. `prov_policy_compliance` (`PolicyComplianceActivity.onCreate`) — si `prov_get_mode` llegó pero
+     este no, la caída está en el tramo intermedio (creación real del Device Owner).
+  3. `prov_admin_enabled` (`SimuladorDeviceAdminReceiver.onEnabled`) — confirma que Android activó
+     el Device Admin (paso previo a que quede como Device Owner).
+  4. `prov_complete` (`SimuladorDeviceAdminReceiver.onProfileProvisioningComplete`) — el asistente
+     considera terminado el provisioning; `detail` incluye `launch_intent=found|missing` según si
+     pudo resolver el intent de lanzamiento de la propia app. Si este es el último evento visto,
+     el provisioning llegó a completarse del lado DPC — un fallo posterior sería ya dentro de la
+     app misma (`TabletController.Start()`/`KioskManager.ApplyPolicies()`), fuera de este mecanismo.
+  Un provisioning que se cae en "Something went wrong" y solo dejó `prov_get_mode` (o ni eso) apunta
+  a un problema ANTES/DURANTE la instalación real del DPC — no en la política ni en el arranque de
+  la app.
+- **`backend_url`**: `ProvisioningTelemetry` lo lee de la clave `"backend_url"` del
+  `PROVISIONING_ADMIN_EXTRAS_BUNDLE` que viaja dentro del QR (cargado por el operador en
+  `/admin/provisioning`, ver `docs/backend.md`). Si el QR no llevó esa key, o el asistente no
+  propaga el bundle a una etapa puntual (`adminExtras == null`), cae al fallback hardcodeado
+  `https://vr.conecta.sh` (marcado `// SIM: atajo deliberado` en el código — falta un mecanismo de
+  configuración remota general que resuelva esto sin hardcodear un dominio).
+- **Qué NO cubre todavía**: el gotcha del diálogo de modo inmersivo (párrafo de arriba) y cualquier
+  falla DENTRO de la app ya en foreground (eso lo cubre la telemetría `update_*`/de sesión normal,
+  no esta). Esta telemetría es específicamente para la ventana ciega del asistente de Android, entre
+  "escaneó el QR" y "la app arrancó".
 
 **Pasos del cliente (instrucciones que se le mandan por mail/teléfono junto con el QR):**
 1. Encender la tablet recién factory-reseteada y llegar a la pantalla de bienvenida del
@@ -1019,3 +1151,12 @@ mensaje de arriba; `scripts/ci-local.sh --skip-tests` corre el backend igual sin
 - `README.md` raíz puede quedar desalineado con la versión real del catálogo embebido
   (`Assets/StreamingAssets/lentes.json`, hoy `0.5.0-clinical`) si no se actualiza a mano en cada
   bump — no hay ningún mecanismo que lo mantenga en sync.
+- **Kit de Windows sin probar en una PC Windows real** (`scripts/provision-kit/windows/`, ver
+  §"Kit para clínicas (Windows)"): validado por revisión estática (parser de PowerShell) y una
+  corrida completa del flujo (feliz + errores) contra un `adb` simulado, porque la máquina de
+  desarrollo es Linux. Falta correrlo de verdad en Windows 10/11 contra una tablet física antes de
+  mandarle el primer kit a una clínica.
+- **Bloqueo del QR en Android 16/GMS sin solución de fondo** (ver gotcha en §"Recuperación remota
+  por QR"): el kit de Windows es el workaround actual; falta registrar el proyecto ante la consola
+  de desarrolladores de Google para que Play Protect confíe en el APK instalado por Android Device
+  Policy.
