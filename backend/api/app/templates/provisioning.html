@@ -14,6 +14,45 @@
 </div>
 {% else %}
 
+{# Hoja imprimible "de caja": SOLO el QR grande + los pasos del cliente en
+   espanol, sin nav/forms/JSON/resto de la pagina. `.print-sheet` esta oculta
+   en pantalla y es lo UNICO visible al imprimir (visibility, no display, asi
+   no hace falta duplicar layout — ver @media print abajo). Sin dependencias
+   nuevas: CSS + window.print(). #}
+<style>
+  .print-sheet { display: none; }
+  @media print {
+    body * { visibility: hidden; }
+    .print-sheet, .print-sheet * { visibility: visible; }
+    .print-sheet {
+      display: block;
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      padding: 32px;
+    }
+    .print-sheet .qr-box { max-width: 480px; margin: 0 auto 24px; }
+    .print-sheet h1 { text-align: center; margin-bottom: 24px; }
+    .print-sheet ol { font-size: 18px; line-height: 1.7; max-width: 560px; margin: 0 auto; }
+    .print-sheet .wifi-note { text-align: center; margin-top: 20px; font-size: 15px; }
+  }
+</style>
+<div class="print-sheet">
+  <h1>{{ t('prov.print_title') }}</h1>
+  <div class="qr-box">{{ qr_svg | safe }}</div>
+  {% if wifi_ssid %}
+  <p class="wifi-note">{{ t('prov.print_wifi_note') }} <strong>{{ wifi_ssid }}</strong></p>
+  {% endif %}
+  <ol>
+    <li>{{ t('prov.print_step1') }}</li>
+    <li>{{ t('prov.print_step2') }}</li>
+    <li>{{ t('prov.print_step3') }}</li>
+    <li>{{ t('prov.print_step4') }}</li>
+    <li>{{ t('prov.print_step5') }}</li>
+  </ol>
+</div>
+
 <div class="card mb-6">
   <h2>{{ t('prov.version_info') }}</h2>
   <table>
@@ -66,6 +105,9 @@
      largo del payload); forzamos 100% aca para que respete el max-width
      del contenedor (pensado para pantalla/impresion, minimo ~360px). #}
   <div class="qr-box" style="max-width: 420px; min-width: 360px;">{{ qr_svg | safe }}</div>
+  <div class="row" style="margin-top: 12px;">
+    <button type="button" class="btn btn-primary" onclick="window.print()">{{ t('prov.print_button') }}</button>
+  </div>
 </div>
 
 <div class="card mb-6">

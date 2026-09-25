@@ -37,6 +37,18 @@ namespace Simulador.EditorTools
     ///      orientacion landscape fija (el deck es 16:9) y sin permisos
     ///      nuevos. El visor NO la necesita -- por eso vive aca y no en el
     ///      manifest compartido.
+    ///   5. las &lt;activity&gt; ProvisioningModeActivity y
+    ///      PolicyComplianceActivity (Assets/Plugins/Android/com/simulador/
+    ///      kiosk/, ver esos .java): las dos Activities que Android 12+ exige
+    ///      declarar para el flujo unificado de QR/Android Enterprise
+    ///      provisioning (docs/builds-deploy.md "Provisión de tablets
+    ///      (Device Owner)" > "Recuperación remota por QR") -- sin ellas el
+    ///      asistente corta con "No se puede configurar el dispositivo".
+    ///      Mismo permiso que el &lt;receiver&gt; de arriba
+    ///      (BIND_DEVICE_ADMIN) y exported="true" (las invoca el proceso del
+    ///      asistente de configuracion, fuera de esta app), con un tema sin
+    ///      UI (Theme.Translucent.NoTitleBar): ninguna de las dos pinta nada,
+    ///      solo devuelven un resultado y se cierran.
     ///
     /// SOLO edita el manifest YA MERGEADO por Unity en el proyecto Gradle
     /// generado -- Assets/Plugins/Android/AndroidManifest.xml (la fuente,
@@ -64,6 +76,8 @@ namespace Simulador.EditorTools
         const string ReceiverName = "com.simulador.kiosk.SimuladorDeviceAdminReceiver";
         const string InstallResultReceiverName = "com.simulador.kiosk.InstallResultReceiver";
         const string DeckActivityName = "com.simulador.deck.DeckActivity";
+        const string ProvisioningModeActivityName = "com.simulador.kiosk.ProvisioningModeActivity";
+        const string PolicyComplianceActivityName = "com.simulador.kiosk.PolicyComplianceActivity";
         const string AndroidNs = "http://schemas.android.com/apk/res/android";
 
         public void OnPostGenerateGradleAndroidProject(string path)
@@ -118,6 +132,8 @@ namespace Simulador.EditorTools
             changed |= InjectDeviceAdminReceiver(applicationEl, android);
             changed |= InjectInstallResultReceiver(applicationEl, android);
             changed |= InjectDeckActivity(applicationEl, android);
+            changed |= InjectProvisioningModeActivity(applicationEl, android);
+            changed |= InjectPolicyComplianceActivity(applicationEl, android);
 
             if (changed)
             {
@@ -131,7 +147,7 @@ namespace Simulador.EditorTools
                                    "El modo kiosco (Device Owner) va a fallar en esta build.");
                     return;
                 }
-                Debug.Log($"[TabletBuild] Manifest de kiosco inyectado (HOME intent-filter + DeviceAdminReceiver + InstallResultReceiver + DeckActivity) en '{manifestPath}'.");
+                Debug.Log($"[TabletBuild] Manifest de kiosco inyectado (HOME intent-filter + DeviceAdminReceiver + InstallResultReceiver + DeckActivity + ProvisioningModeActivity + PolicyComplianceActivity) en '{manifestPath}'.");
             }
             else
             {
@@ -222,6 +238,60 @@ namespace Simulador.EditorTools
                 new XAttribute(android + "exported", "false"),
                 new XAttribute(android + "screenOrientation", "landscape"),
                 new XAttribute(android + "theme", "@android:style/Theme.Black.NoTitleBar.Fullscreen")));
+            return true;
+        }
+
+        // <activity> ProvisioningModeActivity (ver ese .java): responde
+        // android.app.action.GET_PROVISIONING_MODE durante el flujo unificado
+        // de QR/Android Enterprise provisioning (Android 12+, ver
+        // docs/builds-deploy.md "Recuperación remota por QR"). exported="true"
+        // + permission BIND_DEVICE_ADMIN: la invoca el proceso del asistente
+        // de configuracion, igual que el <receiver> del Device Admin de
+        // arriba -- mismo permiso, mismo motivo (solo procesos con firma de
+        // sistema/BIND_DEVICE_ADMIN pueden dispararla). Theme.Translucent.
+        // NoTitleBar: no tiene UI propia, solo devuelve un resultado y cierra.
+        // Idempotente: si ya existe una activity con ese android:name, no
+        // duplica.
+        static bool InjectProvisioningModeActivity(XElement applicationEl, XNamespace android)
+        {
+            bool alreadyPresent = applicationEl.Elements("activity")
+                .Any(a => (string)a.Attribute(android + "name") == ProvisioningModeActivityName);
+            if (alreadyPresent)
+                return false;
+
+            applicationEl.Add(new XElement("activity",
+                new XAttribute(android + "name", ProvisioningModeActivityName),
+                new XAttribute(android + "exported", "true"),
+                new XAttribute(android + "permission", "android.permission.BIND_DEVICE_ADMIN"),
+                new XAttribute(android + "theme", "@android:style/Theme.Translucent.NoTitleBar"),
+                new XElement("intent-filter",
+                    new XElement("action", new XAttribute(android + "name", "android.app.action.GET_PROVISIONING_MODE")),
+                    new XElement("category", new XAttribute(android + "name", "android.intent.category.DEFAULT")))));
+            return true;
+        }
+
+        // <activity> PolicyComplianceActivity (ver ese .java): hermana de
+        // ProvisioningModeActivity, responde android.app.action.
+        // ADMIN_POLICY_COMPLIANCE del mismo flujo unificado de provisioning
+        // -- mismo permiso/exported/theme, mismo motivo. NO lanza la app (ver
+        // el <summary> de ese .java): SimuladorDeviceAdminReceiver.
+        // onProfileProvisioningComplete ya lo hace despues. Idempotente: si
+        // ya existe una activity con ese android:name, no duplica.
+        static bool InjectPolicyComplianceActivity(XElement applicationEl, XNamespace android)
+        {
+            bool alreadyPresent = applicationEl.Elements("activity")
+                .Any(a => (string)a.Attribute(android + "name") == PolicyComplianceActivityName);
+            if (alreadyPresent)
+                return false;
+
+            applicationEl.Add(new XElement("activity",
+                new XAttribute(android + "name", PolicyComplianceActivityName),
+                new XAttribute(android + "exported", "true"),
+                new XAttribute(android + "permission", "android.permission.BIND_DEVICE_ADMIN"),
+                new XAttribute(android + "theme", "@android:style/Theme.Translucent.NoTitleBar"),
+                new XElement("intent-filter",
+                    new XElement("action", new XAttribute(android + "name", "android.app.action.ADMIN_POLICY_COMPLIANCE")),
+                    new XElement("category", new XAttribute(android + "name", "android.intent.category.DEFAULT")))));
             return true;
         }
     }

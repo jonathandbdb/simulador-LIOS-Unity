@@ -3,6 +3,7 @@ package com.simulador.kiosk;
 import android.app.admin.DeviceAdminReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.os.PersistableBundle;
 import android.util.Log;
 
 /**
@@ -23,6 +24,14 @@ import android.util.Log;
  * visor nunca declara el <receiver> (TabletManifestPatcher.cs solo lo inyecta
  * durante el build de tablet, gateado por TabletBuild.IsTabletBuildInProgress),
  * asi que Android nunca instancia este receiver en el visor.
+ *
+ * Telemetria (ver ProvisioningTelemetry): "prov_admin_enabled" confirma que
+ * Android SI activo el Device Admin (paso previo indispensable a Device
+ * Owner); "prov_complete" confirma que el asistente considero terminado el
+ * provisioning end-to-end. Si "prov_policy_compliance" llego pero
+ * "prov_admin_enabled"/"prov_complete" no, la caida esta en el cierre del
+ * asistente (registro final de Device Owner o el propio lanzamiento de la
+ * app).
  */
 public class SimuladorDeviceAdminReceiver extends DeviceAdminReceiver {
 
@@ -31,6 +40,8 @@ public class SimuladorDeviceAdminReceiver extends DeviceAdminReceiver {
     @Override
     public void onEnabled(Context context, Intent intent) {
         super.onEnabled(context, intent);
+        PersistableBundle adminExtras = ProvisioningTelemetry.extractAdminExtras(intent);
+        ProvisioningTelemetry.send(context, adminExtras, "prov_admin_enabled", "");
         Log.i(TAG, "Device admin habilitado para " + context.getPackageName());
     }
 
@@ -45,6 +56,9 @@ public class SimuladorDeviceAdminReceiver extends DeviceAdminReceiver {
         super.onProfileProvisioningComplete(context, intent);
         Log.i(TAG, "Provisioning completo, lanzando la app.");
         Intent launchIntent = context.getPackageManager().getLaunchIntentForPackage(context.getPackageName());
+        PersistableBundle adminExtras = ProvisioningTelemetry.extractAdminExtras(intent);
+        ProvisioningTelemetry.send(context, adminExtras, "prov_complete",
+                "launch_intent=" + (launchIntent != null ? "found" : "missing"));
         if (launchIntent != null) {
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(launchIntent);
