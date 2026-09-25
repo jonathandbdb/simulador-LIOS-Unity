@@ -1,5 +1,20 @@
 # Material comercial — IOLSIMULATOR
 
+Dos piezas con propósitos distintos, que **no comparten texto**:
+
+| Pieza | Para qué | Dónde |
+|---|---|---|
+| **Deck** (7 diapositivas, ES/EN/中文) | **Vender**: qué es, por qué conviene, qué límites tiene | esta carpeta, ver abajo |
+| **Video tutorial** (~3:40, ES) | **Enseñar a usarlo**: los tres pasos de la consulta, en pantalla partida | [`video/`](video/) — ver `video/README.md` |
+
+No reciclar texto entre las dos. El deck le habla a alguien que todavía no compró; el tutorial, a
+alguien que ya tiene el equipo sobre la mesa. Lo único que comparten es la identidad visual (el azul
+de acento, el wordmark) y la leyenda de fines educativos.
+
+---
+
+## Deck comercial
+
 Presentación para **vendedores, distribuidores y médicos**: qué es el producto, cómo se usa en el
 día a día y qué ventajas ofrece. Trilingüe (ES / EN / 中文 简体) con selector en la propia pieza.
 
@@ -39,6 +54,28 @@ distinto del que se manda por mail sin que nadie lo note — el único camino co
   (`DeckActivity`/`TabletDeckLauncher`) y "Doble salida" más abajo.
 - **Exportar a PDF**: `Ctrl+P` → *Guardar como PDF*, con **gráficos de fondo activados**. Sale una
   diapositiva por página, en 16:9 (338 × 190 mm).
+- **PDF por idioma, para distribuir** (el PDF no puede llevar el selector, así que va uno por
+  idioma). Se generan desde el MISMO HTML, preseteando el idioma inicial:
+
+  ```bash
+  python - <<'PY'
+  import pathlib
+  src = pathlib.Path("Assets/StreamingAssets/iol-simulator-deck.html").read_text(encoding="utf-8")
+  N = 'let lang = "es", idx = 0;'
+  out = pathlib.Path("build/pdfsrc"); out.mkdir(parents=True, exist_ok=True)
+  for lang in ("es", "en", "zh"):
+      (out / f"deck_{lang}.html").write_text(src.replace(N, f'let lang = "{lang}", idx = 0;'), encoding="utf-8")
+  PY
+  for L in es en zh; do
+    chrome --headless --no-pdf-header-footer \
+      --print-to-pdf="docs/comercial/pdf/IOLSIMULATOR-$L.pdf" "file:///.../build/pdfsrc/deck_$L.html"
+  done
+  ```
+
+  Las fuentes quedan **embebidas como subconjuntos** (Segoe UI en es/en, Microsoft YaHei en zh),
+  así que los PDF se ven igual en una máquina que no las tenga instaladas. Verificá que el de
+  chino pese bastante más que los otros: si pesa lo mismo, los glifos CJK no se embebieron y el
+  texto va a salir en blanco.
 - **Enviar por mail o dejar en un pendrive**: un solo archivo, nada que acompañar.
 
 ## Cómo se edita

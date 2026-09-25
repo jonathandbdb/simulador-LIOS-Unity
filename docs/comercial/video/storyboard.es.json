@@ -1,0 +1,801 @@
+{
+  "_comment": [
+    "Guion del video tutorial de uso. FUENTE UNICA de las tres etapas del pipeline:",
+    "  1. build-video.py plan    -> aplana esto a build/video/plan.tsv (estado por frame)",
+    "                               que lee el arnes TutorialCapture.cs dentro de Unity.",
+    "  2. build-video.py compose -> compone el split screen y lo encodea.",
+    "  3. build-video.py subs    -> genera el .ass que ffmpeg quema.",
+    "Editar SOLO este archivo para cambiar tiempos, textos o secuencia.",
+    "Tono: instructivo, dirigido al medico en segunda persona (voseo). NO es material de venta:",
+    "el deck comercial vende, esto ensena a usar el equipo. No reciclar texto entre los dos."
+  ],
+  "fps": 30,
+  "seed": 20260918,
+  "visor": {
+    "width": 1280,
+    "height": 720
+  },
+  "tablet": {
+    "width": 1280,
+    "height": 800
+  },
+  "beats": [
+    {
+      "id": "titulo",
+      "dur": 8.0,
+      "render": false,
+      "card": {
+        "title": "Cómo se usa IOLSIMULATOR",
+        "sub": "Guía rápida para la consulta"
+      },
+      "subs": [
+        {
+          "t": 1.2,
+          "d": 3.02,
+          "text": "Así se usa IOLSIMULATOR en la consulta."
+        }
+      ]
+    },
+    {
+      "id": "paso1_calce",
+      "chip": "Paso 1 · Colocar el visor",
+      "dur": 26.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "focusCheck": true,
+      "tablet": "panel_calce.png",
+      "tap": {
+        "t": 20.4,
+        "target": "ocultar_calce"
+      },
+      "subs": [
+        {
+          "t": 0.8,
+          "d": 3.74,
+          "text": "A la izquierda, lo que ve el paciente dentro del visor."
+        },
+        {
+          "t": 4.89,
+          "d": 3.26,
+          "text": "A la derecha, la tablet que manejás vos."
+        },
+        {
+          "t": 8.51,
+          "d": 4.61,
+          "text": "Paso 1. Al encender, el paciente ve esta pantalla."
+        },
+        {
+          "t": 13.47,
+          "d": 3.14,
+          "text": "Pedile que lea en voz alta la línea más chica."
+        },
+        {
+          "t": 16.96,
+          "d": 3.58,
+          "text": "Si la lee nítida, el visor está bien colocado."
+        },
+        {
+          "t": 20.89,
+          "d": 3.34,
+          "text": "Cuando lo confirme, ocultala desde la tablet."
+        }
+      ]
+    },
+    {
+      "id": "calce_oculto",
+      "chip": "Paso 1 · Colocar el visor",
+      "dur": 9.5,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "paciente_joven"
+      },
+      "focusCheck": false,
+      "tablet": "panel_joven.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 4.15,
+          "text": "Listo. El paciente ya está en el consultorio."
+        },
+        {
+          "t": 5.1,
+          "d": 3.77,
+          "text": "Arrancamos por la referencia: cómo ve un ojo sano."
+        }
+      ]
+    },
+    {
+      "id": "mirar_costados",
+      "chip": "Un entorno en tres dimensiones",
+      "dur": 22.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "paciente_joven"
+      },
+      "focusCheck": false,
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0
+        },
+        {
+          "t": 6.0,
+          "yaw": -36
+        },
+        {
+          "t": 13.0,
+          "yaw": 18
+        },
+        {
+          "t": 19.0,
+          "yaw": 0
+        },
+        {
+          "t": 22.0,
+          "yaw": 0
+        }
+      ],
+      "tablet": "panel_joven.png",
+      "subs": [
+        {
+          "t": 0.8,
+          "d": 2.81,
+          "text": "El paciente puede mirar a su alrededor."
+        },
+        {
+          "t": 5.0,
+          "d": 3.77,
+          "text": "No es un video: es un entorno en tres dimensiones."
+        },
+        {
+          "t": 9.4,
+          "d": 3.5,
+          "text": "Gira la cabeza hacia la ventana o hacia la mesa."
+        },
+        {
+          "t": 14.0,
+          "d": 3.46,
+          "text": "Reconocer la escena como real es parte del efecto."
+        },
+        {
+          "t": 18.4,
+          "d": 2.74,
+          "text": "Le da confianza en lo que está viendo."
+        }
+      ]
+    },
+    {
+      "id": "paso2_titulo",
+      "chip": "Paso 2 · Elegir la lente",
+      "dur": 8.8,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "paciente_joven"
+      },
+      "tablet": "panel_joven.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 4.08,
+          "text": "Paso 2. Elegí la lente desde la tablet."
+        },
+        {
+          "t": 5.03,
+          "d": 3.12,
+          "text": "La tocás y el paciente la ve al instante."
+        }
+      ]
+    },
+    {
+      "id": "tap_catarata",
+      "chip": "Paso 2 · Elegir la lente",
+      "dur": 4.3,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "paciente_joven"
+      },
+      "tablet": "panel_picker.png",
+      "tap": {
+        "t": 0.8,
+        "target": "lente_catarata"
+      },
+      "subs": [
+        {
+          "t": 0.4,
+          "d": 3.26,
+          "text": "Empecemos por cómo ve hoy, con la catarata."
+        }
+      ],
+      "stream": false
+    },
+    {
+      "id": "catarata",
+      "chip": "Paso 2 · Elegir la lente",
+      "dur": 13.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "catarata"
+      },
+      "tablet": "panel_catarata.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 3.0,
+          "text": "Así ve el paciente antes de operarse."
+        },
+        {
+          "t": 4.4,
+          "d": 3.77,
+          "text": "Todo más opaco, amarillento y con menos contraste."
+        },
+        {
+          "t": 8.6,
+          "d": 2.98,
+          "text": "Es el punto de partida de la conversación."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0
+        },
+        {
+          "t": 6.5,
+          "yaw": -17
+        },
+        {
+          "t": 13.0,
+          "yaw": 0
+        }
+      ]
+    },
+    {
+      "id": "tap_monofocal",
+      "chip": "Paso 2 · Elegir la lente",
+      "dur": 3.3,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "catarata"
+      },
+      "tablet": "panel_picker.png",
+      "tap": {
+        "t": 0.8,
+        "target": "lente_monofocal"
+      },
+      "subs": [
+        {
+          "t": 0.4,
+          "d": 2.33,
+          "text": "Ahora una lente monofocal."
+        }
+      ],
+      "stream": false
+    },
+    {
+      "id": "monofocal",
+      "chip": "Paso 2 · Elegir la lente",
+      "dur": 12.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "tablet": "panel_monofocal.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 3.22,
+          "text": "La visión de lejos se recupera y se ve nítida."
+        },
+        {
+          "t": 4.6,
+          "d": 3.43,
+          "text": "Es el resultado más habitual después de la cirugía."
+        },
+        {
+          "t": 8.8,
+          "d": 2.62,
+          "text": "Pero falta ver qué pasa de cerca."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0
+        },
+        {
+          "t": 6.0,
+          "yaw": -14
+        },
+        {
+          "t": 12.0,
+          "yaw": 0
+        }
+      ]
+    },
+    {
+      "id": "libro_intro",
+      "chip": "Paso 2 · La prueba del libro",
+      "dur": 6.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "book": [
+        {
+          "t": 0.0,
+          "dist": 0.68
+        },
+        {
+          "t": 6.0,
+          "dist": 0.66
+        }
+      ],
+      "tablet": "panel_monofocal.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 3.07,
+          "text": "Pedile que acerque el libro, como para leer."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0,
+          "pitch": 5
+        },
+        {
+          "t": 6.0,
+          "yaw": 0,
+          "pitch": 11
+        }
+      ]
+    },
+    {
+      "id": "libro_acerca",
+      "chip": "Paso 2 · La prueba del libro",
+      "dur": 17.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "book": [
+        {
+          "t": 0.0,
+          "dist": 0.66
+        },
+        {
+          "t": 5.0,
+          "dist": 0.42
+        },
+        {
+          "t": 8.0,
+          "dist": 0.42
+        },
+        {
+          "t": 12.0,
+          "dist": 0.62
+        },
+        {
+          "t": 17.0,
+          "dist": 0.4
+        }
+      ],
+      "tablet": "panel_monofocal.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 3.48,
+          "text": "A medida que lo acerca, el texto se le desarma."
+        },
+        {
+          "t": 4.8,
+          "d": 3.17,
+          "text": "Con una monofocal, de cerca no enfoca."
+        },
+        {
+          "t": 9.0,
+          "d": 3.36,
+          "text": "Este es el momento en que el paciente lo entiende."
+        },
+        {
+          "t": 13.2,
+          "d": 3.19,
+          "text": "Ninguna explicación reemplaza haberlo visto."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0,
+          "pitch": 11
+        },
+        {
+          "t": 17.0,
+          "yaw": 0,
+          "pitch": 14
+        }
+      ]
+    },
+    {
+      "id": "tap_panoptix",
+      "chip": "Paso 2 · La prueba del libro",
+      "dur": 4.1,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "book": [
+        {
+          "t": 0.0,
+          "dist": 0.4
+        },
+        {
+          "t": 3.0,
+          "dist": 0.4
+        }
+      ],
+      "tablet": "panel_picker.png",
+      "tap": {
+        "t": 0.8,
+        "target": "lente_panoptix"
+      },
+      "subs": [
+        {
+          "t": 0.3,
+          "d": 3.24,
+          "text": "Probemos una trifocal, sin mover el libro."
+        }
+      ],
+      "stream": false,
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0,
+          "pitch": 14
+        },
+        {
+          "t": 3.0,
+          "yaw": 0,
+          "pitch": 14
+        }
+      ]
+    },
+    {
+      "id": "libro_panoptix",
+      "chip": "Paso 2 · La prueba del libro",
+      "dur": 15.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "panoptix"
+      },
+      "book": [
+        {
+          "t": 0.0,
+          "dist": 0.4
+        },
+        {
+          "t": 4.0,
+          "dist": 0.62
+        },
+        {
+          "t": 9.0,
+          "dist": 0.4
+        },
+        {
+          "t": 15.0,
+          "dist": 0.48
+        }
+      ],
+      "tablet": "panel_panoptix.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 3.14,
+          "text": "Con la trifocal recupera la lectura de cerca."
+        },
+        {
+          "t": 4.6,
+          "d": 3.77,
+          "text": "Compara las dos lentes en el momento, con el mismo libro."
+        },
+        {
+          "t": 9.0,
+          "d": 3.48,
+          "text": "Y decide sobre algo que probó, no que imaginó."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0,
+          "pitch": 14
+        },
+        {
+          "t": 9.0,
+          "yaw": 0,
+          "pitch": 13
+        },
+        {
+          "t": 15.0,
+          "yaw": 0,
+          "pitch": 13
+        }
+      ]
+    },
+    {
+      "id": "tap_noche",
+      "chip": "Paso 3 · De día y de noche",
+      "dur": 4.9,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "panoptix"
+      },
+      "tablet": "panel_panoptix.png",
+      "tap": {
+        "t": 0.8,
+        "target": "escenario_noche"
+      },
+      "subs": [
+        {
+          "t": 0.3,
+          "d": 3.98,
+          "text": "Paso 3. Cambiá de escenario con un toque."
+        }
+      ]
+    },
+    {
+      "id": "noche_panoptix",
+      "chip": "Paso 3 · De día y de noche",
+      "dur": 17.2,
+      "scenario": "ruta_noche",
+      "lens": {
+        "both": "panoptix"
+      },
+      "tablet": "panel_noche_panoptix.png",
+      "subs": [
+        {
+          "t": 0.8,
+          "d": 3.26,
+          "text": "De noche es donde más se separan las lentes."
+        },
+        {
+          "t": 4.8,
+          "d": 3.43,
+          "text": "Con la trifocal aparecen halos alrededor de los faros."
+        },
+        {
+          "t": 9.0,
+          "d": 3.74,
+          "text": "Al girar la cabeza, el halo acompaña a cada luz."
+        },
+        {
+          "t": 13.09,
+          "d": 3.53,
+          "text": "Es el costo de tener visión de cerca sin anteojos."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0
+        },
+        {
+          "t": 5.0,
+          "yaw": -24
+        },
+        {
+          "t": 11.0,
+          "yaw": 22
+        },
+        {
+          "t": 17.0,
+          "yaw": 0
+        }
+      ]
+    },
+    {
+      "id": "tap_noche_mono",
+      "chip": "Paso 3 · De día y de noche",
+      "dur": 3.8,
+      "scenario": "ruta_noche",
+      "lens": {
+        "both": "panoptix"
+      },
+      "tablet": "panel_picker_noche.png",
+      "tap": {
+        "t": 0.8,
+        "target": "lente_monofocal"
+      },
+      "subs": [
+        {
+          "t": 0.3,
+          "d": 2.86,
+          "text": "La misma ruta, con la monofocal."
+        }
+      ],
+      "stream": false
+    },
+    {
+      "id": "noche_monofocal",
+      "chip": "Paso 3 · De día y de noche",
+      "dur": 14.0,
+      "scenario": "ruta_noche",
+      "lens": {
+        "both": "monofocal"
+      },
+      "tablet": "panel_noche_monofocal.png",
+      "subs": [
+        {
+          "t": 0.6,
+          "d": 3.89,
+          "text": "Los halos casi desaparecen, pero ya vio el otro lado."
+        },
+        {
+          "t": 4.84,
+          "d": 3.43,
+          "text": "Ese ida y vuelta es la decisión que tiene que tomar."
+        },
+        {
+          "t": 8.8,
+          "d": 2.95,
+          "text": "Y ahora la toma sabiendo a qué renuncia."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0
+        },
+        {
+          "t": 4.5,
+          "yaw": 22
+        },
+        {
+          "t": 10.0,
+          "yaw": -20
+        },
+        {
+          "t": 14.0,
+          "yaw": 0
+        }
+      ]
+    },
+    {
+      "id": "tap_blend_lente",
+      "chip": "Una lente en cada ojo",
+      "dur": 4.2,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "tablet": "panel_picker.png",
+      "stream": false,
+      "tap": {
+        "t": 0.9,
+        "target": "lente_panoptix"
+      },
+      "subs": [
+        {
+          "t": 0.3,
+          "d": 3.34,
+          "text": "Volvé a «Lente» y elegí la trifocal."
+        }
+      ]
+    },
+    {
+      "id": "tap_blend_ojo",
+      "chip": "Una lente en cada ojo",
+      "dur": 4.0,
+      "scenario": "consultorio",
+      "lens": {
+        "both": "monofocal"
+      },
+      "tablet": "panel_ojo.png",
+      "stream": false,
+      "tap": {
+        "t": 1.0,
+        "target": "ojo_od"
+      },
+      "subs": [
+        {
+          "t": 0.3,
+          "d": 2.83,
+          "text": "Pero esta vez aplicala a un solo ojo."
+        }
+      ]
+    },
+    {
+      "id": "blend",
+      "chip": "Una lente en cada ojo",
+      "dur": 17.0,
+      "scenario": "consultorio",
+      "lens": {
+        "left": "monofocal",
+        "right": "panoptix"
+      },
+      "tablet": "panel_blend.png",
+      "stream": false,
+      "book": [
+        {
+          "t": 0.0,
+          "dist": 0.56
+        },
+        {
+          "t": 6.0,
+          "dist": 0.42
+        },
+        {
+          "t": 11.0,
+          "dist": 0.56
+        },
+        {
+          "t": 17.0,
+          "dist": 0.41
+        }
+      ],
+      "subs": [
+        {
+          "t": 0.8,
+          "d": 3.02,
+          "text": "Ahora cada ojo tiene una lente distinta."
+        },
+        {
+          "t": 4.8,
+          "d": 3.17,
+          "text": "La tablet te muestra los dos ojos por separado."
+        },
+        {
+          "t": 9.0,
+          "d": 3.02,
+          "text": "El derecho lee el libro; el izquierdo no."
+        },
+        {
+          "t": 13.2,
+          "d": 3.24,
+          "text": "Así se prueba una combinación antes de operar."
+        }
+      ],
+      "head": [
+        {
+          "t": 0.0,
+          "yaw": 0,
+          "pitch": 12
+        },
+        {
+          "t": 8.0,
+          "yaw": -11,
+          "pitch": 13
+        },
+        {
+          "t": 17.0,
+          "yaw": 0,
+          "pitch": 12
+        }
+      ]
+    },
+    {
+      "id": "cierre",
+      "dur": 14.0,
+      "render": false,
+      "card": {
+        "title": "Tres pasos, pocos minutos",
+        "sub": "Colocar el visor · Elegir la lente · Comparar de día y de noche"
+      },
+      "subs": [
+        {
+          "t": 1.0,
+          "d": 3.55,
+          "text": "Una sesión completa entra en la consulta que ya hacés."
+        },
+        {
+          "t": 5.6,
+          "d": 5.02,
+          "text": "Producto con fines educativos. No es un dispositivo médico."
+        }
+      ]
+    }
+  ]
+}
