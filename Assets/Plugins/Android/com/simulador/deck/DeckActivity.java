@@ -1,12 +1,17 @@
 package com.simulador.deck;
 
 import android.app.Activity;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.widget.FrameLayout;
+import android.widget.TextView;
 
 /**
  * Visor a pantalla completa del deck comercial (Assets/StreamingAssets/
@@ -50,8 +55,67 @@ public class DeckActivity extends Activity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
 
-        setContentView(webView);
+        // El modo inmersivo oculta la nav bar del sistema -- sin nav bar el
+        // unico cierre es KEYCODE_BACK, invisible para el vendedor. Se
+        // superpone un boton "cerrar" nativo (por encima del WebView, en un
+        // FrameLayout) que llama al mismo finish() del back key.
+        FrameLayout root = new FrameLayout(this);
+        root.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
+        root.addView(buildCloseButton(), buildCloseButtonParams());
+
+        setContentView(root);
         webView.loadUrl(DECK_ASSET_URL);
+    }
+
+    /**
+     * Boton "cerrar" nativo: circulo semitransparente oscuro con una "X"
+     * blanca, ~48dp de area tactil. Sin AndroidX ni drawables nuevos --
+     * el circulo se arma con un GradientDrawable por codigo, mismo criterio
+     * "cero dependencias nuevas" que el resto del deck.
+     */
+    private TextView buildCloseButton() {
+        TextView close = new TextView(this);
+        // Escape unicode (no el literal): el javac de Gradle puede no compilar en UTF-8.
+        close.setText("\u2715");
+        close.setTextColor(Color.WHITE);
+        close.setTextSize(18);
+        close.setGravity(Gravity.CENTER);
+        GradientDrawable circle = new GradientDrawable();
+        circle.setShape(GradientDrawable.OVAL);
+        circle.setColor(Color.parseColor("#80000000"));
+        close.setBackground(circle);
+        close.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Misma ruta que el boton atras: vuelve a la app de Unity.
+                finish();
+            }
+        });
+        return close;
+    }
+
+    private FrameLayout.LayoutParams buildCloseButtonParams() {
+        int sizePx = dp(48);
+        int marginPx = dp(16);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(sizePx, sizePx);
+        // Arriba-izquierda: el deck (docs/comercial/deck.template.html) dibuja
+        // en la barra superior el selector de idioma + contador de slide
+        // pegados al borde derecho (#bar > .langs + #count) -- arriba-derecha
+        // arriesga tapar el selector de idioma (funcional) en pantallas
+        // angostas. Arriba-izquierda solo cubre el wordmark de marca (texto
+        // sin handler de click), asi que no rompe ningun control del deck.
+        // Los botones prev/next (#nav) quedan centrados abajo, lejos de
+        // cualquiera de las dos esquinas superiores.
+        params.gravity = Gravity.TOP | Gravity.START;
+        params.leftMargin = marginPx;
+        params.topMargin = marginPx;
+        return params;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * getResources().getDisplayMetrics().density);
     }
 
     @Override
