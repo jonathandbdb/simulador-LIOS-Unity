@@ -169,8 +169,27 @@ function Invoke-Adb {
 
     Write-Log ('adb ' + ($fullArgs -join ' '))
 
-    $rawLines = & $AdbPath @fullArgs 2>&1
-    $exitCode = $LASTEXITCODE
+    # Fix del bug encontrado en la primera prueba en una PC Windows real: en
+    # Windows PowerShell 5.1, con $ErrorActionPreference = 'Stop' (ver tope
+    # del script), CADA linea que un comando nativo escribe a stderr se
+    # promueve a excepcion terminante
+    # (NativeCommandError), aunque el exit code sea 0 -- y adb escribe lineas
+    # inocuas a stderr todo el tiempo ("daemon not running; starting now",
+    # "daemon started successfully", avisos de 'adb install', etc.). Bajamos
+    # el EAP a 'Continue' SOLO durante esta llamada puntual (y lo restauramos
+    # siempre, incluso si adb tira una excepcion real) para poder seguir
+    # capturando stdout+stderr como texto via '2>&1' sin que PowerShell aborte
+    # el script por un mensaje informativo. No reproduce en pwsh 7 (por eso no
+    # se detecto antes: esta maquina de desarrollo es Linux) -- ver el gotcha
+    # en docs/builds-deploy.md.
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $rawLines = & $AdbPath @fullArgs 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousEap
+    }
 
     $textLines = @()
     foreach ($line in $rawLines) {
@@ -372,6 +391,18 @@ function Wait-ForDevice {
 }
 
 # -----------------------------------------------------------------------
+# Despierta la pantalla y descarta el keyguard -- no fatal si un comando
+# individual falla (son ordenes de refuerzo "cinturon y tirantes"; quien la
+# llama en un polling ya reintenta). Reusada en el Paso 4, antes del intent
+# HOME del Paso 7 y durante el polling del Paso 8 -- ver gotcha "pantalla de
+# bloqueo tapa la app" en docs/builds-deploy.md.
+# -----------------------------------------------------------------------
+function Invoke-WakeAndDismissKeyguard {
+    Invoke-Adb -Arguments @('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP') | Out-Null
+    Invoke-Adb -Arguments @('shell', 'wm', 'dismiss-keyguard') | Out-Null
+}
+
+# -----------------------------------------------------------------------
 # Paso 4: cuentas + bloqueo de pantalla (mismos gotchas que
 # provision-tablet.sh -- ver docs/builds-deploy.md).
 # -----------------------------------------------------------------------
@@ -395,8 +426,7 @@ function Confirm-DeviceReady {
 
     Write-Info 'Manteniendo la pantalla despierta durante el resto del proceso...'
     Invoke-Adb -Arguments @('shell', 'svc', 'power', 'stayon', 'true') | Out-Null
-    Invoke-Adb -Arguments @('shell', 'input', 'keyevent', 'KEYCODE_WAKEUP') | Out-Null
-    Invoke-Adb -Arguments @('shell', 'wm', 'dismiss-keyguard') | Out-Null
+    Invoke-WakeAndDismissKeyguard
 }
 
 # -----------------------------------------------------------------------
@@ -467,6 +497,7 @@ function Start-KioskAppAndVerify {
     Invoke-Adb -Arguments @('shell', 'appops', 'set', $Package, 'REQUEST_INSTALL_PACKAGES', 'allow') | Out-Null
     Invoke-Adb -Arguments @('shell', 'settings', 'put', 'secure', 'immersive_mode_confirmations', 'confirmed') | Out-Null
 
+    Invoke-WakeAndDismissKeyguard
     Invoke-Adb -Arguments @('shell', 'am', 'start', '-a', 'android.intent.action.MAIN', '-c', 'android.intent.category.HOME', '-n', $AppActivity) | Out-Null
 
     Write-Info 'Esperando a que la aplicacion quede como pantalla de inicio (hasta 30 segundos)...'
@@ -483,14 +514,72 @@ function Start-KioskAppAndVerify {
         Exit-Fatal 'La aplicacion no quedo configurada como pantalla de inicio tras 30 segundos. Volve a ejecutar este programa; si el problema persiste, avisa a soporte con el registro de esta ejecucion.'
     }
 
-    $taskResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'activity', 'activities')
-    $taskLines = $taskResult.Output -split "`r`n"
-    $taskLine = $taskLines | Where-Object { $_ -match ('Task\{.*' + [regex]::Escape($Package)) } | Select-Object -First 1
-    if (-not $taskLine -or $taskLine -notmatch 'type=home') {
-        Exit-Fatal 'No se pudo confirmar que la aplicacion arranco correctamente como pantalla de inicio. Avisa a soporte con el registro de esta ejecucion.'
+    # Gotcha real, CORREGIDO (2026-09-25, tercera corrida real del kit de
+    # Windows, Lenovo TB336FU Android 16 -- ver "pantalla de bloqueo tapa la
+    # app" en docs/builds-deploy.md). ANTES esto era una sola lectura
+    # inmediatamente despues del 'am start ... HOME'. La pantalla de bloqueo
+    # de fabrica ("Deslizar", sin PIN) puede quedar por encima de la app justo
+    # en ese instante (el intent HOME no la descarta solo) y retrasar que
+    # ApplyPolicies()/EnterLockTask() lleguen a correr -- una sola lectura la
+    # agarra a mitad de camino y corta con un fallo fatal aunque el kiosco
+    # hubiera terminado de activarse un segundo despues. Fix: sondeamos hasta
+    # 30s (cada 2s) en vez de mirar una sola vez; en cada vuelta volvemos a
+    # pedir el dump y, si aparece 'isKeyguardShowing=true', la volvemos a
+    # descartar (Invoke-WakeAndDismissKeyguard) antes del proximo intento.
+    # Aceptamos 'type=home' O (foco nuestro -- mCurrentFocus o mFocusedApp --
+    # + LOCKED, la variante Android 16/ZUI ya conocida) apenas se cumpla
+    # cualquiera de los dos.
+    Write-Info 'Confirmando que el modo kiosco quedo activo (hasta 30 segundos, descartando la pantalla de bloqueo si reaparece)...'
+    $kioskOk = $false
+    $waited = 0
+    $taskLine = $null
+    while ($waited -lt 30) {
+        $taskResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'activity', 'activities')
+        $taskLines = $taskResult.Output -split "`r`n"
+        $taskLine = $taskLines | Where-Object { $_ -match ('Task\{.*' + [regex]::Escape($Package)) } | Select-Object -First 1
+        $lockLine = $taskLines | Where-Object { $_ -match 'mLockTaskModeState' } | Select-Object -First 1
+        $focusLine = $taskLines | Where-Object { $_ -match 'mCurrentFocus=' } | Select-Object -First 1
+        $focusedAppLine = $taskLines | Where-Object { $_ -match 'mFocusedApp=' } | Select-Object -First 1
+        $keyguardLine = $taskLines | Where-Object { $_ -match 'isKeyguardShowing=' } | Select-Object -First 1
+        if (-not $focusLine -and -not $focusedAppLine) {
+            $windowResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'window')
+            $focusLine = ($windowResult.Output -split "`r`n") | Where-Object { $_ -match 'mCurrentFocus=' } | Select-Object -First 1
+        }
+
+        if ($taskLine -and $taskLine -match 'type=home') {
+            $kioskOk = $true
+            break
+        }
+
+        $focusOk = ($focusLine -and $focusLine -match [regex]::Escape($Package)) -or ($focusedAppLine -and $focusedAppLine -match [regex]::Escape($Package))
+        $lockOk = $lockLine -and $lockLine -match 'LOCKED'
+        if ($focusOk -and $lockOk) {
+            $kioskOk = $true
+            break
+        }
+
+        if ($keyguardLine -and $keyguardLine -match 'isKeyguardShowing=true') {
+            Write-Info 'La pantalla de bloqueo esta tapando la app -- descartandola de nuevo...'
+            Invoke-WakeAndDismissKeyguard
+        }
+
+        Start-Sleep -Seconds 2
+        $waited += 2
     }
 
-    Write-Info 'Modo kiosco confirmado.'
+    if (-not $kioskOk) {
+        Exit-Fatal 'No se pudo confirmar que la aplicacion arranco correctamente como pantalla de inicio (puede que la pantalla de bloqueo la este tapando). Desbloquea la tablet a mano y volve a ejecutar este programa; si el problema persiste, avisa a soporte con el registro de esta ejecucion.'
+    }
+
+    if ($taskLine -and $taskLine -match 'type=home') {
+        Write-Info 'Modo kiosco confirmado.'
+    } else {
+        # Variante Android 16/ZUI (ver gotcha arriba): el HOME por defecto del
+        # sistema todavia es el launcher de fabrica al momento del 'am start
+        # ... HOME', asi que la tarea puede nacer 'type=standard' aunque el
+        # kiosco ya este realmente activo (foco + LOCKED).
+        Write-Info 'Aviso: la tarea todavia no figura como pantalla de inicio (type=home) -- variante conocida en algunos fabricantes/Android 16. La app ya esta en foco y el kiosco esta activo, asi que se continua; el Paso 8 (reiniciar) lo va a confirmar de forma definitiva.'
+    }
 }
 
 # -----------------------------------------------------------------------
@@ -505,8 +594,11 @@ function Invoke-RebootVerification {
     Invoke-Adb -Arguments @('reboot') | Out-Null
 
     Write-Info 'Esperando a que la tablet vuelva a encender (puede tardar unos minutos)...'
-    & $AdbPath -s $Serial wait-for-device
-    Write-Log "adb -s $Serial wait-for-device (exit code: $LASTEXITCODE)"
+    # Antes llamaba a adb directo ('& $AdbPath ...', sin pasar por Invoke-Adb)
+    # -- mismo riesgo de stderr+EAP Stop del gotcha de arriba, sin el fix.
+    # Ruteado por Invoke-Adb para quedar cubierto igual que el resto de las
+    # llamadas a adb del script.
+    Invoke-Adb -Arguments @('wait-for-device') | Out-Null
 
     Write-Info 'Esperando a que termine de arrancar...'
     $waited = 0
@@ -525,18 +617,50 @@ function Invoke-RebootVerification {
     Write-Info 'Arranco. Esperando unos segundos mas a que la aplicacion tome el control...'
     Start-Sleep -Seconds 15
 
-    Write-Info 'Verificando que la aplicacion quedo en primer plano...'
-    $focusResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'window')
-    $focusLine = ($focusResult.Output -split "`r`n") | Where-Object { $_ -match 'mCurrentFocus' } | Select-Object -First 1
-    if (-not $focusLine -or $focusLine -notmatch [regex]::Escape($Package)) {
-        Exit-Fatal "Tras reiniciar, la aplicacion del simulador no quedo en primer plano. Puede que la tablet haya quedado a mitad de una configuracion anterior -- volve a ejecutar este programa; si el problema persiste, avisa a soporte con el registro de esta ejecucion."
+    # Gotcha real, CORREGIDO (ver "pantalla de bloqueo tapa la app" en
+    # docs/builds-deploy.md): la pantalla de bloqueo de fabrica tambien puede
+    # reaparecer despues de un reboot y tapar la app justo en el momento de
+    # esta lectura -- antes esto era un chequeo unico (foco, luego LOCKED,
+    # luego type=home). Fix: sondeamos hasta 30s (cada 2s), descartando el
+    # keyguard si reaparece (Invoke-WakeAndDismissKeyguard), hasta confirmar
+    # foco + LOCKED + type=home juntos -- el criterio definitivo: tras un
+    # reboot real los tres SIEMPRE terminan cumpliendose.
+    Write-Info 'Confirmando que la aplicacion quedo en foco, el kiosco activo y la tarea como pantalla de inicio (hasta 30 segundos)...'
+    $bootOk = $false
+    $waited = 0
+    while ($waited -lt 30) {
+        $activityResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'activity', 'activities')
+        $activityLines = $activityResult.Output -split "`r`n"
+        $focusLine = $activityLines | Where-Object { $_ -match 'mCurrentFocus=' } | Select-Object -First 1
+        $focusedAppLine = $activityLines | Where-Object { $_ -match 'mFocusedApp=' } | Select-Object -First 1
+        if (-not $focusLine -and -not $focusedAppLine) {
+            $windowResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'window')
+            $focusLine = ($windowResult.Output -split "`r`n") | Where-Object { $_ -match 'mCurrentFocus=' } | Select-Object -First 1
+        }
+        $lockLine = $activityLines | Where-Object { $_ -match 'mLockTaskModeState' } | Select-Object -First 1
+        $taskLine = $activityLines | Where-Object { $_ -match ('Task\{.*' + [regex]::Escape($Package)) } | Select-Object -First 1
+        $keyguardLine = $activityLines | Where-Object { $_ -match 'isKeyguardShowing=' } | Select-Object -First 1
+
+        $focusOk = ($focusLine -and $focusLine -match [regex]::Escape($Package)) -or ($focusedAppLine -and $focusedAppLine -match [regex]::Escape($Package))
+        $lockOk = $lockLine -and $lockLine -match 'LOCKED'
+        $taskOk = $taskLine -and $taskLine -match 'type=home'
+
+        if ($focusOk -and $lockOk -and $taskOk) {
+            $bootOk = $true
+            break
+        }
+
+        if ($keyguardLine -and $keyguardLine -match 'isKeyguardShowing=true') {
+            Write-Info 'La pantalla de bloqueo esta tapando la app tras reiniciar -- descartandola de nuevo...'
+            Invoke-WakeAndDismissKeyguard
+        }
+
+        Start-Sleep -Seconds 2
+        $waited += 2
     }
 
-    Write-Info 'Verificando que el modo kiosco quedo activo...'
-    $lockResult = Invoke-Adb -Arguments @('shell', 'dumpsys', 'activity', 'activities')
-    $lockLine = ($lockResult.Output -split "`r`n") | Where-Object { $_ -match 'mLockTaskModeState' } | Select-Object -First 1
-    if (-not $lockLine -or $lockLine -notmatch 'LOCKED') {
-        Exit-Fatal 'Tras reiniciar, el modo kiosco no quedo activo. Avisa a soporte con el registro de esta ejecucion.'
+    if (-not $bootOk) {
+        Exit-Fatal 'Tras reiniciar, la aplicacion no quedo en foco con el kiosco activo (puede que la pantalla de bloqueo la este tapando). Desbloquea la tablet a mano y volve a ejecutar este programa; si el problema persiste, avisa a soporte con el registro de esta ejecucion.'
     }
 
     Write-Success 'Confirmado: la tablet arranca directo en el simulador, en modo kiosco.'
@@ -572,6 +696,18 @@ try {
     Show-Welcome
 
     $AdbPath = Resolve-AdbBinary
+
+    # Arrancamos el servidor de adb ACA, al cierre del Paso 1, para que el
+    # tipico mensaje "daemon not running; starting now" (stderr de adb la
+    # primera vez que se conecta) salga en este momento controlado y no en
+    # medio del polling del Paso 3 (Wait-ForDevice). Ignoramos el texto de
+    # salida (ya va al registro via Invoke-Adb); solo nos importa el exit
+    # code.
+    $startServerResult = Invoke-Adb -NoSerial -Arguments @('start-server')
+    if ($startServerResult.ExitCode -ne 0) {
+        Exit-Fatal "No se pudo iniciar el servicio de conexion con la tablet (adb server).`nDetalle tecnico: $($startServerResult.Output)"
+    }
+
     $apk = Get-TabletApk -Backend $BackendUrl
     Wait-ForDevice
     Confirm-DeviceReady

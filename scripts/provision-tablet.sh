@@ -377,6 +377,19 @@ CHECKLIST
     done
 }
 
+# ---------------------------------------------------------------------------
+# Despierta la pantalla y descarta el keyguard -- no fatal si un comando
+# individual falla (son ordenes de refuerzo "cinturon y tirantes"; quien la
+# llama en un polling ya reintenta). Reusada en la preparacion inicial (antes
+# de instalar), antes del intent HOME del lanzamiento y durante el polling
+# post-reboot -- ver gotcha "pantalla de bloqueo tapa la app" en
+# docs/builds-deploy.md.
+# ---------------------------------------------------------------------------
+wake_and_dismiss_keyguard() {
+    "${ADB[@]}" shell input keyevent KEYCODE_WAKEUP >/dev/null 2>&1
+    "${ADB[@]}" shell wm dismiss-keyguard >/dev/null 2>&1
+}
+
 run_fix_setup() {
     step "Aplicando --fix-setup (device_provisioned=0, user_setup_complete=0)..."
     "${ADB[@]}" shell settings put global device_provisioned 0 \
@@ -434,10 +447,7 @@ run_provision() {
     step "Manteniendo la pantalla despierta (evita que se duerma/entre en Doze durante los pasos siguientes)..."
     "${ADB[@]}" shell svc power stayon true \
         || fail "No se pudo aplicar 'svc power stayon true'"
-    "${ADB[@]}" shell input keyevent KEYCODE_WAKEUP \
-        || fail "No se pudo despertar la pantalla (input keyevent KEYCODE_WAKEUP)"
-    "${ADB[@]}" shell wm dismiss-keyguard \
-        || fail "No se pudo descartar el keyguard (wm dismiss-keyguard)"
+    wake_and_dismiss_keyguard
 
     step "Instalando $APK_PATH..."
     "${ADB[@]}" install -r "$APK_PATH" || fail "adb install falló"
@@ -489,12 +499,13 @@ run_provision() {
     # reboot) en vez de LAUNCHER -- la tarea nace type=home desde el vamos y
     # jamas hay carrera que ganar.
     step "Lanzando la app (intent HOME explicito, no LAUNCHER -- ver gotcha en el script)..."
+    wake_and_dismiss_keyguard
     "${ADB[@]}" shell am start -a android.intent.action.MAIN -c android.intent.category.HOME \
         -n "$APP_ACTIVITY" >/dev/null \
         || fail "No se pudo lanzar la app (am start)"
 
     step "Esperando a que la app aplique las politicas de kiosco (HOME persistente, hasta 30s)..."
-    local resolved_pkg waited task_line
+    local resolved_pkg waited task_line activities_dump focus_line lock_line
     resolved_pkg=""
     waited=0
     while [[ $waited -lt 30 ]]; do
@@ -511,12 +522,65 @@ run_provision() {
         || fail "La app no quedo como HOME persistente tras 30s (¿ApplyPolicies no corrio? revisar: adb shell logcat -s Unity | grep Kiosk)"
     step "HOME persistente confirmada (${waited}s)."
 
-    step "Verificando que la tarea sea 'home' (igual que tras un reboot real, sin relanzar nada)..."
-    task_line="$("${ADB[@]}" shell dumpsys activity activities 2>/dev/null | tr -d '\r' | grep -m1 -E "Task\{.*$PACKAGE")"
-    echo "  $task_line"
-    [[ "$task_line" == *"type=home"* ]] \
-        || fail "La tarea no quedo type=home -- revisar manualmente (dumpsys activity activities)."
-    step "Tarea 'home' confirmada."
+    # Gotcha real, CORREGIDO (2026-09-25, tercera corrida real del kit de
+    # Windows, Lenovo TB336FU Android 16 -- ver "pantalla de bloqueo tapa la
+    # app" en docs/builds-deploy.md): el chequeo de mas abajo ANTES era una
+    # sola lectura inmediatamente despues del 'am start ... HOME'. La pantalla
+    # de bloqueo de fabrica ("Deslizar", sin PIN) puede quedar por encima de
+    # la app justo en ese instante (el intent HOME no la descarta solo) y
+    # retrasar que ApplyPolicies()/EnterLockTask() lleguen a correr -- una
+    # sola lectura la agarra a mitad de camino y corta con un fallo fatal
+    # aunque el kiosco hubiera terminado de activarse un segundo despues.
+    # Fix: sondeamos hasta 30s (cada 2s) en vez de mirar una sola vez; en cada
+    # vuelta volvemos a pedir el dump y, si aparece 'isKeyguardShowing=true',
+    # la volvemos a descartar (wake_and_dismiss_keyguard) antes del proximo
+    # intento. Aceptamos 'type=home' O (foco nuestro -- mCurrentFocus o
+    # mFocusedApp -- + LOCKED, la variante Android 16/ZUI ya conocida) apenas
+    # se cumpla cualquiera de los dos.
+    step "Esperando a que el kiosco quede activo (hasta 30s, descartando la pantalla de bloqueo si reaparece)..."
+    local kiosk_ok=0 poll_waited=0 poll_interval="${SIM_PROVISION_POLL_INTERVAL:-2}" poll_max="${SIM_PROVISION_POLL_MAX:-30}"
+    local activities_dump task_line focus_line focused_app_line lock_line keyguard_line
+    while [[ $poll_waited -lt $poll_max ]]; do
+        activities_dump="$("${ADB[@]}" shell dumpsys activity activities 2>/dev/null | tr -d '\r')"
+        task_line="$(echo "$activities_dump" | grep -m1 -E "Task\{.*$PACKAGE")"
+        lock_line="$(echo "$activities_dump" | grep -m1 'mLockTaskModeState')"
+        focus_line="$(echo "$activities_dump" | grep -m1 'mCurrentFocus=')"
+        focused_app_line="$(echo "$activities_dump" | grep -m1 'mFocusedApp=')"
+        keyguard_line="$(echo "$activities_dump" | grep -m1 'isKeyguardShowing=')"
+        if [[ -z "$focus_line" ]]; then
+            focus_line="$("${ADB[@]}" shell dumpsys window 2>/dev/null | tr -d '\r' | grep -m1 'mCurrentFocus=')"
+        fi
+
+        if [[ "$task_line" == *"type=home"* ]]; then
+            step "Tarea 'home' confirmada (${poll_waited}s)."
+            kiosk_ok=1
+            break
+        fi
+        if [[ ( "$focus_line" == *"$PACKAGE"* || "$focused_app_line" == *"$PACKAGE"* ) && "$lock_line" == *"LOCKED"* ]]; then
+            # Variante Android 16/ZUI (ver gotcha arriba): el HOME por defecto
+            # del sistema todavia es el launcher de fabrica al momento del 'am
+            # start ... HOME', asi que la tarea puede nacer 'type=standard'
+            # aunque el kiosco ya este realmente activo (foco + LOCKED).
+            step "Aviso: la tarea todavia no figura como pantalla de inicio (type=home) -- variante conocida en algunos fabricantes/Android 16. La app ya esta en foco y el kiosco esta activo (${poll_waited}s), se continua; el reboot final lo va a confirmar de forma definitiva."
+            kiosk_ok=1
+            break
+        fi
+
+        if [[ "$keyguard_line" == *"isKeyguardShowing=true"* ]]; then
+            step "La pantalla de bloqueo esta tapando la app -- descartandola de nuevo..."
+            wake_and_dismiss_keyguard
+        fi
+
+        sleep "$poll_interval"
+        poll_waited=$((poll_waited + poll_interval))
+    done
+
+    if [[ $kiosk_ok -ne 1 ]]; then
+        echo "  $task_line"
+        echo "  $focus_line"
+        echo "  $lock_line"
+        fail "El kiosco no quedo activo tras ${poll_max}s (la pantalla de bloqueo puede estar tapando la app) -- desbloquea la tablet a mano y volve a correr este script."
+    fi
 
     step "Verificando Device Owner..."
     "${ADB[@]}" shell dumpsys device_policy 2>/dev/null | tr -d '\r' | grep -A3 "Device Owner" \
@@ -583,19 +647,52 @@ verify_boot_and_summary() {
     step "Boot completo (${waited}s). Esperando 15s más a que la app termine de arrancar y aplicar el kiosco..."
     sleep 15
 
-    step "Verificando que la app quedó en foco..."
-    local focus_line
-    focus_line="$("${ADB[@]}" shell dumpsys window 2>/dev/null | tr -d '\r' | grep -m1 'mCurrentFocus')"
-    echo "  $focus_line"
-    [[ "$focus_line" == *"$PACKAGE"* ]] \
-        || fail "La app no está en foco tras el reboot (mCurrentFocus no contiene $PACKAGE) -- revisar manualmente: adb shell dumpsys window | grep mCurrentFocus (¿'already provisioned' sin --fix-setup? ¿la tablet quedó en el asistente de Android?)"
+    # Gotcha real, CORREGIDO (2026-09-25, ver "pantalla de bloqueo tapa la
+    # app" en docs/builds-deploy.md): tras el reboot esto era un chequeo unico
+    # (foco, luego LOCKED, luego type=home). La pantalla de bloqueo de
+    # fabrica tambien puede reaparecer despues de un reboot y tapar la app
+    # justo en el momento de esta lectura. Fix: mismo polling de hasta 30s
+    # (cada 2s) que el lanzamiento del paso anterior, descartando el keyguard
+    # si reaparece, exigiendo los TRES criterios juntos (foco + LOCKED +
+    # type=home) -- tras un reboot real los tres SIEMPRE terminan
+    # cumpliendose (la relanza el propio Android via la HOME persistente).
+    step "Verificando que la app quedó en foco, el kiosco LOCKED y la tarea 'home' (hasta 30s, descartando la pantalla de bloqueo si reaparece)..."
+    local boot_ok=0 poll_waited=0 poll_interval="${SIM_PROVISION_POLL_INTERVAL:-2}" poll_max="${SIM_PROVISION_POLL_MAX:-30}"
+    local activities_dump focus_line focused_app_line lock_line task_line keyguard_line
+    while [[ $poll_waited -lt $poll_max ]]; do
+        activities_dump="$("${ADB[@]}" shell dumpsys activity activities 2>/dev/null | tr -d '\r')"
+        focus_line="$(echo "$activities_dump" | grep -m1 'mCurrentFocus=')"
+        focused_app_line="$(echo "$activities_dump" | grep -m1 'mFocusedApp=')"
+        if [[ -z "$focus_line" ]]; then
+            focus_line="$("${ADB[@]}" shell dumpsys window 2>/dev/null | tr -d '\r' | grep -m1 'mCurrentFocus=')"
+        fi
+        lock_line="$(echo "$activities_dump" | grep -m1 'mLockTaskModeState')"
+        task_line="$(echo "$activities_dump" | grep -m1 -E "Task\{.*$PACKAGE")"
+        keyguard_line="$(echo "$activities_dump" | grep -m1 'isKeyguardShowing=')"
 
-    step "Verificando que el kiosco (lock task) está activo..."
-    local lock_line
-    lock_line="$("${ADB[@]}" shell dumpsys activity activities 2>/dev/null | tr -d '\r' | grep -m1 'mLockTaskModeState')"
+        if [[ ( "$focus_line" == *"$PACKAGE"* || "$focused_app_line" == *"$PACKAGE"* ) \
+              && "$lock_line" == *"LOCKED"* \
+              && "$task_line" == *"type=home"* ]]; then
+            boot_ok=1
+            break
+        fi
+
+        if [[ "$keyguard_line" == *"isKeyguardShowing=true"* ]]; then
+            step "La pantalla de bloqueo esta tapando la app tras reiniciar -- descartandola de nuevo..."
+            wake_and_dismiss_keyguard
+        fi
+
+        sleep "$poll_interval"
+        poll_waited=$((poll_waited + poll_interval))
+    done
+
+    echo "  $focus_line"
     echo "  $lock_line"
-    [[ "$lock_line" == *"LOCKED"* ]] \
-        || fail "El kiosco no quedó LOCKED tras el reboot (mLockTaskModeState) -- revisar manualmente: adb shell dumpsys activity activities | grep mLockTaskModeState"
+    echo "  $task_line"
+    if [[ $boot_ok -ne 1 ]]; then
+        fail "Tras ${poll_max}s post-reboot la app no quedo en foco+LOCKED+type=home (la pantalla de bloqueo puede estar tapandola) -- desbloquea la tablet a mano y volve a correr este script."
+    fi
+    step "Foco + kiosco LOCKED + tarea 'home' confirmados (${poll_waited}s)."
 
     print_summary
 }

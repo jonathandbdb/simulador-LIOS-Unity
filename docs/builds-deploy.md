@@ -280,10 +280,41 @@ scripts/provision-kit/build-kit.sh
 
 Validado por revisión estática (parser de PowerShell + corrida completa contra un `adb` simulado
 cubriendo el flujo feliz y los caminos de error) porque esta máquina de desarrollo es Linux y no
-hay una PC Windows a mano para probar el `.bat`/`.ps1` reales — **pendiente de una prueba real en
-Windows contra una tablet física** antes de entregar el primer kit a una clínica.
+hay una PC Windows a mano para probar el `.bat`/`.ps1` reales. **Primera prueba real en Windows
+(2026-09-25):** cortó en el Paso 3/8 (`adb devices`) con un error espurio — ver el gotcha
+"PowerShell 5.1 + `$ErrorActionPreference='Stop'` + stderr de comando nativo" más abajo, ya
+corregido. **Segunda prueba real (2026-09-25, misma tanda de pruebas, Lenovo TB336FU Android 16 /
+ZUI, ya con el fix anterior aplicado):** avanzó hasta el Paso 7/8 (`Start-KioskAppAndVerify`) —
+Pasos 1–6 OK (instalación + Device Owner) — y cortó ahí por la variante Android 16/ZUI del chequeo
+`type=home` (ver el gotcha correspondiente más abajo, dentro de "carrera tarea-standard"), ya
+corregida en ambos scripts (`configurar.ps1` y `provision-tablet.sh`, mismo criterio). **Tercera
+prueba real (2026-09-25, misma tablet, log `registro-20260925-145040.txt`, ya Device Owner de la
+corrida anterior):** volvió a cortar en el Paso 7, esta vez porque la pantalla de bloqueo de
+fábrica ("Deslizar", sin PIN) quedó por encima de la app justo cuando corrió el chequeo único de
+`type=home` — ver el gotcha "pantalla de bloqueo tapa la app" más abajo, ya corregido (polling en
+vez de lectura única, en ambos scripts). **Sigue pendiente una corrida real completa de los 8
+pasos contra una tablet física con este último fix** antes de entregar el primer kit a una
+clínica.
 
 #### Detalle técnico y gotchas
+
+**Gotcha "PowerShell 5.1 + `$ErrorActionPreference='Stop'` + stderr de comando nativo = excepción
+espuria" — INCIDENTE REAL, corregido (2026-09-25, primera prueba en una PC Windows real).**
+`configurar.ps1` fija `$ErrorActionPreference = 'Stop'` para que un error real corte la
+ejecución. En **Windows PowerShell 5.1** (no en pwsh 7 — por eso no se detectó en la revisión
+estática, hecha en Linux) esto tiene un efecto colateral: CADA línea que un comando nativo
+escribe a **stderr** se promueve a excepción terminante, aunque el exit code sea `0` y el mensaje
+sea inocuo. `adb` escribe a stderr todo el tiempo (`"daemon not running; starting now"`, avisos
+de `install`, etc.), así que el primer `adb devices` real cortaba con `"FALLO: Ocurrio un
+problema inesperado. Detalle tecnico: * daemon not running; starting now at tcp:5037"`. **Fix, en
+`Invoke-Adb`:** bajar `$ErrorActionPreference` a `'Continue'` SOLO durante la llamada nativa
+(`& $AdbPath @fullArgs 2>&1`), con `try/finally` para restaurarlo siempre — se sigue capturando
+stdout+stderr como texto igual que antes. También se arranca el `adb server` explícitamente al
+cierre del Paso 1 (`start-server`) para que ese mensaje no aparezca recién en medio del polling
+del Paso 3, y la única otra invocación nativa directa que había (`wait-for-device` del Paso 8) se
+ruteó por `Invoke-Adb` para quedar cubierta igual. No reproducible en esta máquina (Linux, pwsh
+7 — ni con `$PSNativeCommandUseErrorActionPreference` en modo legacy), consistente con que es un
+comportamiento específico del "NativeCommandError" de Windows PowerShell 5.1.
 
 **Con el Device Owner puesto, el OTA es silencioso (Fase C, lado Unity — `docs/updates.md`
 §"Instalación silenciosa en kiosco (F8)"):** `UpdateInstaller` instala el APK descargado vía
@@ -346,7 +377,8 @@ com.simulador.tablet/com.unity3d.player.UnityPlayerGameActivity`) en vez de LAUN
 (`monkey -p`) — la tarea nace `type=home` desde el vamos (mismo mecanismo con el que Android la
 relanza sola tras un reboot), así que nunca hay una tarea `standard` que bloquear ni una carrera
 que ganar. El script después espera hasta 30 s a que `cmd package resolve-activity` confirme que
-`ApplyPolicies()` corrió y verifica `type=home` en la tarea ya corriendo, sin volver a tocarla.
+`ApplyPolicies()` corrió y verifica `type=home` en la tarea ya corriendo, sin volver a tocarla
+(con una variante Android 16/ZUI de este último chequeo — ver gotcha más abajo).
 **Verificado post-fix en la PHILCO:** rebuild + reinstalación (mismo `applicationId`/firma, el
 Device Owner sobrevive), 10× `KEYCODE_HOME` con 3 s de por medio sin ningún `FATAL` en logcat y
 con el mismo PID antes/después, y reboot final con la app sola en foco, `type=home` y
@@ -354,6 +386,66 @@ con el mismo PID antes/después, y reboot final con la app sola en foco, `type=h
 tablet YA locked sigue sin poder forzar el kill (mismo "Ignoring request to force stop protected
 package") — es un camino que ya no ejecuta el script, documentado acá solo como referencia de
 por qué no es viable arreglarlo por ese lado.
+
+**Variante Android 16/ZUI del chequeo `type=home` pre-reboot — INCIDENTE REAL, corregido
+(2026-09-25, primera corrida real del kit de Windows contra una Lenovo TB336FU, Android 16/ZUI —
+log `registro-20260925-142050.txt`).** El fix de arriba (lanzar con intent HOME explícito en vez
+de LAUNCHER) sigue siendo correcto y necesario, pero el chequeo que lo confirma
+(`Start-KioskAppAndVerify` en `configurar.ps1` / el bloque equivalente de `run_provision` en
+`provision-tablet.sh`) asumía que, si `ApplyPolicies()` corrió (HOME persistente resuelta), la
+tarea YA iba a figurar `type=home` en `dumpsys activity activities` inmediatamente después. En
+esta tablet no fue así: el log muestra `resolve-activity HOME` resolviendo correctamente a
+`com.simulador.tablet` (HOME persistente OK), pero la tarea seguía `Task{... type=standard
+A=...:com.simulador.tablet ...}` — con `mCurrentFocus` apuntando a nuestra
+`UnityPlayerGameActivity` y `mLockTaskModeState=LOCKED` (el kiosco estaba realmente activo). Causa:
+en Android 16/ZUI, al momento de ese `am start ... HOME` el HOME **por defecto del sistema**
+todavía es el launcher de fábrica (`com.zui.launcher`) — recién lo desplaza el nuestro cuando
+Android reevalúa qué tarea es HOME, algo que en este fabricante no ocurre de inmediato sino más
+adelante (de forma determinista, tras un reboot real: ver "Qué verifica el reboot final" más
+abajo). El chequeo viejo trataba esto como fallo fatal aunque el kiosco ya estuviera andando bien.
+**Fix, en ambos scripts:** si la tarea NO es `type=home` todavía, antes de cortar se confirma el
+kiosco por la vía que el reboot final ya usaba (foco = nuestro paquete Y
+`mLockTaskModeState=LOCKED`); si eso se cumple, se registra un aviso neutro (sin alarmar al
+médico, ej. "variante conocida en algunos fabricantes/Android 16") y se continúa — el Paso 8/reboot
+sigue siendo la verificación definitiva, ahora también chequeando `type=home` explícitamente además
+de foco+`LOCKED` (antes solo verificaba estos dos; ver el criterio agregado más abajo). Si NI
+siquiera foco+`LOCKED` se cumplen, el corte fatal se mantiene igual que antes — este camino solo
+ablanda el caso donde el kiosco realmente está funcionando y el `type=home` es apenas una carrera
+cosmética con el launcher de fábrica.
+
+**Gotcha "pantalla de bloqueo tapa la app" — INCIDENTE REAL, corregido (2026-09-25, tercera
+corrida real del kit de Windows contra la misma Lenovo TB336FU Android 16, ya Device Owner de la
+corrida anterior — log `registro-20260925-145040.txt`).** El fix de la variante Android 16/ZUI de
+arriba es correcto, pero el chequeo que confirma el kiosco (`Start-KioskAppAndVerify` /
+`run_provision`) seguía siendo una **lectura única** justo después del `am start ... HOME`. En esta
+corrida el `am start` se lanzó y el chequeo corrió en el mismo segundo, y el log muestra `Task{...
+type=standard}` de `com.simulador.tablet`, pero `mCurrentFocus=Window{... NotificationShade}` (el
+keyguard de `com.android.systemui`, no nuestra Activity) y, en `dumpsys activity activities`,
+`isKeyguardShowing=true` / `mDreamingLockscreen=true` y `mLockTaskModeState=NONE` — la pantalla de
+bloqueo "Deslizar" de fábrica (sin PIN) quedó por encima de la app en ese instante y le tapó el
+foco, así que `ApplyPolicies()`/`EnterLockTask()` todavía no habían corrido cuando se leyó el
+estado: ni `type=home` ni foco+`LOCKED` se cumplían, aunque un segundo más tarde sí lo habrían
+hecho. **Fix, en ambos scripts:** (1) justo antes del `am start ... HOME`, se despierta la
+pantalla y se descarta el keyguard (`input keyevent KEYCODE_WAKEUP` + `wm dismiss-keyguard` —
+`wake_and_dismiss_keyguard()` en `provision-tablet.sh`, `Invoke-WakeAndDismissKeyguard` en
+`configurar.ps1`, la misma función que ya se usaba en el paso de "cuentas/bloqueo de pantalla",
+ahora reusada en vez de duplicada); (2) el chequeo de una sola lectura se reemplazó por un
+**polling de hasta 30s (cada 2s)**: en cada vuelta se vuelve a pedir `dumpsys activity activities`
+(con `dumpsys window` como fallback si el foco no aparece ahí), se acepta `type=home` O (foco
+nuestro — `mCurrentFocus` o `mFocusedApp` — + `LOCKED`, la variante Android 16/ZUI de arriba), y si
+`isKeyguardShowing=true` se vuelve a descartar el keyguard antes del próximo intento. Si a los 30s
+ninguna de las dos condiciones se cumplió, recién ahí corta fatal, con un mensaje que pide
+desbloquear la tablet a mano y volver a correr el programa. El mismo polling (exigiendo los TRES
+criterios juntos: foco + `LOCKED` + `type=home`, el criterio definitivo) se aplicó también a la
+verificación post-reboot del Paso 8, que antes era igualmente una lectura única y podía toparse con
+la misma pantalla de bloqueo reapareciendo tras el reinicio. Validado en `provision-tablet.sh` con
+un `adb` simulado (`MOCK_STATE_DIR`/`MOCK_SCENARIO`, timeout acortable vía
+`SIM_PROVISION_POLL_MAX`/`SIM_PROVISION_POLL_INTERVAL`) cubriendo: keyguard en la 1ª vuelta seguido
+de foco+`LOCKED` en la 2ª (OK), keyguard persistente hasta agotar el timeout (fatal), y el flujo
+completo con reboot resolviendo `type=home` directo en el Paso 7 y keyguard-luego-OK en el Paso 8;
+`configurar.ps1` (Windows PowerShell 5.1, sin `pwsh` en esta máquina Linux) se validó por revisión
+estática y un balanceador de llaves/strings/comentarios a medida, no con una corrida real —
+**sigue pendiente la corrida real en Windows con este fix**, igual que el resto del kit.
 
 **Gotcha "diálogo de modo inmersivo la primera vez que se oculta la barra de estado":** la
 PRIMERA vez que `KioskManager.ApplyPolicies()` llama `setStatusBarDisabled(true)`, Android
@@ -413,6 +505,12 @@ en una tablet sin keyguard (como la PHILCO) estos cuatro comandos son no-ops seg
 2. `mCurrentFocus` (`dumpsys window`) contiene `com.simulador.tablet`.
 3. `mLockTaskModeState` (`dumpsys activity activities`) es `LOCKED` — no se puede salir con los
    gestos normales (recientes/atrás/home del sistema no están disponibles bajo `startLockTask`).
+4. **(agregado 2026-09-25, gotcha Android 16/ZUI de arriba)** la tarea (`Task{...}` del mismo
+   `dumpsys activity activities` del punto 3, sin una llamada adb extra) es `type=home` — el
+   criterio que el chequeo pre-reboot no siempre puede confirmar todavía en algunos
+   fabricantes/Android 16, pero que tras un reboot real SIEMPRE se cumple (la relanza el propio
+   Android vía la HOME persistente, nunca vía LAUNCHER) — es el criterio definitivo que cierra la
+   variante de arriba.
 
 Manual, si hace falta confirmarlo a ojo: el botón físico de power SÍ debe abrir el menú de
 apagado (`LOCK_TASK_FEATURE_GLOBAL_ACTIONS`, ver `docs/tablet.md` Decisiones — si no aparece,
