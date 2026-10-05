@@ -246,6 +246,10 @@ namespace Simulador.Tablet
             Screen.autorotateToLandscapeRight = true;
             Screen.orientation = ScreenOrientation.AutoRotation;
 
+            // Pantalla siempre encendida mientras la app esta abierta (FLAG_KEEP_SCREEN_ON):
+            // el stay_on_while_plugged_in de KioskManager solo cubre enchufada y con Device Owner.
+            Screen.sleepTimeout = SleepTimeout.NeverSleep;
+
             var regular = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-Regular SDF");
             var semibold = Resources.Load<TMP_FontAsset>("TabletFonts/Inter-SemiBold SDF");
             _brandMark = Resources.Load<Sprite>("TabletBrand/logo_mark");

@@ -1132,6 +1132,10 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
   aplicar una velocidad de scroll continua mientras se mantenga ahí.
 
 ## Gotchas
+- **Pantalla siempre activa:** `TabletController.Start()` setea `Screen.sleepTimeout = SleepTimeout.NeverSleep`
+  (FLAG_KEEP_SCREEN_ON de la Activity). Funciona sin Device Owner y a batería; complementa (no
+  reemplaza) el `stay_on_while_plugged_in` de `KioskManager.ApplyPolicies()`, que solo aplica
+  enchufada y con Device Owner. Solo rige con la app en primer plano.
 - **El botón "Ocultar/Mostrar HUD" no refleja el estado real del HUD, solo el de ESTA tablet en
   ESTA sesión de red:** `_hudVisible` se resetea a `true` en cada conexión nueva
   (`OnSessionConnected`) sin preguntarle al visor su estado real (no hay campo `hud_visible` en
@@ -1285,8 +1289,13 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
   vuelve a evaluarla:** si el operador empieza arrastrando horizontal (mueve el slider) y a
   mitad de gesto curva el dedo hacia vertical sin soltar, sigue moviendo el valor (no se pasa a
   scrollear a mitad de camino) — comportamiento esperado de cualquier gesto de drag, no un bug.
-  Tampoco toca `OnPointerDown` (el tap-to-jump del `Slider` base al tocar el track sigue
-  intacto): el fix es solo sobre el DRAG, no sobre el toque inicial.
+  **Sin salto al tocar + drag relativo:** `OnPointerDown` NO llama a `base` (Slider base hace
+  `UpdateDrag` y salta el valor al punto tocado, notificando al visor); solo replica lo de
+  `Selectable` (seleccion + `DoStateTransition(Pressed)`, el feedback visual se mantiene y
+  `OnPointerUp` de Selectable lo limpia). `OnDrag` aplica el delta del dedo sobre el rect del
+  contenedor del handle (`handleRect.parent`) acumulando en `_dragNorm` (arranca de
+  `normalizedValue` en `OnBeginDrag`, para que `wholeNumbers` no pierda deltas chicos). Un tap
+  sin superar el `pixelDragThreshold` no cambia el valor. Teclado/`OnMove` no se tocaron.
 - **El lock a landscape ya no depende solo del runtime (P6.8, CERRADO el flash de arranque)** →
   antes de esta tarea, `Screen.orientation = ScreenOrientation.AutoRotation` + las 4 flags
   `autorotateTo*` en `TabletController.Start()` eran la ÚNICA barrera, y dejaban un flash breve
