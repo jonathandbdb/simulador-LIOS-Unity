@@ -834,6 +834,15 @@ producción, el activo más irreemplazable del proyecto.
 
 - **Buildear la tablet con `unity_build` (o Build Settings) directo = pantalla negra.** El target Android comparte config con Quest y tiene el loader OpenXR activo; en una tablet sin runtime VR el subsistema XR inicializa igual (`m_InitManagerOnStart: 1` en `Assets/XR/XRGeneralSettingsPerBuildTarget.asset`), secuestra el present y no se presenta ningún frame — la app corre pero la pantalla queda negra. Ese es el motivo de existir de `TabletBuild.cs`. Usar SIEMPRE el menú `Simulador → Build Tablet (Android)`.
 - **`TabletBuild` restaura el loader incluso si el build falla.** Verificable en `Assets/Scripts/Editor/TabletBuild.cs` líneas 61–84: la llamada a `BuildPipeline.BuildPlayer` está dentro de un `try` cuyo `finally` ejecuta `SetLoaders(manager, savedLoaders)`. Un build fallido (o una excepción) no deja el proyecto sin XR. Cómo verificarlo en la práctica: forzar un fallo (p.ej. renombrar temporalmente `Tablet.unity`), correr el menú, y comprobar que `Android Providers → m_Loaders` en el `.asset` sigue conteniendo el OpenXRLoader (o mirar *Project Settings → XR Plug-in Management → Android*). Excepción real: si el Editor crashea a mitad del build, el `finally` no corre y hay que reactivar el loader a mano.
+- **Tras un `TabletBuild` (sobre todo si hubo un build cancelado antes, ej. por el diálogo de
+  contraseñas del keystore) revisar `git status` antes de commitear.** Observado 2026-10-05: el
+  working tree quedó con diffs ajenos a la tarea en `ProjectSettings/ProjectSettings.asset`
+  (`preloadedAssets` SIN `OpenXR Package Settings` ni `XRGeneralSettingsPerBuildTarget` → el
+  próximo build del visor podría arrancar sin XR), `Assets/Settings/Mobile_RPAsset.asset`
+  (`m_PrefilterXRKeywords`/`m_PrefilteringModeAdditionalLight`) y
+  `Assets/XR/Settings/OpenXR Package Settings.asset`. Fix: **cerrar el Editor** (si no, re-escribe
+  sus valores en memoria al guardar) → `git checkout --` de esos archivos → reabrir. Nunca
+  commitearlos junto con cambios de la tablet. Causa raíz en `TabletBuild.cs` no investigada.
 - **Si el build target activo no es Android, `BuildTablet()` devuelve `null` sin buildear** (solo un `LogError`). Un pipeline CI debe cambiar el target antes (`-buildTarget Android`) y no asumir que el método lo hace.
 - **`applicationIdentifier` distinto para visor/tablet — RESUELTO (P6.7).** Hasta esta tarea
   compartían `com.simulador.vr` y no podían convivir instalados en el mismo dispositivo. Ahora la
