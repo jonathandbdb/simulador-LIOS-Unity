@@ -57,6 +57,27 @@ namespace Simulador.Update
         // afuera de la corutina. Null fuera de una descarga en curso.
         private UnityWebRequest _activeDownloadReq;
 
+        // Pantalla encendida durante descarga/instalacion de la OTA (ver docs/updates.md,
+        // "Pantalla encendida durante la OTA"): se guarda el sleepTimeout previo para restaurarlo
+        // tal cual (no se hardcodea SystemSetting: el visor puede tener otro valor).
+        private bool _awakeHeld;
+        private int _prevSleepTimeout;
+
+        private void BeginKeepAwake()
+        {
+            if (_awakeHeld) return;
+            _prevSleepTimeout = Screen.sleepTimeout;
+            Screen.sleepTimeout = SleepTimeout.NeverSleep;
+            _awakeHeld = true;
+        }
+
+        private void EndKeepAwake()
+        {
+            if (!_awakeHeld) return;
+            Screen.sleepTimeout = _prevSleepTimeout;
+            _awakeHeld = false;
+        }
+
         // ---------------- Estado del instalador (F4) ----------------
         // true entre "ReadyToInstall se disparo" y "arranco una descarga nueva" -- guarda
         // a LaunchInstall() de lanzar el intent sobre un archivo que no existe/ya fue
@@ -160,6 +181,7 @@ namespace Simulador.Update
         {
             try { _activeDownloadReq?.Abort(); _activeDownloadReq?.Dispose(); }
             catch (Exception) { /* SIM: atajo deliberado -- cierre best-effort, no debe tirar durante el destroy */ }
+            EndKeepAwake();
         }
 
         // Borra residuos de una corrida anterior (p.ej. un APK a medio descargar si la
@@ -373,6 +395,7 @@ namespace Simulador.Update
             _downloadCo = null;
             _activeDownloadReq = null;
             CleanupPartialFile(ApkPath);
+            EndKeepAwake();
         }
 
         /// <summary>
@@ -390,8 +413,14 @@ namespace Simulador.Update
                 return;
             }
             string targetVersion = _lastManifest?.ApkVersion ?? "";
+            BeginKeepAwake();
             var result = UpdateInstaller.LaunchInstall(ApkPath, targetVersion, msg => UpdateFailed?.Invoke(msg));
             LastInstallLaunchResult = result;
+            // Started/StartedSilent: la app se reinstala/reinicia, se deja encendida. Failed o
+            // pidiendo permiso (vuelve a la UI normal): restaurar el timeout del sistema.
+            if (result == UpdateInstaller.InstallLaunchResult.Failed
+                || result == UpdateInstaller.InstallLaunchResult.PermissionRequested)
+                EndKeepAwake();
             _permissionPendingRetry = result == UpdateInstaller.InstallLaunchResult.PermissionRequested;
             SendTelemetry(new UpdateLogic.LogEvent("update_install_launched", $"version={targetVersion} result={result}"));
         }
@@ -431,7 +460,16 @@ namespace Simulador.Update
             // Aborta cualquier descarga en vuelo ANTES de arrancar la nueva -- ver
             // AbortActiveDownload (evita dos requests escribiendo al mismo ApkPath).
             AbortActiveDownload();
-            _downloadCo = StartCoroutine(DownloadApk(_lastManifest));
+            _downloadCo = StartCoroutine(DownloadApkHeld(_lastManifest));
+        }
+
+        // Envuelve la descarga+verificacion manteniendo la pantalla encendida. Si termina sin
+        // ReadyToInstall (fallo) restaura; en exito ya se restauro antes de ReadyToInstall.
+        private IEnumerator DownloadApkHeld(UpdateLogic.UpdateManifest manifest)
+        {
+            BeginKeepAwake();
+            yield return DownloadApk(manifest);
+            if (!_readyToInstall) EndKeepAwake();
         }
 
         // ---------------- Descarga ----------------
@@ -500,6 +538,7 @@ namespace Simulador.Update
                 // El dummy manda apk_sha256 "" -- nada que verificar (Sha256Matches ya
                 // devuelve true en ese caso, pero evitamos leer el archivo entero al pedo).
                 _readyToInstall = true;
+                EndKeepAwake(); // el handler decide: LaunchInstall re-toma el hold; diferido/boton = pantalla normal
                 ReadyToInstall?.Invoke(path);
                 yield break;
             }
@@ -575,6 +614,7 @@ namespace Simulador.Update
 
             Debug.Log("Update: SHA256 verificado, APK listo para instalar.");
             _readyToInstall = true;
+            EndKeepAwake(); // el handler decide: LaunchInstall re-toma el hold; diferido/boton = pantalla normal
             ReadyToInstall?.Invoke(path);
         }
 

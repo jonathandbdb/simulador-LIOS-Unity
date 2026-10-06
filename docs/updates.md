@@ -791,6 +791,21 @@ que se supone habilita esta feature.
   parcial) — cualquier corte de una descarga en curso pasa siempre por ahí, nunca por un
   `StopCoroutine` suelto. `UpdateManager.OnDestroy()` hace lo mismo (abort+dispose) por si el
   singleton se destruye con una descarga en vuelo.
+- **Pantalla encendida durante la OTA (`BeginKeepAwake`/`EndKeepAwake`)**: mientras se descarga,
+  verifica o lanza la instalación, `UpdateManager` pone `Screen.sleepTimeout = NeverSleep`
+  (guarda el valor previo y lo restaura tal cual, no hardcodea `SystemSetting`; par idempotente).
+  Porqué (evidencia de prod, `update_logs`): la tablet `d38d683a…` aceptó la 0.8.8 dos veces
+  (`update_accepted` + GET del APK) pero nunca registró `update_download_ok` ni
+  `update_install_launched`; con 0.8.7 la descarga tardó 17 s y funcionó. Hipótesis: el timeout
+  de pantalla (30 s del sistema; 70 s por policy DO desde 0.8.8) apaga la pantalla a mitad de una
+  descarga lenta y la app en background pierde la conexión (sin timeout propio de descarga, ver
+  arriba). Nota: `OnApplicationPause` de `UpdateManager` NO aborta la descarga (solo reintenta
+  instalación/re-chequeo al volver a foco); el corte lo causa el sistema, no el código. Ciclo de
+  vida: Begin al arrancar `DownloadApkHeld`; End en todo fallo (la envoltura, si no hay
+  `_readyToInstall`), en `AbortActiveDownload` (cancelar/reiniciar), en `OnDestroy` y justo antes
+  de `ReadyToInstall` (el handler puede diferir la instalación con sesión activa: ahí vale el
+  timeout normal); `LaunchInstall` re-toma el hold y lo suelta si el resultado es `Failed` o
+  `PermissionRequested`. En `Started`/`StartedSilent` queda encendida (la app se reinstala).
 - **`UpdatePromptVR.SubscribeToManager()` es idempotente** (`_subscribedToManager`, fix
   pre-F7): si `Show()` se llama de nuevo sin haber pasado por `Close()`/`OnDestroy()` antes
   (p. ej. un segundo `UpdateAvailable` mientras el cartel ya está visible), NO vuelve a
