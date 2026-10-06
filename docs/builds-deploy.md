@@ -67,7 +67,8 @@ finally:
     SetGraphicsAPIs(Android, guardado) + SetUseDefaultGraphicsAPIs(Android, guardado)   ← Vulkan de nuevo, SIEMPRE
     SetApplicationIdentifier(Android, guardado) + productName = guardado   ← SIEMPRE (P6.7)
     SetPlatformIcons(Android, Legacy/Round/Adaptive, icons guardados)      ← SIEMPRE (icono del visor de nuevo, heredado del default)
-    (+ SaveAssets: el .asset de XR queda persistido como estaba)
+    SetPreloadedAssets(snapshot previo) + restaurar m_PrefilteringModeAdditionalLight/m_PrefilterXRKeywords de los RP assets (snapshot previo)   ← SIEMPRE
+    AssetDatabase.SaveAssets()   ← flush a disco de ProjectSettings.asset + RP assets + .asset de XR: el working tree queda byte a byte como estaba
 ```
 
 ### Instalación por adb
@@ -786,7 +787,7 @@ producción, el activo más irreemplazable del proyecto.
 - **Script de editor dedicado (`TabletBuild`) en vez de un Build Profile separado** → la conmutación del loader queda automatizada y atómica (try/finally), imposible de olvidar a mano; además es invocable headless por CLI (`-executeMethod`).
 - **La escena de la tablet no está en EditorBuildSettings** → el build normal (visor) nunca la arrastra por accidente; `TabletBuild` la pasa explícitamente en `BuildPlayerOptions.scenes`.
 - **Manipular `m_Loaders` vía `SerializedObject` en vez de `XRPackageMetadataStore.Assign/Remove`** → control exacto de la lista y restauración byte a byte de lo que había, sin depender del metadata store.
-- **`AssetDatabase.SaveAssets()` al restaurar** → la config XR es un `.asset` versionado; se persiste para que el working tree no quede sucio ni el estado dependa de la sesión del editor.
+- **`AssetDatabase.SaveAssets()` al final del `finally` (2026-10-06)** → `BuildPlayer` flushea a disco los valores de la tablet (`ProjectSettings.asset`) y el `finally` solo restauraba en memoria; sin un flush posterior el disco quedaba con package/nombre/icono/GLES3 de tablet y el próximo build del visor saldría como tablet. Además se snapshotean/restauran `PlayerSettings.preloadedAssets` y los campos de prefiltrado de URP, que tocan terceros (XR Management, URP) durante el build — ver Gotchas.
 - **Salida fija `Builds/Android/Simulador.apk`** → ruta predecible para CI y para el `adb install -r` de la receta; el directorio se crea si falta.
 - **Backend en Docker Compose** → una sola pieza desplegable con TLS automático (Caddy); el visor funciona sin él (catálogo embebido), así que el deploy del backend no bloquea las demos.
 - **`applicationIdentifier`/`productName` propios de la tablet, mismo patrón try/finally que el
@@ -834,15 +835,31 @@ producción, el activo más irreemplazable del proyecto.
 
 - **Buildear la tablet con `unity_build` (o Build Settings) directo = pantalla negra.** El target Android comparte config con Quest y tiene el loader OpenXR activo; en una tablet sin runtime VR el subsistema XR inicializa igual (`m_InitManagerOnStart: 1` en `Assets/XR/XRGeneralSettingsPerBuildTarget.asset`), secuestra el present y no se presenta ningún frame — la app corre pero la pantalla queda negra. Ese es el motivo de existir de `TabletBuild.cs`. Usar SIEMPRE el menú `Simulador → Build Tablet (Android)`.
 - **`TabletBuild` restaura el loader incluso si el build falla.** Verificable en `Assets/Scripts/Editor/TabletBuild.cs` líneas 61–84: la llamada a `BuildPipeline.BuildPlayer` está dentro de un `try` cuyo `finally` ejecuta `SetLoaders(manager, savedLoaders)`. Un build fallido (o una excepción) no deja el proyecto sin XR. Cómo verificarlo en la práctica: forzar un fallo (p.ej. renombrar temporalmente `Tablet.unity`), correr el menú, y comprobar que `Android Providers → m_Loaders` en el `.asset` sigue conteniendo el OpenXRLoader (o mirar *Project Settings → XR Plug-in Management → Android*). Excepción real: si el Editor crashea a mitad del build, el `finally` no corre y hay que reactivar el loader a mano.
-- **Tras un `TabletBuild` (sobre todo si hubo un build cancelado antes, ej. por el diálogo de
-  contraseñas del keystore) revisar `git status` antes de commitear.** Observado 2026-10-05: el
-  working tree quedó con diffs ajenos a la tarea en `ProjectSettings/ProjectSettings.asset`
-  (`preloadedAssets` SIN `OpenXR Package Settings` ni `XRGeneralSettingsPerBuildTarget` → el
-  próximo build del visor podría arrancar sin XR), `Assets/Settings/Mobile_RPAsset.asset`
-  (`m_PrefilterXRKeywords`/`m_PrefilteringModeAdditionalLight`) y
-  `Assets/XR/Settings/OpenXR Package Settings.asset`. Fix: **cerrar el Editor** (si no, re-escribe
-  sus valores en memoria al guardar) → `git checkout --` de esos archivos → reabrir. Nunca
-  commitearlos junto con cambios de la tablet. Causa raíz en `TabletBuild.cs` no investigada.
+- **Working tree sucio tras `TabletBuild` — RESUELTO (2026-10-06).** Antes quedaban en disco
+  `ProjectSettings.asset` con los valores de la tablet (`productName: IOLSIMULATOR Tablet`,
+  `com.simulador.tablet`, íconos de `icon_tablet`, `m_APIs: 0b000000` GLES3) y SIN las dos entradas
+  XR de `preloadedAssets` (el visor saldría como tablet o sin XR), más `Mobile_RPAsset.asset`
+  (`m_PrefilteringModeAdditionalLight` 4→3, `m_PrefilterXRKeywords` 0→1). Causa raíz por archivo:
+  (1) `ProjectSettings.asset`: `BuildPlayer` persiste los valores de tablet; el `finally` restauraba
+  en memoria pero nunca llamaba `AssetDatabase.SaveAssets()` (salvo `SetLoaders`, solo para
+  `m_Loaders`) → el disco quedaba con los valores de tablet. (2) `preloadedAssets`: lo vacía el
+  preprocess/postprocess de XR Management al ver 0 loaders (efecto de tercero, el script no lo
+  tocaba) → ahora se snapshotea antes y se restaura con `SetPreloadedAssets`. (3) `Mobile_RPAsset`:
+  lo reescribe el shader preprocessor de URP al ver el loader XR en 0 → ahora se snapshotean los dos
+  campos de todos los `UniversalRenderPipelineAsset` y se restauran por `SerializedObject`.
+  Todo se flushea con un `AssetDatabase.SaveAssets()` al final del `finally`. Validado con un
+  build real de tablet: `ProjectSettings.asset` y `Mobile_RPAsset.asset` con md5 idéntico al previo.
+  **Si el `git status` post-build vuelve a mostrar esos archivos sucios**: (a) confirmar que el Editor
+  recompiló `TabletBuild.cs` (con el Editor sin foco el import puede no correr: `AssetDatabase.Refresh`
+  vía `unity_execute_code`; un build con código viejo reproduce el bug), y (b) el snapshot se toma del
+  estado EN MEMORIA: si el Editor ya venía con memoria sucia (p.ej. de builds anteriores con el
+  código viejo + un `git checkout` del archivo con el Editor abierto), el fix "restaura" lo sucio.
+  Recuperar la memoria con `unity_execute_code` (`SetPreloadedAssets` por fileID, ver abajo, y los
+  campos de `Mobile_RPAsset`) + `SaveAssets`, o cerrar/reabrir el Editor. Nunca `git checkout` con el
+  Editor abierto. `Assets/XR/Settings/OpenXR Package Settings.asset` puede aparecer modificado
+  (reordenamiento de fileIDs de `features`) por re-serialización del paquete al abrir el Editor, sin
+  build; el `SaveAssets` del build lo dejó igual a HEAD en la validación, pero no es responsabilidad
+  de `TabletBuild`: no commitearlo si no lo pidió la tarea.
 - **Si el build target activo no es Android, `BuildTablet()` devuelve `null` sin buildear** (solo un `LogError`). Un pipeline CI debe cambiar el target antes (`-buildTarget Android`) y no asumir que el método lo hace.
 - **`applicationIdentifier` distinto para visor/tablet — RESUELTO (P6.7).** Hasta esta tarea
   compartían `com.simulador.vr` y no podían convivir instalados en el mismo dispositivo. Ahora la
@@ -857,69 +874,21 @@ producción, el activo más irreemplazable del proyecto.
   splash screen custom, etc.) hay que tenerlo en cuenta — cualquier build que corra EN PARALELO al
   de la tablet (no debería pasar: Unity no soporta builds concurrentes en el mismo Editor) vería
   el nombre de la tablet a mitad de camino.
-- **Restauración de `applicationIdentifier`/`productName`/GraphicsAPI/íconos (P6.7): correcta en
-  memoria, NO flusheada a disco sola.** Verificado en vivo (build real de tablet, no solo lectura
-  de código): tras `TabletBuild.BuildTablet()`, consultar `PlayerSettings.GetApplicationIdentifier`/
-  `PlayerSettings.productName`/`PlayerSettings.GetGraphicsAPIs`/`PlayerSettings.GetPlatformIcons`
-  por `unity_execute_code` YA devuelve los valores del visor (`com.simulador.vr`/`IOLSIMULATOR`/
-  `Vulkan`/íconos vacíos) — el `finally` corrió bien. Pero `git diff
-  ProjectSettings/ProjectSettings.asset` en ese momento **todavía muestra los valores de la
-  tablet** porque Unity no persiste `ProjectSettings.asset` en cada `PlayerSettings.Set*` — a
-  diferencia del loader XR (la lista `m_Loaders`), que sí se fuerza con `AssetDatabase.SaveAssets()`
-  dentro del propio script. El archivo en disco se pone al día recién con el próximo guardado del
-  proyecto (`File → Save Project`, cierre del Editor, o cualquier otra operación que dispare el
-  flush de Player Settings — un build posterior, exitoso o no, también lo dispara). **Implicación
-  para el paso 2 de "Cómo probar"**: no alcanza con mirar el `git status` inmediatamente después
-  del build para confirmar la restauración — si sale sucio, correr `File → Save Project` (o
-  `AssetDatabase.SaveAssets()` por `unity_execute_code`) antes de concluir que algo quedó mal. El
-  estado en memoria (que es lo que importa para builds subsiguientes en la misma sesión del
-  Editor, p.ej. un build de visor inmediatamente después) es correcto igual, con o sin ese
-  guardado.
-  **INCIDENTE REAL, y CONFIRMADO SISTÉMICO — no solo del caso "diálogo colgado" (2026-09-24):**
-  la primera vez que se vio esto el build había quedado colgado varios minutos en el diálogo
-  interactivo de contraseña del keystore (ver gotcha de Firma más abajo) y se canceló a mano;
-  la hipótesis inicial fue que el disco se flusheaba con los valores de TABLET a mitad de camino
-  por el paso "Prepare For Build" del pipeline nativo (antes de que corriera el `finally`) durante
-  ese cuelgue largo. **Pero se reprodujo IDÉNTICO en un build de tablet limpio, sin ningún
-  diálogo ni cancelación** (`[TabletBuild] Succeeded — 0 errores ... 27,6s`, con las
-  `keystorePass`/`keyaliasPass` ya seteadas de antemano): tras ese build exitoso,
-  `applicationIdentifier`/`productName`/GraphicsAPI/íconos/`preloadedAssets` en
-  `ProjectSettings.asset` seguían en disco con los valores de TABLET pese a que el `finally`
-  restauró bien la memoria (confirmado por `unity_execute_code`). Conclusión: **no hace falta
-  ningún incidente para que pase — es el comportamiento normal de `TabletBuild.BuildTablet()`
-  en CUALQUIER corrida**, porque el script nunca llama `AssetDatabase.SaveAssets()` tras
-  restaurar esos campos en el `finally` (solo lo hace `SetLoaders()`, y solo para la lista de
-  loaders). Fix verificado dos veces (build interrumpido y build limpio), siempre con
-  `unity_execute_code` tras confirmar que la memoria está correcta:
-  1. `AssetDatabase.SaveAssets()` alcanza para `productName`/`applicationIdentifier`/GraphicsAPI/
-     íconos.
-  2. **`PlayerSettings.preloadedAssets` (las entradas que embeben
-     `Assets/XR/XRGeneralSettingsPerBuildTarget.asset` y `Assets/XR/Settings/OpenXR Package
-     Settings.asset` para que el loader se inicialice en runtime) NO las toca `TabletBuild.cs` en
-     absoluto** — es un mecanismo aparte del paquete XR Management, ligado al preprocess de
-     build, y queda vacío tras CUALQUIER build de tablet (no solo el interrumpido). Fix manual:
-     `PlayerSettings.GetPreloadedAssets()`/`SetPreloadedAssets()` para volver a agregar esas dos
-     referencias — pero **ojo con `AssetDatabase.LoadAssetAtPath<Object>(path)`**: ambos `.asset`
-     tienen VARIOS objetos embebidos (uno por loader/feature) y esa llamada devuelve el objeto
-     contenedor (`XRGeneralSettingsPerBuildTarget`, fileID `11400000`), NO el sub-objeto real que
-     va en `preloadedAssets` (el `XRGeneralSettings` "Android Settings", fileID grande tipo
-     `6848440844491299155`) — hay que enumerar con `AssetDatabase.LoadAllAssetsAtPath(path)` y
-     filtrar por `AssetDatabase.TryGetGUIDAndLocalFileIdentifier` contra el fileID esperado (el
-     que aparece en el diff de `ProjectSettings.asset` cuando está bien).
-  3. **`Assets/Settings/Mobile_RPAsset.asset`** también queda tocado tras CUALQUIER build de
-  tablet (`m_PrefilterXRKeywords: 0→1`, `m_PrefilteringModeAdditionalLight: 4→3`) — URP
-  reconfigura ese asset durante el "prepare for build" cuando detecta el loader Android en 0
-  (optimización de stripping de keywords XR), y `TabletBuild.cs` no lo sabe ni lo restaura: hay
-  que corregirlo a mano vía `SerializedObject` + `AssetDatabase.SaveAssets()` (no vale un
-  `git checkout` con el Editor abierto: si el asset
-  sigue cargado en memoria con el valor "malo", cualquier disparo posterior de guardado lo vuelve
-  a escribir). **Regla derivada: tras CUALQUIER build de tablet — con incidente (diálogo modal,
-  cancelación, crash) o sin él — correr `git status --short` y si `ProjectSettings.asset` o
-  `Mobile_RPAsset.asset`/`PC_RPAsset.asset` aparecen sucios, NO asumir que ya se van a limpiar
-  solos — verificar valores en memoria por `unity_execute_code`, y si son correctos, forzar
-  `AssetDatabase.SaveAssets()` (más, si `preloadedAssets` perdió las entradas de XR, reconstruirlas
-  por fileID como se describe arriba) en vez de tocar esos archivos con git mientras el Editor
-  sigue abierto.**
+- **Restauración de `applicationIdentifier`/`productName`/GraphicsAPI/íconos/`preloadedAssets`/prefiltrado URP
+  — persistida a disco desde 2026-10-06.** Historia: hasta esa fecha el `finally` restauraba solo
+  en memoria (`PlayerSettings.Get*` ya devolvía `com.simulador.vr`/`IOLSIMULATOR`/Vulkan) pero
+  `ProjectSettings.asset` quedaba en disco con los valores de la tablet en CUALQUIER build (exitoso
+  o no, no hacía falta ningún incidente), porque faltaba el flush. Ahora el `finally` termina con
+  `AssetDatabase.SaveAssets()` y restaura también `preloadedAssets` y los campos de prefiltrado de
+  URP (ver el gotcha "Working tree sucio tras `TabletBuild`" arriba, con la causa raíz por archivo).
+  Receta manual para reconstruir `preloadedAssets` si algún día se pierde: `PlayerSettings.
+  GetPreloadedAssets()/SetPreloadedAssets()`, pero **ojo con `AssetDatabase.LoadAssetAtPath<Object>
+  (path)`**: ambos `.asset` tienen VARIOS objetos embebidos y esa llamada devuelve el contenedor
+  (fileID `11400000`), NO el sub-objeto que va en `preloadedAssets` — enumerar con
+  `AssetDatabase.LoadAllAssetsAtPath(path)` y filtrar por `TryGetGUIDAndLocalFileIdentifier` contra
+  los fileID esperados (`6848440844491299155` XRGeneralSettings "Android Settings", guid
+  `4dd27b7d…`, y `7434079408457831569`, guid `89814210…`), respetando el orden de HEAD
+  (InputActions, 6848…, 7434…) para no ensuciar el diff.
 - **`Builds/` vs `builds/` vs `build/`.** El script escribe en `Builds/Android/`; en el repo local existen además `build/` y `builds/` (salidas manuales previas, gitignoradas). En Windows el filesystem es case-insensitive, así que `Builds` y `builds` son la MISMA carpeta: el APK de la tablet puede aparecer junto a salidas viejas del visor. No confundir `builds/Simulador_VR.apk` (visor) con `Builds/Android/Simulador.apk` (tablet).
 - **El visor build normal solo incluye `Main.unity`**: si se agregan escenas nuevas del visor hay que sumarlas a EditorBuildSettings; la tablet en cambio se controla desde la constante `ScenePath` del script.
 - **Manifest custom incompleto rompe el merge del launcher (visor Y tablet, mismo manifest) —
@@ -1006,16 +975,15 @@ producción, el activo más irreemplazable del proyecto.
   `TabletBuild.cs`. Verificar `git status` después de un build (exitoso o no) y, si aparecen,
   limpiarlos: el preload con `PlayerSettings.SetPreloadedAssets(...)` quitando esa entrada +
   `AssetDatabase.SaveAssets()`, y los JSON con `unity_asset_delete` (o borrarlos y dejar que el
-  Editor limpie el `.meta` huérfano). No se automatizó la limpieza en `TabletBuild.cs` todavía —
-  quedaría a criterio de `@unity-dev` si vale la pena extender el `finally`.
+  Editor limpie el `.meta` huérfano). `preloadedAssets` quedó automatizado el 2026-10-06 (snapshot/restauración en el `finally`);
+  los JSON del test framework siguen sin gestionarse.
 - **Otro efecto colateral de build Android detectado (2026-07-09): `Assets/Settings/
   Mobile_RPAsset.asset` (el `UniversalRenderPipelineAsset` del tier Mobile, ver `AGENTS.md`
   §Reglas de assets Unity) cambia `m_PrefilterXRKeywords` de `0` a `1`.** Es Unity precompilando/
   prefiltrando keywords de shader para XR al preprocesar el build Android, mismo mecanismo que
   el preload de OpenXR Package Settings de arriba — no es una edición deliberada de nadie.
-  Mismo tratamiento: revisar `git status` post-build y `git checkout -- "Assets/Settings/
-  Mobile_RPAsset.asset"` si aparece y no se querían tocar sus flags de prefiltrado a propósito
-  en esa tarea.
+  RESUELTO 2026-10-06: `TabletBuild` snapshotea y restaura esos campos (y los de cualquier otro
+  `UniversalRenderPipelineAsset`) — ya no hace falta revertirlo a mano.
 - **`TabletBuild.cs` pisaba `PlayerSettings.SetIcons(NamedBuildTarget.Android, ..., IconKind.
   Application)` pero el APK de tablet salía con el ícono del VISOR — BUG REAL, RESUELTO (detectado
   en vivo en el release 0.2.0, 2026-07-09; fix en la misma fecha).** Causa raíz **confirmada** (no

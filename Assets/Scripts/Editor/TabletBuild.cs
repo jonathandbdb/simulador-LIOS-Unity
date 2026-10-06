@@ -157,6 +157,16 @@ namespace Simulador.EditorTools
             foreach (var kind in AndroidIconKinds)
                 savedAndroidIcons[kind] = PlayerSettings.GetPlatformIcons(androidTarget, kind);
 
+            // Efectos colaterales de terceros durante BuildPlayer (causa raiz del working tree
+            // sucio post-build, ver docs/builds-deploy.md Gotchas): (1) el preprocess/
+            // postprocess de XR Management vacia PlayerSettings.preloadedAssets (pierde
+            // OpenXR Package Settings + XRGeneralSettingsPerBuildTarget) al ver 0 loaders;
+            // (2) el shader preprocessor de URP reescribe m_PrefilteringModeAdditionalLight/
+            // m_PrefilterXRKeywords en los RP assets por la misma razon. Se snapshotean antes
+            // y se restauran en el finally por API/SerializedObject (nada de tocar disco).
+            Object[] savedPreloadedAssets = PlayerSettings.GetPreloadedAssets();
+            var savedRpPrefilter = SnapshotRpPrefilter();
+
             try
             {
                 // Gate de TabletBootConfigPatcher: solo actua mientras este build de
@@ -248,6 +258,45 @@ namespace Simulador.EditorTools
                 PlayerSettings.productName = savedProductName;
                 foreach (var kind in AndroidIconKinds)
                     PlayerSettings.SetPlatformIcons(androidTarget, kind, savedAndroidIcons[kind]);
+                PlayerSettings.SetPreloadedAssets(savedPreloadedAssets);
+                RestoreRpPrefilter(savedRpPrefilter);
+
+                // PlayerSettings.Set* y SetPreloadedAssets solo dejan dirty ProjectSettings.asset
+                // en memoria: sin este flush, el disco queda con los valores de la tablet que
+                // BuildPlayer ya persistio (el visor saldria como tablet / sin XR al reabrir).
+                AssetDatabase.SaveAssets();
+            }
+        }
+
+        const string RpPrefilterLightProp = "m_PrefilteringModeAdditionalLight";
+        const string RpPrefilterXrProp = "m_PrefilterXRKeywords";
+
+        static List<(Object asset, int light, int xr)> SnapshotRpPrefilter()
+        {
+            var result = new List<(Object, int, int)>();
+            foreach (var guid in AssetDatabase.FindAssets("t:UniversalRenderPipelineAsset"))
+            {
+                var asset = AssetDatabase.LoadAssetAtPath<Object>(AssetDatabase.GUIDToAssetPath(guid));
+                if (asset == null) continue;
+                var so = new SerializedObject(asset);
+                var light = so.FindProperty(RpPrefilterLightProp);
+                var xr = so.FindProperty(RpPrefilterXrProp);
+                if (light != null && xr != null)
+                    result.Add((asset, light.intValue, xr.boolValue ? 1 : 0));
+            }
+            return result;
+        }
+
+        static void RestoreRpPrefilter(List<(Object asset, int light, int xr)> saved)
+        {
+            foreach (var (asset, light, xr) in saved)
+            {
+                if (asset == null) continue;
+                var so = new SerializedObject(asset);
+                so.FindProperty(RpPrefilterLightProp).intValue = light;
+                so.FindProperty(RpPrefilterXrProp).boolValue = xr != 0;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                EditorUtility.SetDirty(asset);
             }
         }
 
