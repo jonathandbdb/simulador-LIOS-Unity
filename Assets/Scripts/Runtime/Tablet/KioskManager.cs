@@ -46,6 +46,9 @@ namespace Simulador.Tablet
         const int PermissionGrantStateGranted = 1;
         const int LockTaskModeNone = 0;
         const int FlagActivityNewTask = 0x10000000;
+        // Timeout de pantalla: Android atenua solo ~7 s antes (min(7 s, 20% del timeout)),
+        // asi que 70 s => ~63 s atenuada y apagada a los 70 s. Rige para toda Activity (deck incluido).
+        const int ScreenOffTimeoutMs = 70000;
 
         static bool? _isDeviceOwnerCache;
 
@@ -132,6 +135,9 @@ namespace Simulador.Tablet
 
                 TryPolicy("setGlobalSetting(stay_on_while_plugged_in)", () =>
                     dpm.Call("setGlobalSetting", admin, "stay_on_while_plugged_in", "3"));
+
+                TryPolicy("setSystemSetting(screen_off_timeout)", () =>
+                    dpm.Call("setSystemSetting", admin, "screen_off_timeout", ScreenOffTimeoutMs.ToString()));
 
                 // El SSID se lee sin el dialogo de permiso (ver TabletController.
                 // TryGetWifiSsid/RequestLocationPermissionOnce, que siguen

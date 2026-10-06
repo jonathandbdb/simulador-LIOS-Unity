@@ -1132,10 +1132,10 @@ tablet). Protocolo/backend en `docs/networking.md` §"reorder_lenses"; contrato 
   aplicar una velocidad de scroll continua mientras se mantenga ahí.
 
 ## Gotchas
-- **Pantalla siempre activa:** `TabletController.Start()` setea `Screen.sleepTimeout = SleepTimeout.NeverSleep`
-  (FLAG_KEEP_SCREEN_ON de la Activity). Funciona sin Device Owner y a batería; complementa (no
-  reemplaza) el `stay_on_while_plugged_in` de `KioskManager.ApplyPolicies()`, que solo aplica
-  enchufada y con Device Owner. Solo rige con la app en primer plano.
+- **Pantalla con timeout de 70 s (reemplaza "siempre activa"):** sin tocar la pantalla se atenúa ~63 s y se apaga a los 70 s, también en el deck comercial (`DeckActivity`, Activity Java aparte).
+  `KioskManager.ApplyPolicies()` fija `screen_off_timeout = 70000` vía `DevicePolicyManager.setSystemSetting` (`ScreenOffTimeoutMs`; API 28+, solo Device Owner, no-op si no lo es);
+  Android atenúa solo ~7 s antes del timeout (min(7 s, 20%)). `TabletController.Start()` usa `Screen.sleepTimeout = SleepTimeout.SystemSetting` para no forzar FLAG_KEEP_SCREEN_ON.
+  `stay_on_while_plugged_in` NO se tocó: enchufada la pantalla sigue encendida. Verificar: `adb shell settings get system screen_off_timeout` → 70000.
 - **El botón "Ocultar/Mostrar HUD" no refleja el estado real del HUD, solo el de ESTA tablet en
   ESTA sesión de red:** `_hudVisible` se resetea a `true` en cada conexión nueva
   (`OnSessionConnected`) sin preguntarle al visor su estado real (no hay campo `hud_visible` en
